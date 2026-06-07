@@ -664,6 +664,8 @@ async function goToServerPage(page, user) {
 
                     // aclclouds 模式：点 Renew 后无弹窗，只出 toast 提示，直接判断结果
                     if (NO_MODAL) {
+                        const fs = require('fs');
+                        const path = require('path');
                         await page.waitForTimeout(3000);
                         let msg = '';
                         for (const sel of ['[role="alert"]', '.toast', '.toast-body', '.notification',
@@ -675,9 +677,14 @@ async function goToServerPage(page, user) {
                             }
                         }
                         const body = await page.locator('body').innerText().catch(() => '');
-                        if (!msg) {
-                            const m = body.match(/[^\n]*(renew|renouvel|error while renewing|succ)[^\n]*/i);
-                            msg = m ? m[0].trim() : '';
+                        // 基于整页文本分类 (toast 可能没抓到，且表头 "UPCOMING RENEWALS" 含 renew 会误判)
+                        const isError = /error while renewing|erreur|échou|failed to renew/i.test(body) || /error|erreur|fail/i.test(msg);
+                        const isSuccess = !isError && /renewed successfully|successfully renewed|server renewed|renouvel[ée]|renewal success|renewed!/i.test(body);
+                        // 优先用精确短语作为展示消息
+                        if (!msg || /upcoming renewals/i.test(msg)) {
+                            const em = body.match(/[^\n]*error while renewing[^\n]*/i)
+                                || body.match(/[^\n]*(renewed|successfully|renouvel|succ[eè]s)[^\n]*/i);
+                            msg = em ? em[0].trim() : (isError ? 'Error while renewing' : '');
                         }
                         // 抓 "Available: 3j 23h" 这类倒计时，告知何时可续
                         const availMatch = body.match(/Available:\s*[^\n<]{1,30}/i);
@@ -690,8 +697,6 @@ async function goToServerPage(page, user) {
                         const shot = path.join(photoDir, `${safeUser}_renew.png`);
                         try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
 
-                        const isError = /error while renewing|erreur|fail/i.test(msg);
-                        const isSuccess = /renewed|success|succ[eè]s|renouvel/i.test(msg) && !isError;
                         if (isSuccess) {
                             console.log('   >> ✅ 续期成功。');
                             await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n提示: ${msg}`, shot);
