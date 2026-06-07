@@ -14,6 +14,8 @@ const TG_THREAD_ID = process.env.TG_THREAD_ID; // 可选：超级群话题(Topic
 const BASE_URL = (process.env.DASH_BASE_URL || 'https://dashboard.katabump.com').replace(/\/$/, '');
 // 登录后首页直接有 Renew 按钮 (如 aclclouds)，无需点 "See" 进详情页。设 DASH_RENEW_ON_HOME=true 开启
 const RENEW_ON_HOME = process.env.DASH_RENEW_ON_HOME === 'true';
+// 点 Renew 后没有弹窗、只出 toast 提示 (如 aclclouds)。设 DASH_NO_MODAL=true 开启
+const NO_MODAL = process.env.DASH_NO_MODAL === 'true';
 
 async function sendTelegramMessage(message, imagePath = null) {
     if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
@@ -632,6 +634,7 @@ async function goToServerPage(page, user) {
 
             // --- Renew 逻辑 ---
             let renewSuccess = false;
+            let notified = false; // 是否已在循环内发过结果通知 (避免循环后重复发失败通知)
             let captchaFailStreak = 0; // 连续 captcha 失败次数，用于提前退出
             let renewBtnMissStreak = 0; // 连续找不到 Renew 按钮的次数 (通常是页面没加载完)
             const MAX_ATTEMPTS = 6;
@@ -657,8 +660,56 @@ async function goToServerPage(page, user) {
 
                 if (await renewBtn.isVisible()) {
                     await renewBtn.click();
-                    console.log('Renew 按钮已点击。等待模态框...');
+                    console.log('Renew 按钮已点击。');
 
+                    // aclclouds 模式：点 Renew 后无弹窗，只出 toast 提示，直接判断结果
+                    if (NO_MODAL) {
+                        await page.waitForTimeout(3000);
+                        let msg = '';
+                        for (const sel of ['[role="alert"]', '.toast', '.toast-body', '.notification',
+                            '.alert', '.swal2-popup', '.Toastify__toast', '.notyf__toast', '.snackbar']) {
+                            const loc = page.locator(sel).first();
+                            if (await loc.isVisible().catch(() => false)) {
+                                msg = (await loc.innerText().catch(() => '')).trim();
+                                if (msg) break;
+                            }
+                        }
+                        const body = await page.locator('body').innerText().catch(() => '');
+                        if (!msg) {
+                            const m = body.match(/[^\n]*(renew|renouvel|error while renewing|succ)[^\n]*/i);
+                            msg = m ? m[0].trim() : '';
+                        }
+                        // 抓 "Available: 3j 23h" 这类倒计时，告知何时可续
+                        const availMatch = body.match(/Available:\s*[^\n<]{1,30}/i);
+                        const avail = availMatch ? availMatch[0].trim() : '';
+                        console.log(`   >> 续期结果提示: ${msg || '(未捕捉到提示)'}${avail ? ' | ' + avail : ''}`);
+
+                        const photoDir = path.join(process.cwd(), 'screenshots');
+                        if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
+                        const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
+                        const shot = path.join(photoDir, `${safeUser}_renew.png`);
+                        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+
+                        const isError = /error while renewing|erreur|fail/i.test(msg);
+                        const isSuccess = /renewed|success|succ[eè]s|renouvel/i.test(msg) && !isError;
+                        if (isSuccess) {
+                            console.log('   >> ✅ 续期成功。');
+                            await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n提示: ${msg}`, shot);
+                            renewSuccess = true;
+                        } else if (isError) {
+                            // "Error while renewing" 基本就是还没到续期时间
+                            console.log('   >> ⏳ 暂不可续期 (未到时间)。');
+                            await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n原因: 还没到时间 (${msg})${avail ? '\n' + avail : ''}`, shot);
+                            renewSuccess = true; // 视为已处理，非真实失败
+                        } else {
+                            console.log('   >> ⚠️ 未续期 (结果未知)。');
+                            await sendTelegramMessage(`⚠️ *未续期*\n用户: ${user.username}\n提示: ${msg || '未捕捉到提示，详见截图'}`, shot);
+                        }
+                        notified = true;
+                        break; // aclclouds 不需要再循环重试
+                    }
+
+                    console.log('   >> 等待模态框...');
                     const modal = page.locator('#renew-modal');
                     try { await modal.waitFor({ state: 'visible', timeout: 5000 }); } catch (e) {
                         console.log('模态框未出现？重试中...');
@@ -811,8 +862,8 @@ async function goToServerPage(page, user) {
                 }
             }
 
-            // 循环结束仍未成功 → 发送失败通知 (带截图)，不再静默空转
-            if (!renewSuccess) {
+            // 循环结束仍未成功且循环内没发过结果通知 → 发送失败通知 (带截图)，不再静默空转
+            if (!renewSuccess && !notified) {
                 console.log('   >> ❌ 续期未成功 (已用尽重试或提前放弃)。');
                 const fs = require('fs');
                 const path = require('path');

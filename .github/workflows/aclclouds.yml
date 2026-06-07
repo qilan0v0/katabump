@@ -72,6 +72,8 @@ jobs:
         DASH_BASE_URL: https://dash.aclclouds.com
         # aclclouds 登录后首页就有 Renew 按钮，无需点 "See" 进详情页
         DASH_RENEW_ON_HOME: 'true'
+        # aclclouds 点 Renew 后没有弹窗，只出 toast 提示
+        DASH_NO_MODAL: 'true'
         # Secret ACL_USERS_JSON 映射到脚本读取的 USERS_JSON
         # 格式: [{"username": "xxx", "password": "xxx", "serverUrl": "(可选)https://dash.aclclouds.com/servers/edit?id=xxx"}, ...]
         USERS_JSON: ${{ secrets.ACL_USERS_JSON }}
