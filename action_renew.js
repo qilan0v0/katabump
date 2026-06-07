@@ -377,6 +377,28 @@ async function gotoWithRetry(page, url, retries = 3) {
     }
 }
 
+// 进入服务器详情页 (Renew 按钮所在页)。优先读取 "See" 链接的 href 直接导航，
+// 避免点击被广告浮层拦截、或 See 用 target=_blank 开新标签导致原页面留在 Dashboard。
+async function goToServerPage(page) {
+    const seeLink = page.getByRole('link', { name: 'See' }).first();
+    try {
+        await seeLink.waitFor({ state: 'visible', timeout: 15000 });
+    } catch (e) {
+        return false;
+    }
+    const href = await seeLink.getAttribute('href').catch(() => null);
+    if (href) {
+        const fullUrl = new URL(href, page.url()).href;
+        console.log(`   >> 直接打开服务器详情页: ${fullUrl}`);
+        await gotoWithRetry(page, fullUrl);
+    } else {
+        console.log('   >> "See" 无 href，改用点击');
+        try { await seeLink.click(); } catch (e) { }
+        try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
+    }
+    return true;
+}
+
 (async () => {
     const users = getUsers();
     if (users.length === 0) {
@@ -521,13 +543,13 @@ async function gotoWithRetry(page, url, retries = 3) {
 
             console.log('正在寻找 "See" 链接...');
             try {
-                await page.getByRole('link', { name: 'See' }).first().waitFor({ timeout: 15000 });
-                await page.waitForTimeout(1000);
-                await page.getByRole('link', { name: 'See' }).first().click();
-                // 等待跳转到服务器详情页 (Renew 按钮所在页)，避免还没导航完就去找按钮
-                try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
+                const ok = await goToServerPage(page);
+                if (!ok) {
+                    console.log('未找到 "See" 按钮。');
+                    continue;
+                }
             } catch (e) {
-                console.log('未找到 "See" 按钮。');
+                console.log('进入服务器页失败:', e.message);
                 continue;
             }
 
@@ -689,12 +711,11 @@ async function gotoWithRetry(page, url, retries = 3) {
                         console.log('   >> 多次未找到 Renew 按钮，停止重试 (服务器可能已续期或页面异常)。');
                         break;
                     }
-                    // 可能仍停在 Dashboard (See 导航没成功)：若页面上有 "See" 链接，重新点进服务器详情页；否则刷新
+                    // 可能仍停在 Dashboard (See 导航没成功)：若页面上有 "See" 链接，重新进入服务器详情页；否则刷新
                     const seeLink = page.getByRole('link', { name: 'See' }).first();
                     if (await seeLink.isVisible().catch(() => false)) {
-                        console.log('   >> 检测到仍在 Dashboard，重新点击 "See" 进入服务器页...');
-                        try { await seeLink.click(); } catch (e) { }
-                        try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
+                        console.log('   >> 检测到仍在 Dashboard，重新进入服务器页...');
+                        try { await goToServerPage(page); } catch (e) { }
                     } else {
                         await page.reload();
                     }
