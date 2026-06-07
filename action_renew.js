@@ -367,6 +367,37 @@ async function solveAltcha(page, scope) {
     return false;
 }
 
+// 自定义"我不是机器人"复选框 (如 aclclouds: <div class="auth-captcha-inner" role="checkbox">)。
+// 不是第三方验证码，点一下让 aria-checked 变 true 即可。
+async function clickSimpleCaptcha(page, scope) {
+    const box = (scope || page).locator('.auth-captcha-inner, .auth-captcha-box [role="checkbox"]').first();
+    try {
+        await box.waitFor({ state: 'visible', timeout: 5000 });
+    } catch (e) {
+        return false; // 没有这种验证码 (如 katabump 走 Turnstile)
+    }
+    if ((await box.getAttribute('aria-checked').catch(() => null)) === 'true') {
+        console.log('   >> 自定义验证码已勾选');
+        return true;
+    }
+    console.log('   >> 检测到自定义验证码复选框，点击...');
+    try { await box.click(); } catch (e) {
+        try { await box.click({ force: true }); } catch (e2) {
+            console.log('   >> 点击自定义验证码失败:', e2.message);
+            return false;
+        }
+    }
+    for (let i = 0; i < 10; i++) {
+        await page.waitForTimeout(500);
+        if ((await box.getAttribute('aria-checked').catch(() => null)) === 'true') {
+            console.log('   >> ✅ 自定义验证码已勾选');
+            return true;
+        }
+    }
+    console.log('   >> 自定义验证码点击后未确认勾选 (仍继续提交)');
+    return true; // 已点击，继续
+}
+
 // 带重试的页面跳转：瞬时网络错误 (ERR_CONNECTION_CLOSED / RESET / 超时) 时自动重试，
 // 常见于第一个账号、或刚走 v2ray 代理时首个请求被掐断。
 async function gotoWithRetry(page, url, retries = 3) {
@@ -518,16 +549,23 @@ async function goToServerPage(page, user) {
                 await pwdInput.fill(user.password);
                 await page.waitForTimeout(500);
 
-                // --- Cloudflare Turnstile Bypass for Login ---
+                // --- 登录验证码处理 ---
+                // 先试自定义复选框 (aclclouds)，命中就跳过 Turnstile
+                const simpleCaptcha = await clickSimpleCaptcha(page);
+
                 console.log('   >> 正在登录前检查 Turnstile (使用 CDP 绕过)...');
                 let cdpClickResult = false;
-                for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
-                    cdpClickResult = await attemptTurnstileCdp(page);
-                    if (cdpClickResult) break;
-                    await page.waitForTimeout(1000);
+                if (!simpleCaptcha) {
+                    for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
+                        cdpClickResult = await attemptTurnstileCdp(page);
+                        if (cdpClickResult) break;
+                        await page.waitForTimeout(1000);
+                    }
                 }
 
-                if (cdpClickResult) {
+                if (simpleCaptcha) {
+                    console.log('   >> 登录验证码 (自定义复选框) 已处理。');
+                } else if (cdpClickResult) {
                     console.log('   >> 登录 CDP 点击生效。正在等待最多 10秒 Cloudflare 成功标志...');
                     for (let waitSec = 0; waitSec < 10; waitSec++) {
                         const frames = page.frames();
@@ -553,7 +591,8 @@ async function goToServerPage(page, user) {
                 }
                 // --------------------------------------------
 
-                await page.getByRole('button', { name: 'Login', exact: true }).click();
+                // 登录按钮：katabump 是 "Login"，aclclouds 是 "Sign in"
+                await page.getByRole('button', { name: /^(log\s?in|sign\s?in)$/i }).first().click();
 
                 // User Request: Check for incorrect password
                 try {
@@ -628,11 +667,12 @@ async function goToServerPage(page, user) {
                         if (box) await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
                     } catch (e) { }
 
-                    // B. 解决 ALTCHA 验证码 (工作量证明 PoW，点击复选框后浏览器本地计算)
-                    console.log('正在处理 ALTCHA 验证码...');
-                    const altchaOk = await solveAltcha(page, modal);
+                    // B. 解决续期验证码：先试自定义复选框 (aclclouds)，再试 ALTCHA (katabump)
+                    console.log('正在处理续期验证码...');
+                    const simpleOk = await clickSimpleCaptcha(page, modal);
+                    const altchaOk = simpleOk || await solveAltcha(page, modal);
                     if (!altchaOk) {
-                        console.log('   >> ALTCHA 未通过，本轮稍后仍会尝试点击 Renew。');
+                        console.log('   >> 验证码未确认通过，本轮稍后仍会尝试点击 Renew。');
                     }
 
                     // D. 准备点击确认
