@@ -517,8 +517,10 @@ async function solveAltcha(page, scope) {
             // --- Renew 逻辑 ---
             let renewSuccess = false;
             let captchaFailStreak = 0; // 连续 captcha 失败次数，用于提前退出
+            let renewBtnMissStreak = 0; // 连续找不到 Renew 按钮的次数 (通常是页面没加载完)
             const MAX_ATTEMPTS = 6;
             const MAX_CAPTCHA_FAILS = 3;
+            const MAX_BTN_MISS = 3;
             // 2. 一个扁平化的主循环：尝试 Renew 整个流程
             for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
                 let hasCaptchaError = false;
@@ -664,8 +666,16 @@ async function solveAltcha(page, scope) {
                     }
 
                 } else {
-                    console.log('未找到 Renew 按钮 (服务器可能已续期或页面加载错误)。');
-                    break;
+                    renewBtnMissStreak++;
+                    console.log(`未找到 Renew 按钮 (第 ${renewBtnMissStreak}/${MAX_BTN_MISS} 次，可能页面未加载完)。`);
+                    if (renewBtnMissStreak >= MAX_BTN_MISS) {
+                        console.log('   >> 多次未找到 Renew 按钮，停止重试 (服务器可能已续期或页面异常)。');
+                        break;
+                    }
+                    // 刷新服务器页面后重试，给按钮渲染留时间
+                    await page.reload();
+                    await page.waitForTimeout(3000);
+                    continue;
                 }
             }
 
@@ -680,7 +690,7 @@ async function solveAltcha(page, scope) {
                 const failShotPath = path.join(photoDir, `${safeUser}_fail.png`);
                 try { await page.screenshot({ path: failShotPath, fullPage: true }); } catch (e) { }
                 await sendTelegramMessage(
-                    `❌ *续期失败*\n用户: ${user.username}\n原因: Turnstile 验证未通过 (可能是代理 IP 信誉差或验证码升级)`,
+                    `❌ *续期失败*\n用户: ${user.username}\n原因: 未找到 Renew 按钮或验证码未通过 (详见截图)`,
                     failShotPath
                 );
             }
