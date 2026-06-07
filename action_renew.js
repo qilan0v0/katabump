@@ -429,13 +429,16 @@ async function attemptTurnstileCdp(page) {
 
             // --- Renew 逻辑 ---
             let renewSuccess = false;
-            // 2. 一个扁平化的主循环：尝试 Renew 整个流程 (最多 20 次)
-            for (let attempt = 1; attempt <= 20; attempt++) {
+            let captchaFailStreak = 0; // 连续 captcha 失败次数，用于提前退出
+            const MAX_ATTEMPTS = 6;
+            const MAX_CAPTCHA_FAILS = 3;
+            // 2. 一个扁平化的主循环：尝试 Renew 整个流程
+            for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
                 let hasCaptchaError = false;
 
                 // 1. 如果是重试 (attempt > 1)，说明之前失败了或者刚刷新完页面
                 // 我们直接开始寻找 Renew 按钮
-                console.log(`\n[尝试 ${attempt}/20] 正在寻找 Renew 按钮...`);
+                console.log(`\n[尝试 ${attempt}/${MAX_ATTEMPTS}] 正在寻找 Renew 按钮...`);
 
                 const renewBtn = page.getByRole('button', { name: 'Renew', exact: true }).first();
                 try {
@@ -462,10 +465,11 @@ async function attemptTurnstileCdp(page) {
                     // B. 找 Turnstile (小重试)
                     console.log('正在检查 Turnstile (使用 CDP 绕过)...');
                     let cdpClickResult = false;
-                    for (let findAttempt = 0; findAttempt < 30; findAttempt++) {
+                    const MAX_FIND = 8; // 找不到就别空等：8 秒足够，没有就是没有(invisible 模式或 IP 被挑战)
+                    for (let findAttempt = 0; findAttempt < MAX_FIND; findAttempt++) {
                         cdpClickResult = await attemptTurnstileCdp(page);
                         if (cdpClickResult) break;
-                        console.log(`   >> [寻找尝试 ${findAttempt + 1}/30] 尚未找到 Turnstile 复选框...`);
+                        console.log(`   >> [寻找尝试 ${findAttempt + 1}/${MAX_FIND}] 尚未找到 Turnstile 复选框...`);
                         await page.waitForTimeout(1000);
                     }
 
@@ -555,11 +559,18 @@ async function attemptTurnstileCdp(page) {
                         if (renewSuccess) break; // Break loop if not time yet
 
                         if (hasCaptchaError) {
-                            console.log('   >> Error found. Refreshing page to reset Turnstile...');
+                            captchaFailStreak++;
+                            console.log(`   >> Captcha 失败 (连续 ${captchaFailStreak}/${MAX_CAPTCHA_FAILS})。`);
+                            if (captchaFailStreak >= MAX_CAPTCHA_FAILS) {
+                                console.log('   >> 连续多次 captcha 失败，提前放弃 (很可能是代理 IP 信誉差或 Turnstile 升级挑战)。');
+                                break; // 提前退出大循环，不再空转
+                            }
+                            console.log('   >> Refreshing page to reset Turnstile...');
                             await page.reload();
                             await page.waitForTimeout(3000);
                             continue; // 刷新后，重新开始大循环
                         }
+                        captchaFailStreak = 0; // 本轮没有 captcha 错误，重置连败计数
 
                         // F. 检查成功 (模态框消失)
                         await page.waitForTimeout(2000);
@@ -595,6 +606,22 @@ async function attemptTurnstileCdp(page) {
                     console.log('未找到 Renew 按钮 (服务器可能已续期或页面加载错误)。');
                     break;
                 }
+            }
+
+            // 循环结束仍未成功 → 发送失败通知 (带截图)，不再静默空转
+            if (!renewSuccess) {
+                console.log('   >> ❌ 续期未成功 (已用尽重试或提前放弃)。');
+                const fs = require('fs');
+                const path = require('path');
+                const photoDir = path.join(process.cwd(), 'screenshots');
+                if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
+                const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
+                const failShotPath = path.join(photoDir, `${safeUser}_fail.png`);
+                try { await page.screenshot({ path: failShotPath, fullPage: true }); } catch (e) { }
+                await sendTelegramMessage(
+                    `❌ *续期失败*\n用户: ${user.username}\n原因: Turnstile 验证未通过 (可能是代理 IP 信誉差或验证码升级)`,
+                    failShotPath
+                );
             }
         } catch (err) {
             console.error(`Error processing user:`, err);
