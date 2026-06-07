@@ -362,6 +362,21 @@ async function solveAltcha(page, scope) {
     return false;
 }
 
+// 带重试的页面跳转：瞬时网络错误 (ERR_CONNECTION_CLOSED / RESET / 超时) 时自动重试，
+// 常见于第一个账号、或刚走 v2ray 代理时首个请求被掐断。
+async function gotoWithRetry(page, url, retries = 3) {
+    for (let i = 1; i <= retries; i++) {
+        try {
+            await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+            return;
+        } catch (e) {
+            console.warn(`[导航] 打开 ${url} 失败 (第 ${i}/${retries} 次): ${e.message}`);
+            if (i === retries) throw e;
+            await page.waitForTimeout(3000);
+        }
+    }
+}
+
 (async () => {
     const users = getUsers();
     if (users.length === 0) {
@@ -427,17 +442,17 @@ async function solveAltcha(page, scope) {
 
             // --- 登录逻辑 (简略版，逻辑一致) ---
             if (page.url().includes('dashboard')) {
-                await page.goto('https://dashboard.katabump.com/auth/logout');
+                await gotoWithRetry(page, 'https://dashboard.katabump.com/auth/logout');
                 await page.waitForTimeout(2000);
             }
             // 总是先去登录页
-            await page.goto('https://dashboard.katabump.com/auth/login');
+            await gotoWithRetry(page, 'https://dashboard.katabump.com/auth/login');
             await page.waitForTimeout(2000);
             if (page.url().includes('dashboard')) {
                 // 如果登出没成功，再次登出
-                await page.goto('https://dashboard.katabump.com/auth/logout');
+                await gotoWithRetry(page, 'https://dashboard.katabump.com/auth/logout');
                 await page.waitForTimeout(2000);
-                await page.goto('https://dashboard.katabump.com/auth/login');
+                await gotoWithRetry(page, 'https://dashboard.katabump.com/auth/login');
             }
 
             console.log('正在输入凭据...');
