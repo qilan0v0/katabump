@@ -35,7 +35,7 @@ jobs:
         cd $HOME/v2ray
         # 下载最新 v2ray-linux-64
         V2RAY_URL=$(curl -fsSL https://api.github.com/repos/v2fly/v2ray-core/releases/latest \
-          | grep "browser_download_url" | grep "v2ray-linux-64.zip" | cut -d '"' -f 4)
+          | grep "browser_download_url" | grep 'v2ray-linux-64\.zip"' | cut -d '"' -f 4)
         echo "下载 v2ray: $V2RAY_URL"
         curl -fsSL -o v2ray.zip "$V2RAY_URL"
         unzip -o v2ray.zip
