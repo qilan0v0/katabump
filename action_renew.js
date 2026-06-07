@@ -645,7 +645,11 @@ async function goToServerPage(page, user) {
                 // 我们直接开始寻找 Renew 按钮
                 console.log(`\n[尝试 ${attempt}/${MAX_ATTEMPTS}] 正在寻找 Renew 按钮...`);
 
-                const renewBtn = page.getByRole('button', { name: 'Renew', exact: true }).first();
+                // Renew 可能是按钮，也可能是链接 (aclclouds 表格里是 <a>/自定义元素)
+                const renewBtn = page.getByRole('button', { name: 'Renew', exact: true })
+                    .or(page.getByRole('link', { name: 'Renew', exact: true }))
+                    .or(page.locator('a,button').filter({ hasText: /^Renew$/i }))
+                    .first();
                 try {
                     // 稍微等待一下，防止页面刚刷新还没渲染出来
                     await renewBtn.waitFor({ state: 'visible', timeout: 5000 });
