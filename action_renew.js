@@ -370,34 +370,37 @@ async function solveAltcha(page, scope) {
 }
 
 // 自定义"我不是机器人"复选框 (如 aclclouds: <div class="auth-captcha-inner" role="checkbox">)。
-// 不是第三方验证码，点一下让 aria-checked 变 true 即可。
+// 不是第三方验证码，点一下让 aria-checked 变 true 即可。点击偶发不生效，所以多次重试直到勾上。
 async function clickSimpleCaptcha(page, scope) {
-    const box = (scope || page).locator('.auth-captcha-inner, .auth-captcha-box [role="checkbox"]').first();
+    const root = (scope || page);
+    const box = root.locator('.auth-captcha-inner, .auth-captcha-box [role="checkbox"]').first();
     try {
         await box.waitFor({ state: 'visible', timeout: 5000 });
     } catch (e) {
         return false; // 没有这种验证码 (如 katabump 走 Turnstile)
     }
-    if ((await box.getAttribute('aria-checked').catch(() => null)) === 'true') {
+    const isChecked = async () => (await box.getAttribute('aria-checked').catch(() => null)) === 'true';
+    if (await isChecked()) {
         console.log('   >> 自定义验证码已勾选');
         return true;
     }
-    console.log('   >> 检测到自定义验证码复选框，点击...');
-    try { await box.click(); } catch (e) {
-        try { await box.click({ force: true }); } catch (e2) {
-            console.log('   >> 点击自定义验证码失败:', e2.message);
-            return false;
+    await page.waitForTimeout(800); // 等验证码 JS 把点击处理器挂上
+    for (let attempt = 1; attempt <= 5; attempt++) {
+        console.log(`   >> 点击自定义验证码 (第 ${attempt}/5 次)...`);
+        // 既点内框也点复选标记，提高命中率
+        try { await box.click({ timeout: 4000 }); } catch (e) {
+            try { await box.click({ force: true }); } catch (e2) { }
+        }
+        for (let i = 0; i < 6; i++) {
+            await page.waitForTimeout(500);
+            if (await isChecked()) {
+                console.log('   >> ✅ 自定义验证码已勾选');
+                return true;
+            }
         }
     }
-    for (let i = 0; i < 10; i++) {
-        await page.waitForTimeout(500);
-        if ((await box.getAttribute('aria-checked').catch(() => null)) === 'true') {
-            console.log('   >> ✅ 自定义验证码已勾选');
-            return true;
-        }
-    }
-    console.log('   >> 自定义验证码点击后未确认勾选 (仍继续提交)');
-    return true; // 已点击，继续
+    console.log('   >> ⚠️ 自定义验证码多次点击仍未勾选');
+    return false;
 }
 
 // 带重试的页面跳转：瞬时网络错误 (ERR_CONNECTION_CLOSED / RESET / 超时) 时自动重试，
