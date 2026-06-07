@@ -8,43 +8,63 @@ const http = require('http');
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
+const TG_THREAD_ID = process.env.TG_THREAD_ID; // 可选：超级群话题(Topic)的 message_thread_id
 
 async function sendTelegramMessage(message, imagePath = null) {
-    if (!TG_BOT_TOKEN || !TG_CHAT_ID) return;
+    if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
+        console.warn('[Telegram] 未配置 TG_BOT_TOKEN / TG_CHAT_ID，跳过推送。');
+        return;
+    }
+
+    // 把 Telegram 返回的真实错误原因提取出来 (axios 的 e.message 只会显示 "status code 400")
+    const tgErr = (e) => (e.response && e.response.data && e.response.data.description)
+        ? `${e.response.data.error_code} ${e.response.data.description}`
+        : e.message;
 
     // 1. 发送文字消息
     try {
         const url = `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`;
+        // 公共参数：设置了话题 ID 才带 message_thread_id
+        const base = { chat_id: TG_CHAT_ID };
+        if (TG_THREAD_ID) base.message_thread_id = Number(TG_THREAD_ID);
         try {
             await axios.post(url, {
-                chat_id: TG_CHAT_ID,
+                ...base,
                 text: message,
                 parse_mode: 'Markdown'
             });
             console.log('[Telegram] Message sent.');
         } catch (e) {
             // Markdown 解析失败 (如用户名含 _ * 等字符会导致 400)，退回纯文本重发
-            console.warn('[Telegram] Markdown 发送失败，改用纯文本重试:', e.message);
+            console.warn('[Telegram] Markdown 发送失败，改用纯文本重试:', tgErr(e));
             await axios.post(url, {
-                chat_id: TG_CHAT_ID,
+                ...base,
                 text: message
             });
             console.log('[Telegram] Message sent (plain text).');
         }
     } catch (e) {
-        console.error('[Telegram] Failed to send message:', e.message);
+        console.error('[Telegram] 文字推送失败:', tgErr(e),
+            '\n   >> 提示: "chat not found" 通常表示 TG_CHAT_ID 填错，或你还没主动给该 bot 发过一条消息。');
     }
 
     // 2. 发送图片 (如果有)
     if (imagePath && fs.existsSync(imagePath)) {
         console.log('[Telegram] Sending photo...');
         // 使用 curl 发送图片，避免引入额外的 multipart 依赖
-        // 注意：Windows 本地测试可能需要环境支持 curl，GitHub Actions (Ubuntu) 默认支持
-        const cmd = `curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto" -F chat_id="${TG_CHAT_ID}" -F photo="@${imagePath}"`;
+        // -s 静默但仍要拿到响应体判断真伪 (curl 在 HTTP 400 时进程仍返回 0，不能只看 err)
+        const threadArg = TG_THREAD_ID ? ` -F message_thread_id="${TG_THREAD_ID}"` : '';
+        const cmd = `curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto" -F chat_id="${TG_CHAT_ID}"${threadArg} -F photo="@${imagePath}"`;
         await new Promise(resolve => {
-            exec(cmd, (err) => {
-                if (err) console.error('[Telegram] Failed to send photo via curl:', err.message);
-                else console.log('[Telegram] Photo sent.');
+            exec(cmd, (err, stdout) => {
+                if (err) {
+                    console.error('[Telegram] 图片推送失败 (curl 错误):', err.message);
+                } else if (stdout && stdout.includes('"ok":true')) {
+                    console.log('[Telegram] Photo sent.');
+                } else {
+                    // Telegram 返回了错误 JSON，但 curl 进程是成功的 —— 之前的"假成功"就出在这
+                    console.error('[Telegram] 图片推送被 Telegram 拒绝:', (stdout || '').slice(0, 300));
+                }
                 resolve();
             });
         });

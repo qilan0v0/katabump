@@ -2,16 +2,22 @@
 
 [English Version](README_EN.md) | [中文说明](README.md)
 
-This project is an automation script for renewing Katabump servers. It utilizes Playwright and CDP (Chrome DevTools Protocol) to simulate user interactions, effectively specifically targeting the Cloudflare Turnstile CAPTCHA to ensure continuous server service.
+This project is an automation script for renewing Katabump servers. It utilizes Playwright and CDP (Chrome DevTools Protocol) to simulate user interactions and automatically handle CAPTCHAs to ensure continuous server service.
+
+> **About the CAPTCHAs**: Katabump uses two different CAPTCHAs:
+> - **Login page**: Cloudflare Turnstile (iframe) — bypassed via CDP-simulated mouse clicks.
+> - **Renew dialog**: ALTCHA (Proof-of-Work) — the script clicks the checkbox and the browser solves it locally. **It does NOT depend on exit IP reputation.**
 
 It supports both **Windows Local Execution** and **GitHub Actions Cloud Execution**.
 
 ## ✨ Features
 
-- **Smart Bypass**: Uses CDP to simulate realistic mouse trajectories and clicks, combined with screen coordinate spoofing, to achieve a high success rate in bypassing Cloudflare Turnstile.
-- **Auto-Retry**: Built-in strict verification retry mechanism. It automatically restarts the verification flow if the CAPTCHA check fails.
+- **Dual CAPTCHA handling**: CDP bypass for Cloudflare Turnstile on login; automatic ALTCHA (PoW) solving on renew.
+- **Auto-retry + fail-fast**: Built-in retry; gives up early after repeated CAPTCHA failures to avoid wasting CI minutes.
 - **Multi-User**: Supports batch renewal for multiple accounts.
-- **Cloud/Local**: Can run on your local machine or automatically on part of a daily schedule using GitHub Actions.
+- **Telegram notifications**: Pushes a message (with screenshot) on success / failure / skip, including supergroup Topic support.
+- **Proxy support**: Plain HTTP proxy, or auto-install v2ray in the cloud and use a node as the proxy.
+- **Cloud/Local**: Run on your local machine or automatically on a daily schedule via GitHub Actions.
 
 ---
 
@@ -27,15 +33,27 @@ This is the easiest way to set it up once and have it run automatically every da
     [{"username": "your_email@example.com", "password": "your_password"}, {"username": "another@example.com", "password": "pwd"}]
     ```
 5.  **(Optional) Configure Proxy**:
-    If you need to run behind a proxy (e.g. to avoid IP blocks), add a Secret named `HTTP_PROXY`.
+    If you need to run behind a proxy (e.g. to avoid IP blocks), choose one of two options:
+
+    **Option A: Plain HTTP proxy** — add a Secret named `HTTP_PROXY`.
     -   **Format**:
         -   No Auth: `http://ip:port`
         -   With Auth: `http://username:password@ip:port`
-    -   **Note**: The script validates the proxy before use. Default is disabled.
+    -   The script validates the proxy and logs the exit IP before use.
+
+    **Option B: v2ray node** — add a Secret named `V2RAY_VMESS` with a `vmess://` or `vless://` share link.
+    -   The workflow downloads v2ray in the cloud, turns the node into a local HTTP proxy (`127.0.0.1:10809`), and sets `HTTP_PROXY` to it automatically.
+    -   On startup it verifies the proxy via `curl` and prints the exit IP; it aborts on failure.
+    -   If both `V2RAY_VMESS` and `HTTP_PROXY` are set, **v2ray takes precedence**.
+    > Note: ALTCHA (renew) ignores IP reputation, so **a proxy is not actually needed just for renewing**; it mainly helps when login's Cloudflare or the site itself is geo-blocked. Disabled by default.
+
 6.  **(Optional) Telegram Notifications**:
     If you want to receive Telegram notifications (with screenshots) upon renewal success, failure, or skip, add the following Secrets:
     -   `TG_BOT_TOKEN`: Your Telegram Bot Token (from @BotFather).
     -   `TG_CHAT_ID`: Your Chat ID (User ID or Group ID).
+    -   `TG_THREAD_ID`: **(Optional)** The `message_thread_id` of a supergroup Topic; when set, messages are posted under that topic. Leave empty for regular DMs/groups.
+    > **Get your Chat ID**: First send any message to your bot, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` and find `"chat":{"id":...}` in the JSON.
+    > **Common error**: A `400 chat not found` in the logs usually means a wrong `TG_CHAT_ID`, or you haven't messaged the bot yet.
     > If not configured, notifications will be skipped.
 ### 4. Results & Screenshots
 - **Logs**: Check real-time logs in the `Run Renew Script` step.
@@ -121,4 +139,5 @@ The script will auto-launch Chrome (if needed), process each account, and save a
 *   `renew.js`: Main script for Windows local execution.
 *   `action_renew.js`: Dedicated script for GitHub Actions environment (Linux/Headless adapted).
 *   `.github/workflows/renew.yml`: Configuration file for GitHub Actions scheduled tasks.
+*   `.github/scripts/gen-v2ray-config.js`: Parses a `vmess://` / `vless://` share link into a v2ray config with a local HTTP inbound.
 *   `login.json`: (Manually created) Stores account info for local runs.

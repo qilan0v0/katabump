@@ -2,15 +2,21 @@
 
 [English Version](README_EN.md) | [中文说明](README.md)
 
-这是一个用于自动续期 Katabump 服务器的自动化脚本。它利用 Playwright 和 CDP (Chrome DevTools Protocol) 技术来模拟用户操作，能够有效绕过 Cloudflare Turnstile 验证码，确保持续的服务器服务。
+这是一个用于自动续期 Katabump 服务器的自动化脚本。它利用 Playwright 和 CDP (Chrome DevTools Protocol) 技术来模拟用户操作，自动处理验证码，确保持续的服务器服务。
+
+> **验证码说明**：Katabump 在两个环节用了不同的验证码——
+> - **登录页**：Cloudflare Turnstile（iframe），脚本通过 CDP 模拟真实鼠标点击绕过。
+> - **续期弹窗**：ALTCHA（工作量证明 PoW），脚本点击复选框后由浏览器本地完成计算，**不依赖出口 IP 信誉**。
 
 支持 **Windows 本地运行** 和 **GitHub Actions 云端运行**。
 
 ## ✨ 特性
 
-- **智能过盾**: 通过 CDP 协议模拟真实鼠标轨迹和点击行为，结合屏幕坐标伪造，高成功率绕过 Cloudflare Turnstile。
-- **自动重试**: 内置严格的验证重试机制，如果验证失败会自动重启验证流程。
+- **双验证码处理**: 登录用 CDP 绕过 Cloudflare Turnstile；续期自动求解 ALTCHA（PoW）。
+- **自动重试 + 快速失败**: 内置重试机制，连续多次验证失败会提前放弃，避免空转浪费 CI 时间。
 - **多用户支持**: 支持配置多个账号批量续期。
+- **Telegram 通知**: 续期成功 / 失败 / 跳过时推送消息（含截图），支持超级群话题(Topic)。
+- **代理支持**: 支持普通 HTTP 代理，也支持云端自动安装 v2ray 用节点作为代理。
 - **云端/本地**: 既可以在本地电脑跑，也可以利用 GitHub Actions 每天定时自动跑。
 
 ---
@@ -27,16 +33,27 @@
    [{"username": "your_email@example.com", "password": "your_password"}, {"username": "another@example.com", "password": "pwd"}]
    ```
 5. **(可选) 配置代理**:
-   如果 GitHub Actions 的 IP 被屏蔽，或者你想使用特定的 IP 访问，可以添加名为 `HTTP_PROXY` 的 Secret。
+   如果 GitHub Actions 的 IP 被屏蔽，或者你想使用特定的 IP 访问，有两种方式（二选一）：
+
+   **方式 A：普通 HTTP 代理** —— 添加名为 `HTTP_PROXY` 的 Secret。
    - **格式**:
      - 无认证: `http://ip:port`
-     -带认证: `http://username:password@ip:port`
-   - **说明**: 脚本会自动检测代理有效性，如果支持认证会自动处理。默认不启用。
+     - 带认证: `http://username:password@ip:port`
+   - 脚本会自动检测代理有效性并打印出口 IP。
+
+   **方式 B：v2ray 节点** —— 添加名为 `V2RAY_VMESS` 的 Secret，值为节点的 `vmess://` 或 `vless://` 分享链接。
+   - Workflow 会在云端自动下载 v2ray，把节点解析为本地 HTTP 代理（`127.0.0.1:10809`），并自动设置 `HTTP_PROXY` 指向它。
+   - 启动时会用 `curl` 验证代理可用并打印出口 IP，失败则中止。
+   - 同时设置了 `V2RAY_VMESS` 和 `HTTP_PROXY` 时，**优先使用 v2ray**。
+   > 注意：续期的 ALTCHA 不看 IP 信誉，所以**仅为续期的话其实不需要代理**；代理主要用于登录的 Cloudflare 或站点本身被墙的场景。默认不启用。
 
 6. **(可选) Telegram 消息推送**:
    如果你希望在续期成功、失败或跳过时收到 Telegram 通知（包含截图），请配置以下 Secret：
    - `TG_BOT_TOKEN`: 你的 Telegram Bot Token (从 @BotFather 获取)。
    - `TG_CHAT_ID`: 你的 Chat ID (用户 ID 或群组 ID)。
+   - `TG_THREAD_ID`: **(可选)** 超级群「话题(Topic)」的 `message_thread_id`，设置后消息会发到指定话题下。普通私聊/群组无需填写。
+   > **获取 Chat ID**: 先用自己的账号给 bot 发一条任意消息，再访问 `https://api.telegram.org/bot<TOKEN>/getUpdates`，在返回 JSON 里找 `"chat":{"id":...}`。
+   > **常见报错**: 若日志出现 `400 chat not found`，多半是 `TG_CHAT_ID` 填错，或你还没主动给 bot 发过消息。
    > 如果未配置，脚本将跳过发送通知。
 
 ### 4. 运行结果与截图
@@ -134,4 +151,5 @@ node renew.js
 * `renew.js`: Windows 本地运行的主程序。
 * `action_renew.js`: 专门用于 GitHub Actions 环境的脚本（适配 Linux/Headless）。
 * `.github/workflows/renew.yml`: GitHub Actions 的定时任务配置文件。
+* `.github/scripts/gen-v2ray-config.js`: 把 `vmess://` / `vless://` 分享链接解析为带本地 HTTP 入站的 v2ray 配置。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
