@@ -509,6 +509,8 @@ async function solveAltcha(page, scope) {
                 await page.getByRole('link', { name: 'See' }).first().waitFor({ timeout: 15000 });
                 await page.waitForTimeout(1000);
                 await page.getByRole('link', { name: 'See' }).first().click();
+                // 等待跳转到服务器详情页 (Renew 按钮所在页)，避免还没导航完就去找按钮
+                try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
             } catch (e) {
                 console.log('未找到 "See" 按钮。');
                 continue;
@@ -672,8 +674,15 @@ async function solveAltcha(page, scope) {
                         console.log('   >> 多次未找到 Renew 按钮，停止重试 (服务器可能已续期或页面异常)。');
                         break;
                     }
-                    // 刷新服务器页面后重试，给按钮渲染留时间
-                    await page.reload();
+                    // 可能仍停在 Dashboard (See 导航没成功)：若页面上有 "See" 链接，重新点进服务器详情页；否则刷新
+                    const seeLink = page.getByRole('link', { name: 'See' }).first();
+                    if (await seeLink.isVisible().catch(() => false)) {
+                        console.log('   >> 检测到仍在 Dashboard，重新点击 "See" 进入服务器页...');
+                        try { await seeLink.click(); } catch (e) { }
+                        try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
+                    } else {
+                        await page.reload();
+                    }
                     await page.waitForTimeout(3000);
                     continue;
                 }
