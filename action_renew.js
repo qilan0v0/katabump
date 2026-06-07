@@ -10,6 +10,11 @@ const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const TG_THREAD_ID = process.env.TG_THREAD_ID; // 可选：超级群话题(Topic)的 message_thread_id
 
+// 目标面板基础地址：默认 katabump；aclclouds 等同款面板用 DASH_BASE_URL 覆盖
+const BASE_URL = (process.env.DASH_BASE_URL || 'https://dashboard.katabump.com').replace(/\/$/, '');
+// 登录后首页直接有 Renew 按钮 (如 aclclouds)，无需点 "See" 进详情页。设 DASH_RENEW_ON_HOME=true 开启
+const RENEW_ON_HOME = process.env.DASH_RENEW_ON_HOME === 'true';
+
 async function sendTelegramMessage(message, imagePath = null) {
     if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
         console.warn('[Telegram] 未配置 TG_BOT_TOKEN / TG_CHAT_ID，跳过推送。');
@@ -486,19 +491,22 @@ async function goToServerPage(page, user) {
                 await page.addInitScript(INJECTED_SCRIPT);
             }
 
+            // 清掉上一个账号的会话，确保干净登录 (多账号时避免串号)
+            try { await context.clearCookies(); } catch (e) { }
+
             // --- 登录逻辑 (简略版，逻辑一致) ---
             if (page.url().includes('dashboard')) {
-                await gotoWithRetry(page, 'https://dashboard.katabump.com/auth/logout');
+                await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
                 await page.waitForTimeout(2000);
             }
             // 总是先去登录页
-            await gotoWithRetry(page, 'https://dashboard.katabump.com/auth/login');
+            await gotoWithRetry(page, `${BASE_URL}/auth/login`);
             await page.waitForTimeout(2000);
             if (page.url().includes('dashboard')) {
                 // 如果登出没成功，再次登出
-                await gotoWithRetry(page, 'https://dashboard.katabump.com/auth/logout');
+                await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
                 await page.waitForTimeout(2000);
-                await gotoWithRetry(page, 'https://dashboard.katabump.com/auth/login');
+                await gotoWithRetry(page, `${BASE_URL}/auth/login`);
             }
 
             console.log('正在输入凭据...');
@@ -565,17 +573,22 @@ async function goToServerPage(page, user) {
                 console.log('登录错误:', e.message);
             }
 
-            console.log('正在寻找 "See" 链接...');
-            try {
-                const res = await goToServerPage(page, user);
-                if (!res.ok) {
-                    console.log('未找到 "See" 按钮。');
+            if (RENEW_ON_HOME) {
+                // aclclouds 等：登录后首页就有 Renew 按钮，无需点 See
+                console.log('首页直接续期模式 (DASH_RENEW_ON_HOME)，跳过 "See"。');
+            } else {
+                console.log('正在寻找 "See" 链接...');
+                try {
+                    const res = await goToServerPage(page, user);
+                    if (!res.ok) {
+                        console.log('未找到 "See" 按钮。');
+                        continue;
+                    }
+                    page = res.page; // 可能切换到了新标签页
+                } catch (e) {
+                    console.log('进入服务器页失败:', e.message);
                     continue;
                 }
-                page = res.page; // 可能切换到了新标签页
-            } catch (e) {
-                console.log('进入服务器页失败:', e.message);
-                continue;
             }
 
             // --- Renew 逻辑 ---
@@ -736,13 +749,18 @@ async function goToServerPage(page, user) {
                         console.log('   >> 多次未找到 Renew 按钮，停止重试 (服务器可能已续期或页面异常)。');
                         break;
                     }
-                    // 可能仍停在 Dashboard：有 serverUrl 或页面上有 "See" 链接，就重新进入服务器详情页；否则刷新
-                    const seeLink = page.getByRole('link', { name: 'See' }).first();
-                    if (user.serverUrl || await seeLink.isVisible().catch(() => false)) {
-                        console.log('   >> 重新进入服务器页...');
-                        try { const res = await goToServerPage(page, user); page = res.page; } catch (e) { }
-                    } else {
+                    if (RENEW_ON_HOME) {
+                        // 首页续期模式：直接刷新首页等 Renew 按钮渲染
                         await page.reload();
+                    } else {
+                        // 可能仍停在 Dashboard：有 serverUrl 或页面上有 "See" 链接，就重新进入服务器详情页；否则刷新
+                        const seeLink = page.getByRole('link', { name: 'See' }).first();
+                        if (user.serverUrl || await seeLink.isVisible().catch(() => false)) {
+                            console.log('   >> 重新进入服务器页...');
+                            try { const res = await goToServerPage(page, user); page = res.page; } catch (e) { }
+                        } else {
+                            await page.reload();
+                        }
                     }
                     await page.waitForTimeout(3000);
                     continue;

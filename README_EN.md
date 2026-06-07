@@ -147,7 +147,10 @@ The script will auto-launch Chrome (if needed), process each account, and save a
 *   `.github/scripts/gen-v2ray-config.js`: Parses a `vmess://` / `vless://` share link into a v2ray config with a local HTTP inbound.
 *   `lunes_login.js`: Lunes Host (`betadash.lunes.host`) login keep-alive script (cloud; passes Cloudflare Turnstile, opens dashboard, screenshots, notifies).
 *   `.github/workflows/lunes.yml`: Scheduled Lunes login keep-alive (every Monday at 09:00 Beijing Time).
+*   `.github/workflows/aclclouds.yml`: ACLClouds (`dash.aclclouds.com`) renewal schedule (same panel as katabump, reuses `action_renew.js`).
 *   `login.json`: (Manually created) Stores account info for local runs.
+
+> **`action_renew.js` is parameterized**: defaults to the katabump panel; set the `DASH_BASE_URL` env var (e.g. `https://dash.aclclouds.com`) to reuse it for the same panel software. katabump leaves it unset and behaves unchanged.
 
 ---
 
@@ -162,3 +165,16 @@ Logs into Lunes Host once a week to keep accounts active (prevents inactivity pa
 - **CAPTCHA**: The login page uses **Cloudflare Turnstile**; the script bypasses it via CDP-simulated clicks.
 - **Proxy / Telegram**: Reuses the same `V2RAY_VMESS` / `HTTP_PROXY` / `TG_BOT_TOKEN` / `TG_CHAT_ID` / `TG_THREAD_ID` secrets.
 - **Trigger**: Scheduled daily, or run manually from the Actions tab (`Lunes Auto Login`). Screenshots land in the `lunes-screenshots` artifact.
+
+---
+
+## ☁️ ACLClouds Renewal (Add-on)
+
+`dash.aclclouds.com` runs the **same panel** as katabump, so it reuses `action_renew.js` (switched via `DASH_BASE_URL`). Difference: on aclclouds the **Renew button is on the home page right after login**, so no "See" step is needed — the workflow sets `DASH_RENEW_ON_HOME=true` to skip it (login → Renew → ALTCHA).
+
+- **Account Secret**: Add `ACL_USERS_JSON`, same format as `USERS_JSON` (`serverUrl` **not needed** in home-renew mode):
+  ```json
+  [{"username": "a@b.com", "password": "pwd"}]
+  ```
+- **Proxy / Telegram**: Reuses the same `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` secrets.
+- **Trigger**: Daily at 10:00 Beijing Time, or manually (`ACLClouds Auto Renew`). Screenshots in the `aclclouds-screenshots` artifact.

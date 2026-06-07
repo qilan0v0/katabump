@@ -159,7 +159,10 @@ node renew.js
 * `.github/scripts/gen-v2ray-config.js`: 把 `vmess://` / `vless://` 分享链接解析为带本地 HTTP 入站的 v2ray 配置。
 * `lunes_login.js`: Lunes Host (`betadash.lunes.host`) 登录保活脚本（云端，登录过 Cloudflare Turnstile 后进 dashboard 截图通知）。
 * `.github/workflows/lunes.yml`: Lunes 登录保活的定时任务（每周一北京时间 09:00）。
+* `.github/workflows/aclclouds.yml`: ACLClouds (`dash.aclclouds.com`) 续期定时任务（与 katabump 同款面板，复用 `action_renew.js`）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
+
+> **`action_renew.js` 已参数化**：默认面板是 katabump；设置环境变量 `DASH_BASE_URL`（如 `https://dash.aclclouds.com`）即可复用到同款面板。katabump 不设此变量，行为不变。
 
 ---
 
@@ -174,3 +177,16 @@ node renew.js
 - **验证码**：登录页是 **Cloudflare Turnstile**，脚本通过 CDP 模拟点击绕过。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_BOT_TOKEN` / `TG_CHAT_ID` / `TG_THREAD_ID` Secret。
 - **触发**：每天定时，或在 Actions 页手动 "Run workflow" (选 `Lunes Auto Login`)。截图在 `lunes-screenshots` artifact。
+
+---
+
+## ☁️ ACLClouds 续期 (附加)
+
+`dash.aclclouds.com` 与 katabump 是**同款面板**，复用 `action_renew.js`（通过 `DASH_BASE_URL` 切换地址）。区别：aclclouds **登录后首页就有 Renew 按钮**，无需点 "See"——工作流里已设 `DASH_RENEW_ON_HOME=true` 跳过该步，登录→Renew→ALTCHA。
+
+- **账号 Secret**：新建 `ACL_USERS_JSON`，格式同 `USERS_JSON`（首页续期模式**无需** `serverUrl`）：
+  ```json
+  [{"username": "a@b.com", "password": "pwd"}]
+  ```
+- **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
+- **触发**：每天北京时间 10:00，或手动 "Run workflow" (选 `ACLClouds Auto Renew`)。截图在 `aclclouds-screenshots` artifact。
