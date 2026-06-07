@@ -293,6 +293,55 @@ async function attemptTurnstileCdp(page) {
     return false;
 }
 
+// 解决 ALTCHA 验证码 (续期弹窗使用)：ALTCHA 是工作量证明(PoW)机制，
+// 点击复选框后由浏览器本地计算 SHA-256 难题自动完成，不依赖 IP 信誉。
+async function solveAltcha(page, scope) {
+    scope = scope || page;
+    // ALTCHA 复选框 (Playwright 默认穿透 open shadow DOM)。优先用 altcha 专属选择器，
+    // 续期模态框内只有这一个复选框，最后的通用选择器作为兜底。
+    const checkbox = scope.locator(
+        'altcha-widget input[type="checkbox"], input.altcha-checkbox, #altcha_checkbox, input[type="checkbox"]'
+    ).first();
+
+    try {
+        await checkbox.waitFor({ state: 'visible', timeout: 8000 });
+    } catch (e) {
+        console.log('   >> 未找到 ALTCHA 复选框');
+        return false;
+    }
+
+    if (await checkbox.isChecked().catch(() => false)) {
+        console.log('   >> ALTCHA 已是勾选状态');
+        return true;
+    }
+
+    console.log('   >> 找到 ALTCHA 复选框，点击中...');
+    try {
+        await checkbox.click({ timeout: 5000 });
+    } catch (e) {
+        try { await checkbox.click({ force: true }); } catch (e2) {
+            console.log('   >> 点击 ALTCHA 复选框失败:', e2.message);
+            return false;
+        }
+    }
+
+    // 等待 PoW 完成：复选框打勾 / 出现 "Verified" / 隐藏 input[name=altcha] 拿到 payload
+    for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(1000);
+        const isChecked = await checkbox.isChecked().catch(() => false);
+        const verified = await scope.getByText('Verified', { exact: false }).isVisible().catch(() => false);
+        let payload = '';
+        try { payload = await page.locator('input[name="altcha"]').first().inputValue(); } catch (e) { }
+        if (isChecked || verified || (payload && payload.length > 10)) {
+            console.log(`   >> ✅ ALTCHA 通过 (checked=${isChecked}, verified=${verified}, payload=${payload ? '有' : '无'})`);
+            return true;
+        }
+        console.log(`   >> 等待 ALTCHA PoW 计算... (${i + 1}/20)`);
+    }
+    console.log('   >> ⚠️ ALTCHA 验证超时');
+    return false;
+}
+
 (async () => {
     const users = getUsers();
     if (users.length === 0) {
@@ -480,37 +529,11 @@ async function attemptTurnstileCdp(page) {
                         if (box) await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
                     } catch (e) { }
 
-                    // B. 找 Turnstile (小重试)
-                    console.log('正在检查 Turnstile (使用 CDP 绕过)...');
-                    let cdpClickResult = false;
-                    const MAX_FIND = 8; // 找不到就别空等：8 秒足够，没有就是没有(invisible 模式或 IP 被挑战)
-                    for (let findAttempt = 0; findAttempt < MAX_FIND; findAttempt++) {
-                        cdpClickResult = await attemptTurnstileCdp(page);
-                        if (cdpClickResult) break;
-                        console.log(`   >> [寻找尝试 ${findAttempt + 1}/${MAX_FIND}] 尚未找到 Turnstile 复选框...`);
-                        await page.waitForTimeout(1000);
-                    }
-
-                    let isTurnstileSuccess = false;
-                    if (cdpClickResult) {
-                        console.log('   >> CDP 点击生效。等待 8秒 Cloudflare 检查...');
-                        await page.waitForTimeout(8000);
-                    } else {
-                        console.log('   >> 重试后仍未确认 Turnstile 复选框。');
-                    }
-
-                    // C. 检查 Success 标志
-                    const frames = page.frames();
-                    for (const f of frames) {
-                        if (f.url().includes('cloudflare')) {
-                            try {
-                                if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) {
-                                    console.log('   >> 在 Turnstile iframe 中检测到 "Success!"。');
-                                    isTurnstileSuccess = true;
-                                    break;
-                                }
-                            } catch (e) { }
-                        }
+                    // B. 解决 ALTCHA 验证码 (工作量证明 PoW，点击复选框后浏览器本地计算)
+                    console.log('正在处理 ALTCHA 验证码...');
+                    const altchaOk = await solveAltcha(page, modal);
+                    if (!altchaOk) {
+                        console.log('   >> ALTCHA 未通过，本轮稍后仍会尝试点击 Renew。');
                     }
 
                     // D. 准备点击确认
