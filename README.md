@@ -32,6 +32,11 @@
    ```json
    [{"username": "your_email@example.com", "password": "your_password"}, {"username": "another@example.com", "password": "pwd"}]
    ```
+   - **(可选) `serverUrl`**：若云端点击 "See" 无法跳转到服务器详情页（常见于无头环境），可为账号指定**续期页直达地址**，脚本会直接打开它，跳过点击 See：
+     ```json
+     [{"username": "a@b.com", "password": "pwd", "serverUrl": "https://dashboard.katabump.com/servers/edit?id=305327"}]
+     ```
+     > 获取方法：在浏览器登录后点进你的服务器页面，复制地址栏的 URL（形如 `https://dashboard.katabump.com/servers/edit?id=你的服务器ID`）。不填则默认点击 "See"。
 5. **(可选) 配置代理**:
    如果 GitHub Actions 的 IP 被屏蔽，或者你想使用特定的 IP 访问，有两种方式（二选一）：
 

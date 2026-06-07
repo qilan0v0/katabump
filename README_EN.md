@@ -32,6 +32,11 @@ This is the easiest way to set it up once and have it run automatically every da
     ```json
     [{"username": "your_email@example.com", "password": "your_password"}, {"username": "another@example.com", "password": "pwd"}]
     ```
+    - **(Optional) `serverUrl`**: If clicking "See" fails to open the server page in the cloud (common in headless mode), set a **direct renew-page URL** per account; the script opens it directly and skips clicking See:
+      ```json
+      [{"username": "a@b.com", "password": "pwd", "serverUrl": "https://dashboard.katabump.com/servers/edit?id=305327"}]
+      ```
+      > How to find it: log in via a browser, open your server page, and copy the address bar URL (looks like `https://dashboard.katabump.com/servers/edit?id=YOUR_SERVER_ID`). If omitted, the script falls back to clicking "See".
 5.  **(Optional) Configure Proxy**:
     If you need to run behind a proxy (e.g. to avoid IP blocks), choose one of two options:
 

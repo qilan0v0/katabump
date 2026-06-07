@@ -378,8 +378,15 @@ async function gotoWithRetry(page, url, retries = 3) {
 }
 
 // 进入服务器详情页 (Renew 按钮所在页)。返回 { ok, page }，page 可能是切换后的新标签页。
-// "See" 链接的 href 是 "#"，靠 JS 跳转，所以必须点击触发；并处理 JS 开新标签(window.open)的情况。
-async function goToServerPage(page) {
+// 优先用账号配置的 serverUrl 直达；否则点击 "See" (href="#"，靠 JS 跳转，并处理开新标签的情况)。
+async function goToServerPage(page, user) {
+    // 0. 账号配置了 serverUrl → 直接导航，最稳，绕开 See 点击
+    if (user && user.serverUrl) {
+        console.log(`   >> 使用配置的续期页 URL: ${user.serverUrl}`);
+        await gotoWithRetry(page, user.serverUrl);
+        return { ok: true, page };
+    }
+
     const seeLink = page.getByRole('link', { name: 'See' }).first();
     try {
         await seeLink.waitFor({ state: 'visible', timeout: 15000 });
@@ -560,7 +567,7 @@ async function goToServerPage(page) {
 
             console.log('正在寻找 "See" 链接...');
             try {
-                const res = await goToServerPage(page);
+                const res = await goToServerPage(page, user);
                 if (!res.ok) {
                     console.log('未找到 "See" 按钮。');
                     continue;
@@ -729,11 +736,11 @@ async function goToServerPage(page) {
                         console.log('   >> 多次未找到 Renew 按钮，停止重试 (服务器可能已续期或页面异常)。');
                         break;
                     }
-                    // 可能仍停在 Dashboard (See 导航没成功)：若页面上有 "See" 链接，重新进入服务器详情页；否则刷新
+                    // 可能仍停在 Dashboard：有 serverUrl 或页面上有 "See" 链接，就重新进入服务器详情页；否则刷新
                     const seeLink = page.getByRole('link', { name: 'See' }).first();
-                    if (await seeLink.isVisible().catch(() => false)) {
-                        console.log('   >> 检测到仍在 Dashboard，重新进入服务器页...');
-                        try { const res = await goToServerPage(page); page = res.page; } catch (e) { }
+                    if (user.serverUrl || await seeLink.isVisible().catch(() => false)) {
+                        console.log('   >> 重新进入服务器页...');
+                        try { const res = await goToServerPage(page, user); page = res.page; } catch (e) { }
                     } else {
                         await page.reload();
                     }
