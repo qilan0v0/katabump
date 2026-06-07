@@ -145,4 +145,20 @@ The script will auto-launch Chrome (if needed), process each account, and save a
 *   `action_renew.js`: Dedicated script for GitHub Actions environment (Linux/Headless adapted).
 *   `.github/workflows/renew.yml`: Configuration file for GitHub Actions scheduled tasks.
 *   `.github/scripts/gen-v2ray-config.js`: Parses a `vmess://` / `vless://` share link into a v2ray config with a local HTTP inbound.
+*   `lunes_login.js`: Lunes Host (`betadash.lunes.host`) login keep-alive script (cloud; passes Cloudflare Turnstile, opens dashboard, screenshots, notifies).
+*   `.github/workflows/lunes.yml`: Scheduled Lunes login keep-alive (daily at 09:00 Beijing Time).
 *   `login.json`: (Manually created) Stores account info for local runs.
+
+---
+
+## 🌙 Lunes Host Login Keep-Alive (Add-on)
+
+Logs into Lunes Host once a day to keep accounts active (prevents inactivity password reset) and sends a Telegram notification.
+
+- **Account Secret**: Add `LUNES_USERS_JSON`, same format as `USERS_JSON`:
+  ```json
+  [{"username": "a@b.com", "password": "pwd"}, {"username": "c@d.com", "password": "pwd2"}]
+  ```
+- **CAPTCHA**: The login page uses **Cloudflare Turnstile**; the script bypasses it via CDP-simulated clicks.
+- **Proxy / Telegram**: Reuses the same `V2RAY_VMESS` / `HTTP_PROXY` / `TG_BOT_TOKEN` / `TG_CHAT_ID` / `TG_THREAD_ID` secrets.
+- **Trigger**: Scheduled daily, or run manually from the Actions tab (`Lunes Auto Login`). Screenshots land in the `lunes-screenshots` artifact.
