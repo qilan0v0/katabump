@@ -6,6 +6,10 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch: # 允许手动触发
 
+# 提前切到 Node.js 24 运行 actions/*，消除 Node 20 弃用警告 (2026-06-16 起 GitHub 默认强制)
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   renew:
     runs-on: ubuntu-latest
