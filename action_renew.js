@@ -15,12 +15,22 @@ async function sendTelegramMessage(message, imagePath = null) {
     // 1. 发送文字消息
     try {
         const url = `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`;
-        await axios.post(url, {
-            chat_id: TG_CHAT_ID,
-            text: message,
-            parse_mode: 'Markdown'
-        });
-        console.log('[Telegram] Message sent.');
+        try {
+            await axios.post(url, {
+                chat_id: TG_CHAT_ID,
+                text: message,
+                parse_mode: 'Markdown'
+            });
+            console.log('[Telegram] Message sent.');
+        } catch (e) {
+            // Markdown 解析失败 (如用户名含 _ * 等字符会导致 400)，退回纯文本重发
+            console.warn('[Telegram] Markdown 发送失败，改用纯文本重试:', e.message);
+            await axios.post(url, {
+                chat_id: TG_CHAT_ID,
+                text: message
+            });
+            console.log('[Telegram] Message sent (plain text).');
+        }
     } catch (e) {
         console.error('[Telegram] Failed to send message:', e.message);
     }
@@ -147,7 +157,15 @@ async function checkProxy() {
         }
 
         await axios.get('https://www.google.com', axiosConfig);
-        console.log('[代理] 连接成功！');
+
+        // 额外请求一个 IP 回显服务，打印出口 IP，确认确实走了 v2ray 节点
+        try {
+            const ipResp = await axios.get('https://api.ipify.org?format=json', axiosConfig);
+            const exitIp = ipResp.data && ipResp.data.ip ? ipResp.data.ip : '未知';
+            console.log(`[代理] 连接成功！出口 IP: ${exitIp}`);
+        } catch (e) {
+            console.log('[代理] 连接成功！(出口 IP 获取失败，但代理可用)');
+        }
         return true;
     } catch (error) {
         console.error(`[代理] 连接失败: ${error.message}`);
