@@ -158,14 +158,14 @@ node renew.js
 * `.github/workflows/renew.yml`: GitHub Actions 的定时任务配置文件。
 * `.github/scripts/gen-v2ray-config.js`: 把 `vmess://` / `vless://` 分享链接解析为带本地 HTTP 入站的 v2ray 配置。
 * `lunes_login.js`: Lunes Host (`betadash.lunes.host`) 登录保活脚本（云端，登录过 Cloudflare Turnstile 后进 dashboard 截图通知）。
-* `.github/workflows/lunes.yml`: Lunes 登录保活的定时任务（每天北京时间 09:00）。
+* `.github/workflows/lunes.yml`: Lunes 登录保活的定时任务（每周一北京时间 09:00）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
 
 ---
 
 ## 🌙 Lunes Host 登录保活 (附加)
 
-防止 Lunes Host 账号因长期不活跃被重置密码，每天自动登录一次进 dashboard 并发 Telegram 通知。
+防止 Lunes Host 账号因长期不活跃被重置密码，每周一自动登录一次进 dashboard 并发 Telegram 通知。
 
 - **账号 Secret**：新建 `LUNES_USERS_JSON`，格式同 `USERS_JSON`：
   ```json

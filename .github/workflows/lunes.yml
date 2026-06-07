@@ -2,8 +2,8 @@ name: Lunes Auto Login
 
 on:
   schedule:
-    # 每天 UTC 1点 (北京时间 9点) 运行，与 katabump 错开
-    - cron: '0 1 * * *'
+    # 每周一 UTC 1点 (北京时间周一 9点) 运行一次
+    - cron: '0 1 * * 1'
   workflow_dispatch: # 允许手动触发
 
 # 提前切到 Node.js 24 运行 actions/*，消除 Node 20 弃用警告
