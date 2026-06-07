@@ -74,6 +74,7 @@ jobs:
       env:
         # 将 USERS_JSON 配置在 GitHub Repository Secrets 中
         # 格式: [{"username": "xxx", "password": "xxx"}, ...]
+        PROJECT_NAME: Katabump
         USERS_JSON: ${{ secrets.USERS_JSON }}
         # 若设置了 V2RAY_VMESS 则使用本地 v2ray HTTP 代理，否则回退到 secrets.HTTP_PROXY
         HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}

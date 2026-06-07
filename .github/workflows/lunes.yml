@@ -68,6 +68,7 @@ jobs:
 
     - name: Run Lunes Login Script
       env:
+        PROJECT_NAME: Lunes
         # Secret LUNES_USERS_JSON 格式: [{"username": "xxx", "password": "xxx"}, ...]
         LUNES_USERS_JSON: ${{ secrets.LUNES_USERS_JSON }}
         # 若设置了 V2RAY_VMESS 则使用本地 v2ray HTTP 代理，否则回退到 secrets.HTTP_PROXY

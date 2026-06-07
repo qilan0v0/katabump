@@ -68,6 +68,7 @@ jobs:
 
     - name: Run Renew Script (ACLClouds)
       env:
+        PROJECT_NAME: ACLClouds
         # aclclouds 与 katabump 是同款面板，复用 action_renew.js，仅切换基础地址与账号
         DASH_BASE_URL: https://dash.aclclouds.com
         # aclclouds 登录后首页就有 Renew 按钮，无需点 "See" 进详情页
