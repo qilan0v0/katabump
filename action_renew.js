@@ -377,26 +377,43 @@ async function gotoWithRetry(page, url, retries = 3) {
     }
 }
 
-// 进入服务器详情页 (Renew 按钮所在页)。优先读取 "See" 链接的 href 直接导航，
-// 避免点击被广告浮层拦截、或 See 用 target=_blank 开新标签导致原页面留在 Dashboard。
+// 进入服务器详情页 (Renew 按钮所在页)。返回 { ok, page }，page 可能是切换后的新标签页。
+// "See" 链接的 href 是 "#"，靠 JS 跳转，所以必须点击触发；并处理 JS 开新标签(window.open)的情况。
 async function goToServerPage(page) {
     const seeLink = page.getByRole('link', { name: 'See' }).first();
     try {
         await seeLink.waitFor({ state: 'visible', timeout: 15000 });
     } catch (e) {
-        return false;
+        return { ok: false, page };
     }
+    await page.waitForTimeout(1500); // 等页面 JS (See 的点击处理器) 初始化完成
+
     const href = await seeLink.getAttribute('href').catch(() => null);
-    if (href) {
+    const realHref = href && href.trim() !== '' && !href.trim().startsWith('#')
+        && !href.trim().toLowerCase().startsWith('javascript');
+    if (realHref) {
         const fullUrl = new URL(href, page.url()).href;
         console.log(`   >> 直接打开服务器详情页: ${fullUrl}`);
         await gotoWithRetry(page, fullUrl);
-    } else {
-        console.log('   >> "See" 无 href，改用点击');
-        try { await seeLink.click(); } catch (e) { }
-        try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
+        return { ok: true, page };
     }
-    return true;
+
+    // href 不可用 (#/js)：点击触发 JS 跳转，同时监听是否开了新标签页
+    console.log('   >> "See" 通过 JS 跳转，点击中...');
+    const ctx = page.context();
+    const popupP = ctx.waitForEvent('page', { timeout: 8000 }).catch(() => null);
+    try { await seeLink.click(); } catch (e) { console.log('   >> 点击 See 失败:', e.message); }
+    const popup = await popupP;
+    if (popup) {
+        console.log('   >> See 打开了新标签页，切换过去');
+        try { await popup.addInitScript(INJECTED_SCRIPT); } catch (e) { }
+        try { await popup.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
+        console.log(`   >> 新标签 URL: ${popup.url()}`);
+        return { ok: true, page: popup };
+    }
+    try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
+    console.log(`   >> 点击后当前 URL: ${page.url()}`);
+    return { ok: true, page };
 }
 
 (async () => {
@@ -543,11 +560,12 @@ async function goToServerPage(page) {
 
             console.log('正在寻找 "See" 链接...');
             try {
-                const ok = await goToServerPage(page);
-                if (!ok) {
+                const res = await goToServerPage(page);
+                if (!res.ok) {
                     console.log('未找到 "See" 按钮。');
                     continue;
                 }
+                page = res.page; // 可能切换到了新标签页
             } catch (e) {
                 console.log('进入服务器页失败:', e.message);
                 continue;
@@ -715,7 +733,7 @@ async function goToServerPage(page) {
                     const seeLink = page.getByRole('link', { name: 'See' }).first();
                     if (await seeLink.isVisible().catch(() => false)) {
                         console.log('   >> 检测到仍在 Dashboard，重新进入服务器页...');
-                        try { await goToServerPage(page); } catch (e) { }
+                        try { const res = await goToServerPage(page); page = res.page; } catch (e) { }
                     } else {
                         await page.reload();
                     }
