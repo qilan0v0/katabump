@@ -162,6 +162,8 @@ node renew.js
 * `.github/workflows/aclclouds.yml`: ACLClouds (`dash.aclclouds.com`) 续期定时任务（与 katabump 同款面板，复用 `action_renew.js`）。
 * `searcade_login.js`: Searcade (`searcade.com`) 登录保活脚本（云端，经 userveria OAuth 两步登录）。
 * `.github/workflows/searcade.yml`: Searcade 登录保活定时任务（每周一北京时间 11:00）。
+* `weirdhost_renew.js`: Weirdhost (`hub.weirdhost.xyz`) 续期脚本（云端，过 CF 全屏验证 + 韩文面板登录 + serverUrl 点 연장하기）。
+* `.github/workflows/weirdhost.yml`: Weirdhost 续期定时任务（每天北京时间 12:00）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
 
 > **`action_renew.js` 已参数化**：默认面板是 katabump；设置环境变量 `DASH_BASE_URL`（如 `https://dash.aclclouds.com`）即可复用到同款面板。katabump 不设此变量，行为不变。
@@ -205,3 +207,16 @@ node renew.js
   ```
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每周一北京时间 11:00，或手动 "Run workflow" (选 `Searcade Auto Login`)。截图在 `searcade-screenshots` artifact。
+
+---
+
+## 🇰🇷 Weirdhost 续期 (附加)
+
+`hub.weirdhost.xyz` 是韩文 Pterodactyl 面板，打开有 **Cloudflare 全屏验证**（脚本用 CDP 点击通过），登录需勾选同意框并点 `로그인`，续期在服务器页点 `연장하기`（未到时间时按钮禁用）。
+
+- **账号 Secret**：新建 `WEIRDHOST_USERS_JSON`，**需要 `serverUrl`**（服务器页地址，形如 `https://hub.weirdhost.xyz/server/xxxxxxx`）：
+  ```json
+  [{"username": "a@b.com", "password": "pwd", "serverUrl": "https://hub.weirdhost.xyz/server/e7681d43"}]
+  ```
+- **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
+- **触发**：每天北京时间 12:00，或手动 "Run workflow" (选 `Weirdhost Auto Renew`)。截图在 `weirdhost-screenshots` artifact。
