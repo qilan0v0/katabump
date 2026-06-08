@@ -286,7 +286,8 @@ function getUsers() {
 async function gotoWithRetry(page, url, retries = 3) {
     for (let i = 1; i <= retries; i++) {
         try {
-            await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+            // 用 domcontentloaded 而非 load：有广告/长连接的页面 load 事件可能永不触发导致卡死
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
             return;
         } catch (e) {
             console.warn(`[导航] 打开 ${url} 失败 (第 ${i}/${retries} 次): ${e.message}`);
@@ -596,7 +597,11 @@ async function discoverServers(page) {
                     await sendTelegramMessage(`${head}\n用户: ${user.username}\n服务器: ${sid}\n${r.message}`, r.shot);
                 } catch (e) {
                     console.error(`服务器 ${serverUrl} 续期出错:`, e.message);
-                    await sendTelegramMessage(`❌ *续期出错*\n用户: ${user.username}\n服务器: ${serverUrl}\n错误: ${e.message}`);
+                    const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || 'srv';
+                    const errShot = path.join(photoDir, `weirdhost_${safeUser}_${sid}_timeout.png`);
+                    try { await page.screenshot({ path: errShot, fullPage: true }); } catch (e2) { }
+                    await sendTelegramMessage(`❌ *续期出错*\n用户: ${user.username}\n服务器: ${sid}\n错误: ${e.message}`,
+                        fs.existsSync(errShot) ? errShot : null);
                 }
             }
         } catch (err) {
