@@ -297,12 +297,23 @@ async function gotoWithRetry(page, url, retries = 3) {
     }
 }
 
+// 给任意 promise 套超时(模块级复用)
+function _race(p, ms) {
+    return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
+}
+
 // Cloudflare Turnstile (iframe 内复选框) 的 CDP 点击绕过
 async function attemptTurnstileCdp(page) {
     const frames = page.frames();
     for (const frame of frames) {
+        // 跳过实时终端等无关 frame，且 evaluate 套超时，避免在挂死的 frame(如 xterm 控制台)上卡住
+        const fu = (frame.url() || '');
+        if (fu && !/cloudflare|turnstile|challenges|hcaptcha|^about:|^$/i.test(fu)) {
+            // 只在主文档和 CF 相关 frame 上找 __turnstile_data
+            if (frame !== page.mainFrame()) continue;
+        }
         try {
-            const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
+            const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
             if (data) {
                 console.log('>> 在 frame 中发现 Turnstile。比例:', data);
                 const iframeElement = await frame.frameElement();
@@ -327,15 +338,16 @@ async function attemptTurnstileCdp(page) {
 
 // 通过 Cloudflare 全屏验证：循环点击 Turnstile，直到目标元素 (readyLocator) 出现
 async function passCloudflare(page, readyLocator, label) {
+    const ready = async () => await _race(readyLocator().isVisible(), 5000).catch(() => false);
     for (let i = 0; i < 20; i++) {
-        if (await readyLocator().isVisible().catch(() => false)) {
+        if (await ready()) {
             if (i > 0) console.log(`   >> 已通过 Cloudflare (${label})`);
             return true;
         }
-        await attemptTurnstileCdp(page);
+        await _race(attemptTurnstileCdp(page), 10000).catch(() => false);
         await page.waitForTimeout(2000);
     }
-    return await readyLocator().isVisible().catch(() => false);
+    return await ready();
 }
 
 // 登录单个账号
@@ -398,7 +410,9 @@ async function renewServer(page, user, serverUrl, photoDir) {
     console.log(`打开续费页: ${serverUrl}`);
     await gotoWithRetry(page, serverUrl);
     await page.waitForTimeout(2000);
-    await passCloudflare(page, renewLoc, '续费页');
+    // 续期按钮已在就不必再过 CF (避免在实时控制台页上空跑遍历 frame)
+    const already = await _race(renewLoc().isVisible(), 5000).catch(() => false);
+    if (!already) await passCloudflare(page, renewLoc, '续费页');
 
     const renewBtn = renewLoc();
     try { await renewBtn.waitFor({ state: 'visible', timeout: 15000 }); }
