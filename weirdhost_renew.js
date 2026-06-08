@@ -496,6 +496,15 @@ async function loginOnce(page, user) {
             const renewBtn = renewLoc();
             await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
 
+            // React 可能先渲染 disabled 再启用：轮询最多 8 秒等按钮变可点，避免误判"暂不可续期"。
+            // 若状态文字出现 "지금"/"가능"(现在可续) 也视为可点。
+            for (let w = 0; w < 8; w++) {
+                const dis = await renewBtn.isDisabled().catch(() => true);
+                const st = await page.locator('[class*="RenewBox2__StatusText"]').first().innerText().catch(() => '');
+                if (!dis || /지금|가능/.test(st)) break;
+                await page.waitForTimeout(1000);
+            }
+
             // 取到期时间 (유통기한 2026-06-15 18:02:54) 和倒计时 (X시간 후에 연장할수있어요)
             const readExpiry = async () => {
                 let t = await page.locator('[class*="RenewBox2__ExpiryText"]').first().innerText().catch(() => '');
@@ -512,7 +521,8 @@ async function loginOnce(page, user) {
             const countdownLine = statusText ? `\n${statusText}` : '';
 
             const shot = path.join(photoDir, `weirdhost_${safeUser}_renew.png`);
-            const disabled = await renewBtn.isDisabled().catch(() => false);
+            const renewableByStatus = /지금|가능/.test(statusText); // "지금 연장이 가능해요" = 现在可续
+            const disabled = (await renewBtn.isDisabled().catch(() => false)) && !renewableByStatus;
 
             if (disabled) {
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
@@ -520,7 +530,14 @@ async function loginOnce(page, user) {
                 await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n原因: 还没到时间${countdownLine}${expiryLine}`, shot);
             } else {
                 console.log('   >> 点击 연장하기 续期...');
-                try { await renewBtn.click(); } catch (e) { await renewBtn.click({ force: true }); }
+                // 若属性仍显示 disabled (但状态说可续)，用 force 直接点，避免 Playwright 等待可点性超时
+                const stillDisabled = await renewBtn.isDisabled().catch(() => false);
+                try {
+                    if (stillDisabled) await renewBtn.click({ force: true });
+                    else await renewBtn.click({ timeout: 8000 });
+                } catch (e) {
+                    try { await renewBtn.click({ force: true }); } catch (e2) { console.log('   >> 点击续期失败:', e2.message); }
+                }
                 await page.waitForTimeout(3000);
                 const after = await page.locator('body').innerText().catch(() => '');
                 const nowDisabled = await renewLoc().isDisabled().catch(() => false);
