@@ -402,17 +402,28 @@ async function loginOnce(page, user) {
             const renewBtn = renewLoc();
             await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
 
-            const body = await page.locator('body').innerText().catch(() => '');
-            const expiry = (body.match(/유효기간[^\n]*/) || [])[0] || '';
-            const countdown = (body.match(/[^\n]*후에[^\n]*연장[^\n]*/) || [])[0] || '';
+            // 取到期时间 (유통기한 2026-06-15 18:02:54) 和倒计时 (X시간 후에 연장할수있어요)
+            const readExpiry = async () => {
+                let t = await page.locator('[class*="RenewBox2__ExpiryText"]').first().innerText().catch(() => '');
+                if (!t) {
+                    const body = await page.locator('body').innerText().catch(() => '');
+                    t = (body.match(/유[통효]기한[^\n]*/) || [])[0] || '';
+                }
+                const dt = (t.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/) || [])[0] || '';
+                return { raw: t.trim(), dt };
+            };
+            const statusText = (await page.locator('[class*="RenewBox2__StatusText"]').first().innerText().catch(() => '')).trim();
+            let { dt: expiryDt } = await readExpiry();
+            const expiryLine = expiryDt ? `\n到期: ${expiryDt}` : '';
+            const countdownLine = statusText ? `\n${statusText}` : '';
 
             const shot = path.join(photoDir, `weirdhost_${safeUser}_renew.png`);
             const disabled = await renewBtn.isDisabled().catch(() => false);
 
             if (disabled) {
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                console.log(`   >> ⏳ 暂不可续期 (按钮禁用)。${countdown || expiry}`);
-                await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n原因: 还没到时间${countdown ? '\n' + countdown.trim() : ''}${expiry ? '\n' + expiry.trim() : ''}`, shot);
+                console.log(`   >> ⏳ 暂不可续期 (按钮禁用)。到期:${expiryDt} ${statusText}`);
+                await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n原因: 还没到时间${countdownLine}${expiryLine}`, shot);
             } else {
                 console.log('   >> 点击 연장하기 续期...');
                 try { await renewBtn.click(); } catch (e) { await renewBtn.click({ force: true }); }
@@ -420,13 +431,16 @@ async function loginOnce(page, user) {
                 const after = await page.locator('body').innerText().catch(() => '');
                 const nowDisabled = await renewLoc().isDisabled().catch(() => false);
                 const ok = /성공|완료|renewed|success/i.test(after) || nowDisabled;
+                // 续期后到期时间通常会更新，重新读一次
+                const newExpiry = (await readExpiry()).dt;
+                const newExpiryLine = newExpiry ? `\n到期: ${newExpiry}` : expiryLine;
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
                 if (ok) {
-                    console.log('   >> ✅ 续期成功。');
-                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n服务器已续期！${expiry ? '\n' + expiry.trim() : ''}`, shot);
+                    console.log(`   >> ✅ 续期成功。到期: ${newExpiry || expiryDt}`);
+                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n服务器已续期！${newExpiryLine}`, shot);
                 } else {
                     console.log('   >> ⚠️ 已点击续期，结果未知。');
-                    await sendTelegramMessage(`⚠️ *续期结果未知*\n用户: ${user.username}\n已点击 연장하기，详见截图`, shot);
+                    await sendTelegramMessage(`⚠️ *续期结果未知*\n用户: ${user.username}\n已点击 연장하기，详见截图${newExpiryLine}`, shot);
                 }
             }
         } catch (err) {
