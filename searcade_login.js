@@ -193,21 +193,47 @@ async function gotoWithRetry(page, url, retries = 3) {
 // 登录单个账号：返回 { ok, info }
 async function loginOnce(page, user) {
     await gotoWithRetry(page, HOME_URL);
-    await page.waitForTimeout(2000);
+    try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) { }
+    await page.waitForTimeout(1500);
 
-    // 1. 点首页右上角 "Login" (可能是链接或按钮)
-    console.log('点击首页 Login...');
-    const loginEntry = page.getByRole('link', { name: /^log\s?in$/i })
-        .or(page.getByRole('button', { name: /^log\s?in$/i }))
-        .or(page.locator('a,button').filter({ hasText: /^Login$/i }))
-        .first();
-    await loginEntry.waitFor({ state: 'visible', timeout: 15000 });
-    await loginEntry.click();
+    // 关掉可能的 cookie / 弹窗，避免遮挡
+    for (const t of [/accept/i, /got it/i, /agree/i, /i understand/i, /close/i]) {
+        const b = page.getByRole('button', { name: t }).first();
+        if (await b.isVisible().catch(() => false)) { try { await b.click(); } catch (e) { } }
+    }
+
+    // 1. 进入登录：优先按 href 找登录链接 (含 login/account/auth) 直接导航；否则点文本/图标
+    console.log('进入 Login...');
+    let entered = false;
+    const hrefLink = page.locator('a[href*="login" i], a[href*="account" i], a[href*="userveria" i], a[href*="/auth" i]').first();
+    if (await hrefLink.count().catch(() => 0)) {
+        const href = await hrefLink.getAttribute('href').catch(() => null);
+        if (href) {
+            const full = new URL(href, page.url()).href;
+            console.log(`   >> 通过 href 进入登录: ${full}`);
+            await gotoWithRetry(page, full);
+            entered = true;
+        }
+    }
+    if (!entered) {
+        const loginEntry = page.getByRole('link', { name: /log\s?in/i })
+            .or(page.getByRole('button', { name: /log\s?in/i }))
+            .or(page.locator('a,button,[role="button"]').filter({ hasText: /log\s?in/i }))
+            .first();
+        try {
+            await loginEntry.waitFor({ state: 'visible', timeout: 10000 });
+            await loginEntry.click();
+        } catch (e) {
+            console.log('   >> 未找到 Login 入口，直接尝试已知登录路径...');
+            await gotoWithRetry(page, 'https://searcade.com/accounts/userveria/login/');
+        }
+    }
 
     // 等待跳转到 userveria 授权页
     try { await page.waitForURL(/userveria\.com/i, { timeout: 20000 }); } catch (e) {
         console.log('   >> 未跳到 userveria，当前 URL:', page.url());
     }
+    try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (e) { }
     await page.waitForTimeout(1500);
 
     // 2. 输入邮箱 → "Continue with email"
