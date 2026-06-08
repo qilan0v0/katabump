@@ -212,11 +212,25 @@ node renew.js
 
 ## 🇰🇷 Weirdhost 续期 (附加)
 
-`hub.weirdhost.xyz` 是韩文 Pterodactyl 面板，打开有 **Cloudflare 全屏验证**（脚本用 CDP 点击通过），登录需勾选同意框并点 `로그인`，续期在服务器页点 `연장하기`（未到时间时按钮禁用）。
+`hub.weirdhost.xyz` 是韩文 Pterodactyl 面板，打开有 **Cloudflare 全屏验证**（脚本 CDP 点击通过），登录需勾选同意框并点 `로그인`，续期在服务器页点 `연장하기`（未到时间按钮禁用）。
 
-- **账号 Secret**：新建 `WEIRDHOST_USERS_JSON`，**需要 `serverUrl`**（服务器页地址，形如 `https://hub.weirdhost.xyz/server/xxxxxxx`）：
+> ⚠️ **登录有 Google reCAPTCHA（会弹"选公交车"图片挑战），无法自动破解。** 因此采用 **Cloudflare KV 缓存登录 cookie**：首次手动登录把 cookie 存进 KV，之后每次工作流注入 cookie **免登录**直接续期；仅当 cookie 失效才需重新登录（脚本会发 TG 提醒你手动更新）。weirdhost 登录态长期有效，所以基本一劳永逸。
+
+- **账号 Secret `WEIRDHOST_USERS_JSON`**（需要 `serverUrl`）：
   ```json
   [{"username": "a@b.com", "password": "pwd", "serverUrl": "https://hub.weirdhost.xyz/server/e7681d43"}]
   ```
+- **Cloudflare KV Secret**（三者都配齐才启用 cookie 缓存）：
+  - `CF_ACCOUNT_ID`：Cloudflare 账户 ID
+  - `CF_KV_NAMESPACE_ID`：KV 命名空间 ID（在 CF 控制台 Workers & Pages → KV 新建一个）
+  - `CF_API_TOKEN`：API Token，需 **Workers KV Storage: Edit** 权限
+- **初始化 cookie（首次，手动一次）**：
+  1. 在真实浏览器登录 `hub.weirdhost.xyz`；
+  2. 用 Cookie-Editor 等扩展把 `hub.weirdhost.xyz` 的 cookie **Export as JSON** 存为 `cookies.json`；
+  3. 上传到 KV（key 为 `weirdhost_cookie_<用户名>`，用户名里非字母数字替换成 `_`，如 `ql@282820.xyz` → `weirdhost_cookie_ql_282820_xyz`）：
+     ```bash
+     curl -X PUT "https://api.cloudflare.com/client/v4/accounts/<CF_ACCOUNT_ID>/storage/kv/namespaces/<CF_KV_NAMESPACE_ID>/values/weirdhost_cookie_ql_282820_xyz" \
+       -H "Authorization: Bearer <CF_API_TOKEN>" --data-binary @cookies.json
+     ```
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间 12:00，或手动 "Run workflow" (选 `Weirdhost Auto Renew`)。截图在 `weirdhost-screenshots` artifact。
