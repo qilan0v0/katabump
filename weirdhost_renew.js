@@ -525,8 +525,11 @@ async function discoverServers(page) {
             try { await context.clearCookies(); } catch (e) { }
 
             // 目标服务器：优先 serverUrls(数组) / serverUrl(单个)，都没有则登录后自动发现
-            let targets = Array.isArray(user.serverUrls) ? user.serverUrls.filter(Boolean)
-                : (user.serverUrl ? [user.serverUrl] : null);
+            // 只保留含 /server/ 的有效 URL，过滤空串/脏数据，避免卡死
+            const validUrl = (u) => typeof u === 'string' && /\/server\/[^/?#]+/i.test(u.trim());
+            let targets = Array.isArray(user.serverUrls)
+                ? user.serverUrls.map(u => (u || '').trim()).filter(validUrl)
+                : (validUrl(user.serverUrl) ? [user.serverUrl.trim()] : null);
             const renewLoc = () => page.locator('button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3').first();
 
             // 1. 注入 KV cookie 尝试免登录
