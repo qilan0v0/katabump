@@ -381,6 +381,13 @@ async function loginOnce(page, user) {
     return !/\/auth\/login/i.test(page.url());
 }
 
+// 给 promise 套整体超时，避免单台卡住拖垮整个流程
+function withTimeout(promise, ms, label) {
+    let t;
+    const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${label} 超时(${ms}ms)`)), ms); });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
 // 续期单个服务器，返回 { status: 'success'|'wait'|'unknown'|'error', message, shot }
 async function renewServer(page, user, serverUrl, photoDir) {
     const renewLoc = () => page.locator('button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3').first();
@@ -580,7 +587,7 @@ async function discoverServers(page) {
             // 5. 逐个服务器续期，各自发通知
             for (const serverUrl of targets) {
                 try {
-                    const r = await renewServer(page, user, serverUrl, photoDir);
+                    const r = await withTimeout(renewServer(page, user, serverUrl, photoDir), 120000, `续期 ${serverUrl}`);
                     const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || serverUrl;
                     const head = { success: '✅ *续期成功*', wait: '⏳ *暂不可续期*', unknown: '⚠️ *续期结果未知*', error: '❌ *续期出错*' }[r.status] || '❓';
                     await sendTelegramMessage(`${head}\n用户: ${user.username}\n服务器: ${sid}\n${r.message}`, r.shot);
