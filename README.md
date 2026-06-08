@@ -216,10 +216,14 @@ node renew.js
 
 > ⚠️ **登录有 Google reCAPTCHA（会弹"选公交车"图片挑战），无法自动破解。** 因此采用 **Cloudflare KV 缓存登录 cookie**：首次手动登录把 cookie 存进 KV，之后每次工作流注入 cookie **免登录**直接续期；仅当 cookie 失效才需重新登录（脚本会发 TG 提醒你手动更新）。weirdhost 登录态长期有效，所以基本一劳永逸。
 
-- **账号 Secret `WEIRDHOST_USERS_JSON`**（需要 `serverUrl`）：
+- **账号 Secret `WEIRDHOST_USERS_JSON`**（一个账号多台服务器用 `serverUrls` 数组列出；单台也可用 `serverUrl`）：
   ```json
-  [{"username": "a@b.com", "password": "pwd", "serverUrl": "https://hub.weirdhost.xyz/server/e7681d43"}]
+  [{"username": "a@b.com", "password": "pwd", "serverUrls": [
+    "https://hub.weirdhost.xyz/server/e7681d43",
+    "https://hub.weirdhost.xyz/server/81a4f4ab"
+  ]}]
   ```
+  > 每台服务器单独续期、单独发 TG 通知（含服务器 ID + 到期时间 + 截图）。`serverUrls`/`serverUrl` 都不填时会登录后自动发现账号下所有服务器。
 - **Cloudflare KV Secret**（三者都配齐才启用 cookie 缓存）：
   - `CF_ACCOUNT_ID`：Cloudflare 账户 ID
   - `CF_KV_NAMESPACE_ID`：KV 命名空间 ID（在 CF 控制台 Workers & Pages → KV 新建一个）
