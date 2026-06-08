@@ -12,6 +12,7 @@ const { spawn, exec } = require('child_process');
 const http = require('http');
 
 const ACCOUNT_URL = 'https://hub.weirdhost.xyz/account';
+const DASHBOARD_URL = 'https://hub.weirdhost.xyz/';
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
@@ -380,6 +381,84 @@ async function loginOnce(page, user) {
     return !/\/auth\/login/i.test(page.url());
 }
 
+// 续期单个服务器，返回 { status: 'success'|'wait'|'unknown'|'error', message, shot }
+async function renewServer(page, user, serverUrl, photoDir) {
+    const renewLoc = () => page.locator('button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3').first();
+    const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || 'srv';
+    const shot = path.join(photoDir, `weirdhost_${user.username.replace(/[^a-z0-9]/gi, '_')}_${sid}.png`);
+
+    console.log(`打开续费页: ${serverUrl}`);
+    await gotoWithRetry(page, serverUrl);
+    await page.waitForTimeout(2000);
+    await passCloudflare(page, renewLoc, '续费页');
+
+    const renewBtn = renewLoc();
+    try { await renewBtn.waitFor({ state: 'visible', timeout: 15000 }); }
+    catch (e) {
+        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e2) { }
+        return { status: 'error', message: '未找到续期按钮', shot };
+    }
+
+    // React 可能先渲染 disabled 再启用：轮询最多 8 秒
+    for (let w = 0; w < 8; w++) {
+        const dis = await renewBtn.isDisabled().catch(() => true);
+        const st = await page.locator('[class*="RenewBox2__StatusText"]').first().innerText().catch(() => '');
+        if (!dis || /지금|가능/.test(st)) break;
+        await page.waitForTimeout(1000);
+    }
+
+    const readExpiry = async () => {
+        let t = await page.locator('[class*="RenewBox2__ExpiryText"]').first().innerText().catch(() => '');
+        if (!t) {
+            const body = await page.locator('body').innerText().catch(() => '');
+            t = (body.match(/유[통효]기한[^\n]*/) || [])[0] || '';
+        }
+        return (t.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/) || [])[0] || '';
+    };
+    const statusText = (await page.locator('[class*="RenewBox2__StatusText"]').first().innerText().catch(() => '')).trim();
+    const expiryDt = await readExpiry();
+    const expiryLine = expiryDt ? `\n到期: ${expiryDt}` : '';
+    const renewableByStatus = /지금|가능/.test(statusText);
+    const disabled = (await renewBtn.isDisabled().catch(() => false)) && !renewableByStatus;
+
+    if (disabled) {
+        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+        console.log(`   >> [${sid}] ⏳ 暂不可续期。${statusText}`);
+        return { status: 'wait', message: `还没到时间${statusText ? '\n' + statusText : ''}${expiryLine}`, shot };
+    }
+
+    console.log(`   >> [${sid}] 点击 연장하기 续期...`);
+    const stillDisabled = await renewBtn.isDisabled().catch(() => false);
+    try {
+        if (stillDisabled) await renewBtn.click({ force: true });
+        else await renewBtn.click({ timeout: 8000 });
+    } catch (e) {
+        try { await renewBtn.click({ force: true }); } catch (e2) { console.log('   >> 点击续期失败:', e2.message); }
+    }
+    await page.waitForTimeout(3000);
+    const after = await page.locator('body').innerText().catch(() => '');
+    const nowDisabled = await renewLoc().isDisabled().catch(() => false);
+    const ok = /성공|완료|renewed|success/i.test(after) || nowDisabled;
+    const newExpiry = await readExpiry();
+    const newExpiryLine = newExpiry ? `\n到期: ${newExpiry}` : expiryLine;
+    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+    if (ok) {
+        console.log(`   >> [${sid}] ✅ 续期成功。到期: ${newExpiry || expiryDt}`);
+        return { status: 'success', message: `服务器已续期！${newExpiryLine}`, shot };
+    }
+    console.log(`   >> [${sid}] ⚠️ 已点击续期，结果未知。`);
+    return { status: 'unknown', message: `已点击 연장하기，详见截图${newExpiryLine}`, shot };
+}
+
+// 从面板首页抓取所有服务器的 URL
+async function discoverServers(page) {
+    let urls = await page.locator('a[href*="/server/"]').evaluateAll(
+        els => Array.from(new Set(els.map(e => e.href)))
+    ).catch(() => []);
+    urls = (urls || []).filter(u => /\/server\/[^/?#]+/i.test(u));
+    return Array.from(new Set(urls));
+}
+
 (async () => {
     const users = getUsers();
     if (users.length === 0) {
@@ -438,16 +517,12 @@ async function loginOnce(page, user) {
             }
             try { await context.clearCookies(); } catch (e) { }
 
-            if (!user.serverUrl) {
-                console.log('   >> 未配置 serverUrl，无法续期，跳过该账号。');
-                await sendTelegramMessage(`⚠️ *配置缺失*\n用户: ${user.username}\n缺少 serverUrl，无法续期`);
-                console.log('用户处理完成');
-                continue;
-            }
-
+            // 目标服务器：优先 serverUrls(数组) / serverUrl(单个)，都没有则登录后自动发现
+            let targets = Array.isArray(user.serverUrls) ? user.serverUrls.filter(Boolean)
+                : (user.serverUrl ? [user.serverUrl] : null);
             const renewLoc = () => page.locator('button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3').first();
 
-            // 1. 先注入 KV 里的 cookie，尝试免登录
+            // 1. 注入 KV cookie 尝试免登录
             const saved = await kvGet(cookieKey);
             if (saved) {
                 try {
@@ -456,15 +531,16 @@ async function loginOnce(page, user) {
                 } catch (e) { console.warn('   >> cookie 解析失败:', e.message); }
             }
 
-            // 2. 打开续费页，过 CF，判断 cookie 是否有效 (出现续期按钮=有效；跳到登录页=失效)
-            console.log(`打开续费页: ${user.serverUrl}`);
-            await gotoWithRetry(page, user.serverUrl);
+            // 2. 打开首页(或首个目标)，过 CF，判断是否已登录
+            const firstNav = targets && targets[0] ? targets[0] : DASHBOARD_URL;
+            console.log(`打开: ${firstNav}`);
+            await gotoWithRetry(page, firstNav);
             await page.waitForTimeout(2000);
-            const contentReady = () => page.locator('button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3, input[type="password"]').first();
-            await passCloudflare(page, contentReady, '续费页');
+            const contentReady = () => page.locator('a[href*="/server/"], button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3, input[type="password"]').first();
+            await passCloudflare(page, contentReady, '页面');
 
             let loggedIn = !/\/auth\/login/i.test(page.url())
-                && await renewLoc().isVisible().catch(() => false);
+                && !(await page.locator('input[type="password"]').first().isVisible().catch(() => false));
 
             // 3. cookie 失效 → 完整登录 → 存新 cookie
             if (!loggedIn) {
@@ -479,79 +555,38 @@ async function loginOnce(page, user) {
                     console.log('用户处理完成');
                     continue;
                 }
-                // 保存新 cookie 到 KV
                 try {
                     const cookies = await context.cookies();
                     await kvPut(cookieKey, JSON.stringify(cookies));
                 } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
-                // 登录后重新进续费页
-                console.log(`登录成功，打开续费页: ${user.serverUrl}`);
-                await gotoWithRetry(page, user.serverUrl);
-                await page.waitForTimeout(2000);
-                await passCloudflare(page, renewLoc, '续费页');
             } else {
                 console.log('   >> ✅ cookie 有效，免登录');
             }
 
-            const renewBtn = renewLoc();
-            await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
-
-            // React 可能先渲染 disabled 再启用：轮询最多 8 秒等按钮变可点，避免误判"暂不可续期"。
-            // 若状态文字出现 "지금"/"가능"(现在可续) 也视为可点。
-            for (let w = 0; w < 8; w++) {
-                const dis = await renewBtn.isDisabled().catch(() => true);
-                const st = await page.locator('[class*="RenewBox2__StatusText"]').first().innerText().catch(() => '');
-                if (!dis || /지금|가능/.test(st)) break;
-                await page.waitForTimeout(1000);
+            // 4. 没配置目标 → 从面板首页自动发现所有服务器
+            if (!targets) {
+                await gotoWithRetry(page, DASHBOARD_URL);
+                await page.waitForTimeout(2000);
+                await passCloudflare(page, () => page.locator('a[href*="/server/"], [class*="ServerRow"]').first(), '面板');
+                targets = await discoverServers(page);
+                console.log(`   >> 自动发现 ${targets.length} 个服务器: ${targets.join(', ')}`);
+            }
+            if (!targets.length) {
+                await sendTelegramMessage(`⚠️ *无服务器*\n用户: ${user.username}\n未发现可续期的服务器，请确认账号下有服务器或手动配置 serverUrls`);
+                console.log('用户处理完成');
+                continue;
             }
 
-            // 取到期时间 (유통기한 2026-06-15 18:02:54) 和倒计时 (X시간 후에 연장할수있어요)
-            const readExpiry = async () => {
-                let t = await page.locator('[class*="RenewBox2__ExpiryText"]').first().innerText().catch(() => '');
-                if (!t) {
-                    const body = await page.locator('body').innerText().catch(() => '');
-                    t = (body.match(/유[통효]기한[^\n]*/) || [])[0] || '';
-                }
-                const dt = (t.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/) || [])[0] || '';
-                return { raw: t.trim(), dt };
-            };
-            const statusText = (await page.locator('[class*="RenewBox2__StatusText"]').first().innerText().catch(() => '')).trim();
-            let { dt: expiryDt } = await readExpiry();
-            const expiryLine = expiryDt ? `\n到期: ${expiryDt}` : '';
-            const countdownLine = statusText ? `\n${statusText}` : '';
-
-            const shot = path.join(photoDir, `weirdhost_${safeUser}_renew.png`);
-            const renewableByStatus = /지금|가능/.test(statusText); // "지금 연장이 가능해요" = 现在可续
-            const disabled = (await renewBtn.isDisabled().catch(() => false)) && !renewableByStatus;
-
-            if (disabled) {
-                try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                console.log(`   >> ⏳ 暂不可续期 (按钮禁用)。到期:${expiryDt} ${statusText}`);
-                await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n原因: 还没到时间${countdownLine}${expiryLine}`, shot);
-            } else {
-                console.log('   >> 点击 연장하기 续期...');
-                // 若属性仍显示 disabled (但状态说可续)，用 force 直接点，避免 Playwright 等待可点性超时
-                const stillDisabled = await renewBtn.isDisabled().catch(() => false);
+            // 5. 逐个服务器续期，各自发通知
+            for (const serverUrl of targets) {
                 try {
-                    if (stillDisabled) await renewBtn.click({ force: true });
-                    else await renewBtn.click({ timeout: 8000 });
+                    const r = await renewServer(page, user, serverUrl, photoDir);
+                    const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || serverUrl;
+                    const head = { success: '✅ *续期成功*', wait: '⏳ *暂不可续期*', unknown: '⚠️ *续期结果未知*', error: '❌ *续期出错*' }[r.status] || '❓';
+                    await sendTelegramMessage(`${head}\n用户: ${user.username}\n服务器: ${sid}\n${r.message}`, r.shot);
                 } catch (e) {
-                    try { await renewBtn.click({ force: true }); } catch (e2) { console.log('   >> 点击续期失败:', e2.message); }
-                }
-                await page.waitForTimeout(3000);
-                const after = await page.locator('body').innerText().catch(() => '');
-                const nowDisabled = await renewLoc().isDisabled().catch(() => false);
-                const ok = /성공|완료|renewed|success/i.test(after) || nowDisabled;
-                // 续期后到期时间通常会更新，重新读一次
-                const newExpiry = (await readExpiry()).dt;
-                const newExpiryLine = newExpiry ? `\n到期: ${newExpiry}` : expiryLine;
-                try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                if (ok) {
-                    console.log(`   >> ✅ 续期成功。到期: ${newExpiry || expiryDt}`);
-                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n服务器已续期！${newExpiryLine}`, shot);
-                } else {
-                    console.log('   >> ⚠️ 已点击续期，结果未知。');
-                    await sendTelegramMessage(`⚠️ *续期结果未知*\n用户: ${user.username}\n已点击 연장하기，详见截图${newExpiryLine}`, shot);
+                    console.error(`服务器 ${serverUrl} 续期出错:`, e.message);
+                    await sendTelegramMessage(`❌ *续期出错*\n用户: ${user.username}\n服务器: ${serverUrl}\n错误: ${e.message}`);
                 }
             }
         } catch (err) {
