@@ -231,35 +231,43 @@ function checkPort(port) {
 async function launchChrome() {
     console.log('检查 Chrome 是否已在端口 ' + DEBUG_PORT + ' 上运行...');
     if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已开启。'); return; }
-    console.log(`正在启动 Chrome (路径: ${CHROME_PATH})...`);
     const args = [
         `--remote-debugging-port=${DEBUG_PORT}`,
+        '--remote-debugging-address=127.0.0.1',
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-gpu',
         '--window-size=1280,720',
         '--no-sandbox',
         '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
         '--user-data-dir=/tmp/chrome_user_data'
     ];
     if (PROXY_CONFIG) {
         args.push(`--proxy-server=${PROXY_CONFIG.server}`);
         args.push('--proxy-bypass-list=<-loopback>');
     }
-    args.push('--disable-dev-shm-usage');
 
-    const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: 'ignore' });
-    chrome.unref();
+    // 最多尝试启动 2 次，捕获 stderr 以便诊断
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        console.log(`正在启动 Chrome (路径: ${CHROME_PATH}, 第 ${attempt} 次)...`);
+        let stderr = '';
+        const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+        if (chrome.stderr) chrome.stderr.on('data', d => { stderr += d.toString(); });
+        chrome.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
+        chrome.unref();
 
-    console.log('正在等待 Chrome 初始化...');
-    for (let i = 0; i < 20; i++) {
-        if (await checkPort(DEBUG_PORT)) break;
-        await new Promise(r => setTimeout(r, 1000));
+        console.log('正在等待 Chrome 初始化...');
+        for (let i = 0; i < 40; i++) {
+            if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已就绪。'); return; }
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        console.error(`Chrome 第 ${attempt} 次未在端口 ${DEBUG_PORT} 起来。Chrome stderr 末尾:\n` + stderr.slice(-800));
+        try { process.kill(-chrome.pid); } catch (e) { }
+        try { fs.rmSync('/tmp/chrome_user_data', { recursive: true, force: true }); } catch (e) { }
+        await new Promise(r => setTimeout(r, 2000));
     }
-    if (!await checkPort(DEBUG_PORT)) {
-        console.error('Chrome 无法在端口 ' + DEBUG_PORT + ' 上启动');
-        throw new Error('Chrome 启动失败');
-    }
+    throw new Error('Chrome 启动失败');
 }
 
 function getUsers() {
