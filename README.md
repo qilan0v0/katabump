@@ -160,6 +160,8 @@ node renew.js
 * `lunes_login.js`: Lunes Host (`betadash.lunes.host`) 登录保活脚本（云端，登录过 Cloudflare Turnstile 后进 dashboard 截图通知）。
 * `.github/workflows/lunes.yml`: Lunes 登录保活的定时任务（每周一北京时间 09:00）。
 * `.github/workflows/aclclouds.yml`: ACLClouds (`dash.aclclouds.com`) 续期定时任务（与 katabump 同款面板，复用 `action_renew.js`）。
+* `searcade_login.js`: Searcade (`searcade.com`) 登录保活脚本（云端，经 userveria OAuth 两步登录）。
+* `.github/workflows/searcade.yml`: Searcade 登录保活定时任务（每周一北京时间 11:00）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
 
 > **`action_renew.js` 已参数化**：默认面板是 katabump；设置环境变量 `DASH_BASE_URL`（如 `https://dash.aclclouds.com`）即可复用到同款面板。katabump 不设此变量，行为不变。
@@ -190,3 +192,16 @@ node renew.js
   ```
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间 10:00，或手动 "Run workflow" (选 `ACLClouds Auto Renew`)。截图在 `aclclouds-screenshots` artifact。
+
+---
+
+## 🎮 Searcade 登录保活 (附加)
+
+`searcade.com` 登录走 **userveria.com 的 OAuth**（两步：先邮箱 "Continue with email"，再密码 "Log in"），登录成功后页面显示 `Successfully signed in as ...`。脚本自动完成整套流程并截图通知。无验证码。
+
+- **账号 Secret**：新建 `SEARCADE_USERS_JSON`，格式同其它：
+  ```json
+  [{"username": "a@b.com", "password": "pwd"}]
+  ```
+- **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
+- **触发**：每周一北京时间 11:00，或手动 "Run workflow" (选 `Searcade Auto Login`)。截图在 `searcade-screenshots` artifact。

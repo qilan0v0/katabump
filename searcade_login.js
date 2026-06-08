@@ -1,0 +1,335 @@
+// Searcade (searcade.com) 登录保活脚本 —— 专用于 GitHub Actions (Linux/Headless)
+// 流程: 打开首页 → 点右上角 Login → 跳到 userveria OAuth → 输邮箱点 "Continue with email"
+//       → 输密码点 "Log in" → 跳回 searcade 显示 "Successfully signed in as ..."
+// 账号来源: Secret SEARCADE_USERS_JSON = [{"username":"a@b.com","password":"pwd"}, ...]
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const { spawn, exec } = require('child_process');
+const http = require('http');
+
+const HOME_URL = 'https://searcade.com/en/';
+
+const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
+const TG_CHAT_ID = process.env.TG_CHAT_ID;
+const TG_THREAD_ID = process.env.TG_THREAD_ID; // 可选：超级群话题(Topic)的 message_thread_id
+const PROJECT = process.env.PROJECT_NAME || 'Searcade';
+
+async function sendTelegramMessage(message, imagePath = null) {
+    if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
+        console.warn('[Telegram] 未配置 TG_BOT_TOKEN / TG_CHAT_ID，跳过推送。');
+        return;
+    }
+    const text = `📌 *${PROJECT}*\n${message}`;
+    const tgErr = (e) => (e.response && e.response.data && e.response.data.description)
+        ? `${e.response.data.error_code} ${e.response.data.description}`
+        : e.message;
+    const threadArg = TG_THREAD_ID ? ` -F message_thread_id="${TG_THREAD_ID}"` : '';
+
+    if (imagePath && fs.existsSync(imagePath)) {
+        const captionFile = `${imagePath}.caption.txt`;
+        try { fs.writeFileSync(captionFile, text.slice(0, 1000)); } catch (e) { }
+        const sendPhoto = (withMd) => new Promise(resolve => {
+            const md = withMd ? ' -F parse_mode="Markdown"' : '';
+            const cmd = `curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto"`
+                + ` -F chat_id="${TG_CHAT_ID}"${threadArg}`
+                + ` -F "caption=<${captionFile}"${md} -F photo="@${imagePath}"`;
+            exec(cmd, (err, stdout) => resolve({ err, stdout: stdout || '' }));
+        });
+        let r = await sendPhoto(true);
+        if (!r.err && r.stdout.includes('"ok":true')) {
+            console.log('[Telegram] 图文消息已发送。');
+        } else {
+            console.warn('[Telegram] 图文(Markdown)发送失败，改纯文本重试:', (r.stdout || (r.err && r.err.message) || '').slice(0, 200));
+            r = await sendPhoto(false);
+            if (!r.err && r.stdout.includes('"ok":true')) console.log('[Telegram] 图文消息已发送 (纯文本)。');
+            else console.error('[Telegram] 图文消息发送失败:', (r.stdout || '').slice(0, 300));
+        }
+        try { fs.unlinkSync(captionFile); } catch (e) { }
+        return;
+    }
+
+    try {
+        const url = `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`;
+        const base = { chat_id: TG_CHAT_ID };
+        if (TG_THREAD_ID) base.message_thread_id = Number(TG_THREAD_ID);
+        try {
+            await axios.post(url, { ...base, text, parse_mode: 'Markdown' });
+            console.log('[Telegram] Message sent.');
+        } catch (e) {
+            console.warn('[Telegram] Markdown 发送失败，改用纯文本重试:', tgErr(e));
+            await axios.post(url, { ...base, text });
+            console.log('[Telegram] Message sent (plain text).');
+        }
+    } catch (e) {
+        console.error('[Telegram] 文字推送失败:', tgErr(e),
+            '\n   >> 提示: "chat not found" 通常表示 TG_CHAT_ID 填错，或你还没主动给该 bot 发过一条消息。');
+    }
+}
+
+chromium.use(stealth);
+
+const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+const DEBUG_PORT = 9222;
+process.env.NO_PROXY = 'localhost,127.0.0.1';
+
+// --- Proxy Configuration ---
+const HTTP_PROXY = process.env.HTTP_PROXY;
+let PROXY_CONFIG = null;
+if (HTTP_PROXY) {
+    try {
+        const proxyUrl = new URL(HTTP_PROXY);
+        PROXY_CONFIG = {
+            server: `${proxyUrl.protocol}//${proxyUrl.hostname}:${proxyUrl.port}`,
+            username: proxyUrl.username ? decodeURIComponent(proxyUrl.username) : undefined,
+            password: proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined
+        };
+        console.log(`[代理] 检测到配置: 服务器=${PROXY_CONFIG.server}, 认证=${PROXY_CONFIG.username ? '是' : '否'}`);
+    } catch (e) {
+        console.error('[代理] HTTP_PROXY 格式无效。期望: http://user:pass@host:port 或 http://host:port');
+        process.exit(1);
+    }
+}
+
+async function checkProxy() {
+    if (!PROXY_CONFIG) return true;
+    console.log('[代理] 正在验证代理连接...');
+    try {
+        const axiosConfig = {
+            proxy: {
+                protocol: 'http',
+                host: new URL(PROXY_CONFIG.server).hostname,
+                port: new URL(PROXY_CONFIG.server).port,
+            },
+            timeout: 10000
+        };
+        if (PROXY_CONFIG.username && PROXY_CONFIG.password) {
+            axiosConfig.proxy.auth = { username: PROXY_CONFIG.username, password: PROXY_CONFIG.password };
+        }
+        await axios.get('https://www.google.com', axiosConfig);
+        try {
+            const ipResp = await axios.get('https://api.ipify.org?format=json', axiosConfig);
+            const exitIp = ipResp.data && ipResp.data.ip ? ipResp.data.ip : '未知';
+            console.log(`[代理] 连接成功！出口 IP: ${exitIp}`);
+        } catch (e) {
+            console.log('[代理] 连接成功！(出口 IP 获取失败，但代理可用)');
+        }
+        return true;
+    } catch (error) {
+        console.error(`[代理] 连接失败: ${error.message}`);
+        return false;
+    }
+}
+
+function checkPort(port) {
+    return new Promise((resolve) => {
+        const req = http.get(`http://localhost:${port}/json/version`, () => resolve(true));
+        req.on('error', () => resolve(false));
+        req.end();
+    });
+}
+
+async function launchChrome() {
+    console.log('检查 Chrome 是否已在端口 ' + DEBUG_PORT + ' 上运行...');
+    if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已开启。'); return; }
+    console.log(`正在启动 Chrome (路径: ${CHROME_PATH})...`);
+    const args = [
+        `--remote-debugging-port=${DEBUG_PORT}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-gpu',
+        '--window-size=1280,720',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--user-data-dir=/tmp/chrome_user_data'
+    ];
+    if (PROXY_CONFIG) {
+        args.push(`--proxy-server=${PROXY_CONFIG.server}`);
+        args.push('--proxy-bypass-list=<-loopback>');
+    }
+    args.push('--disable-dev-shm-usage');
+
+    const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: 'ignore' });
+    chrome.unref();
+
+    console.log('正在等待 Chrome 初始化...');
+    for (let i = 0; i < 20; i++) {
+        if (await checkPort(DEBUG_PORT)) break;
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    if (!await checkPort(DEBUG_PORT)) {
+        console.error('Chrome 无法在端口 ' + DEBUG_PORT + ' 上启动');
+        throw new Error('Chrome 启动失败');
+    }
+}
+
+function getUsers() {
+    try {
+        if (process.env.SEARCADE_USERS_JSON) {
+            const parsed = JSON.parse(process.env.SEARCADE_USERS_JSON);
+            return Array.isArray(parsed) ? parsed : (parsed.users || []);
+        }
+    } catch (e) {
+        console.error('解析 SEARCADE_USERS_JSON 环境变量错误:', e);
+    }
+    return [];
+}
+
+async function gotoWithRetry(page, url, retries = 3) {
+    for (let i = 1; i <= retries; i++) {
+        try {
+            await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+            return;
+        } catch (e) {
+            console.warn(`[导航] 打开 ${url} 失败 (第 ${i}/${retries} 次): ${e.message}`);
+            if (i === retries) throw e;
+            await page.waitForTimeout(3000);
+        }
+    }
+}
+
+// 登录单个账号：返回 { ok, info }
+async function loginOnce(page, user) {
+    await gotoWithRetry(page, HOME_URL);
+    await page.waitForTimeout(2000);
+
+    // 1. 点首页右上角 "Login" (可能是链接或按钮)
+    console.log('点击首页 Login...');
+    const loginEntry = page.getByRole('link', { name: /^log\s?in$/i })
+        .or(page.getByRole('button', { name: /^log\s?in$/i }))
+        .or(page.locator('a,button').filter({ hasText: /^Login$/i }))
+        .first();
+    await loginEntry.waitFor({ state: 'visible', timeout: 15000 });
+    await loginEntry.click();
+
+    // 等待跳转到 userveria 授权页
+    try { await page.waitForURL(/userveria\.com/i, { timeout: 20000 }); } catch (e) {
+        console.log('   >> 未跳到 userveria，当前 URL:', page.url());
+    }
+    await page.waitForTimeout(1500);
+
+    // 2. 输入邮箱 → "Continue with email"
+    console.log('输入邮箱...');
+    const emailInput = page.locator('input[type="email"], input[name="email"], #email').first();
+    await emailInput.waitFor({ state: 'visible', timeout: 15000 });
+    await emailInput.fill(user.username);
+    await page.waitForTimeout(300);
+    const continueBtn = page.getByRole('button', { name: /continue with email|continue/i })
+        .or(page.locator('button[type="submit"]'))
+        .first();
+    await continueBtn.click();
+
+    // 3. 输入密码 → "Log in"
+    console.log('输入密码...');
+    const pwdInput = page.locator('input[type="password"], input[name="password"], #password').first();
+    await pwdInput.waitFor({ state: 'visible', timeout: 15000 });
+    await pwdInput.fill(user.password);
+    await page.waitForTimeout(300);
+    const submitBtn = page.getByRole('button', { name: /^log\s?in$/i })
+        .or(page.locator('button[type="submit"]'))
+        .first();
+    await submitBtn.click();
+
+    // 4. 等待跳回 searcade 并确认登录成功
+    try { await page.waitForURL(/searcade\.com/i, { timeout: 25000 }); } catch (e) { }
+    let info = '';
+    for (let s = 0; s < 15; s++) {
+        await page.waitForTimeout(1000);
+        const body = await page.locator('body').innerText().catch(() => '');
+        const m = body.match(/Successfully signed in[^\n]*/i);
+        if (m) { info = m[0].trim(); return { ok: true, info }; }
+        // 登出/账户菜单出现也算成功
+        const loggedOut = await page.getByText(/logout|log out|admin area/i).first().isVisible().catch(() => false);
+        if (loggedOut && page.url().includes('searcade.com')) return { ok: true, info: '已登录 (检测到 Logout/Admin area)' };
+        // 凭据错误
+        const err = await page.getByText(/invalid|incorrect|wrong password|not found|error/i).first().isVisible().catch(() => false);
+        if (err) {
+            const eb = await page.getByText(/invalid|incorrect|wrong password|not found|error/i).first().innerText().catch(() => '');
+            return { ok: false, info: eb.trim() || '登录出错' };
+        }
+    }
+    // 跳回 searcade 但没抓到提示，也按 URL 粗判
+    if (page.url().includes('searcade.com') && !page.url().includes('userveria')) {
+        return { ok: true, info: '已跳回 searcade (未捕捉到提示)' };
+    }
+    return { ok: false, info: `未确认登录，停留在 ${page.url()}` };
+}
+
+(async () => {
+    const users = getUsers();
+    if (users.length === 0) {
+        console.log('未在 SEARCADE_USERS_JSON 中找到用户');
+        process.exit(1);
+    }
+
+    if (PROXY_CONFIG) {
+        const ok = await checkProxy();
+        if (!ok) { console.error('[代理] 代理无效，终止运行。'); process.exit(1); }
+    }
+
+    await launchChrome();
+
+    console.log('正在连接 Chrome...');
+    let browser;
+    for (let k = 0; k < 5; k++) {
+        try {
+            browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
+            console.log('连接成功！');
+            break;
+        } catch (e) {
+            console.log(`连接尝试 ${k + 1} 失败。2秒后重试...`);
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+    if (!browser) { console.error('连接失败。退出。'); process.exit(1); }
+
+    const context = browser.contexts()[0];
+    let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
+    page.setDefaultTimeout(60000);
+
+    if (PROXY_CONFIG && PROXY_CONFIG.username) {
+        console.log('[代理] 正在设置认证...');
+        await context.setHTTPCredentials({ username: PROXY_CONFIG.username, password: PROXY_CONFIG.password });
+    } else {
+        await context.setHTTPCredentials(null);
+    }
+
+    const photoDir = path.join(process.cwd(), 'screenshots');
+    if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
+
+    for (let i = 0; i < users.length; i++) {
+        const user = users[i];
+        const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
+        console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`);
+
+        try {
+            if (page.isClosed()) page = await context.newPage();
+            try { await context.clearCookies(); } catch (e) { }
+
+            const res = await loginOnce(page, user);
+
+            const shotPath = path.join(photoDir, `searcade_${safeUser}.png`);
+            try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) { }
+
+            if (res.ok) {
+                console.log(`   >> ✅ 登录成功: ${res.info}`);
+                await sendTelegramMessage(`✅ *登录成功*\n用户: ${user.username}\n${res.info}`, shotPath);
+            } else {
+                console.log(`   >> ❌ 登录失败: ${res.info}`);
+                await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: ${res.info}`, shotPath);
+            }
+        } catch (err) {
+            console.error('处理用户出错:', err.message);
+            const shotPath = path.join(photoDir, `searcade_${safeUser}_error.png`);
+            try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) { }
+            await sendTelegramMessage(`❌ *登录异常*\n用户: ${user.username}\n错误: ${err.message}`, shotPath);
+        }
+        console.log('用户处理完成');
+    }
+
+    console.log('完成。');
+    await browser.close();
+    process.exit(0);
+})();
