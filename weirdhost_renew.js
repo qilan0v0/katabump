@@ -401,71 +401,74 @@ function withTimeout(promise, ms, label) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
+// 一次性快照读续期框状态(用 evaluate，不走会自动重试的 locator —— 实时刷新页上 locator 会重试到 60s 超时)
+// 返回 { found, expiry, status, disabled }
+async function readRenewBox(page) {
+    return await _race(page.evaluate(() => {
+        const btn = document.querySelector('button.RenewBox2__RenewButton-sc-jn9wls-3')
+            || Array.from(document.querySelectorAll('button')).find(b => /연장하기/.test(b.textContent || ''));
+        const box = btn ? btn.closest('[class*="RenewBox2__RenewContainer"]') || btn.parentElement : null;
+        const exp = box && box.querySelector('[class*="RenewBox2__ExpiryText"]');
+        const st = box && box.querySelector('[class*="RenewBox2__StatusText"]');
+        return {
+            found: !!btn,
+            disabled: btn ? btn.disabled : true,
+            expiry: exp ? (exp.textContent || '').trim() : '',
+            status: st ? (st.textContent || '').trim() : ''
+        };
+    }), 8000).catch(() => ({ found: false, disabled: true, expiry: '', status: '' }));
+}
+
 // 续期单个服务器，返回 { status: 'success'|'wait'|'unknown'|'error', message, shot }
 async function renewServer(page, user, serverUrl, photoDir) {
     const renewLoc = () => page.locator('button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3').first();
     const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || 'srv';
     const shot = path.join(photoDir, `weirdhost_${user.username.replace(/[^a-z0-9]/gi, '_')}_${sid}.png`);
+    const dtOf = (s) => (s.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/) || [])[0] || '';
 
     console.log(`打开续费页: ${serverUrl}`);
     await gotoWithRetry(page, serverUrl);
     await page.waitForTimeout(2000);
-    // 续期按钮已在就不必再过 CF (避免在实时控制台页上空跑遍历 frame)
-    const already = await _race(renewLoc().isVisible(), 5000).catch(() => false);
-    if (!already) await passCloudflare(page, renewLoc, '续费页');
 
-    const renewBtn = renewLoc();
-    try { await renewBtn.waitFor({ state: 'visible', timeout: 15000 }); }
-    catch (e) {
-        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e2) { }
-        return { status: 'error', message: '未找到续期按钮', shot };
+    // 轮询快照，等续期框出现并(可能)启用，最多 ~20 秒
+    let snap = { found: false, disabled: true, expiry: '', status: '' };
+    for (let w = 0; w < 15; w++) {
+        snap = await readRenewBox(page);
+        if (snap.found && (!snap.disabled || /지금|가능/.test(snap.status))) break;
+        if (snap.found && w >= 3) break; // 找到了但禁用，等几轮就够(确认是"未到时间")
+        // 没找到可能是 CF 拦截，点一下(套超时，绝不卡死)
+        if (!snap.found) await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
+        await page.waitForTimeout(1500);
     }
+    console.log(`   >> [${sid}] 快照: found=${snap.found} disabled=${snap.disabled} status="${snap.status}"`);
 
-    // React 可能先渲染 disabled 再启用：轮询最多 8 秒
-    for (let w = 0; w < 8; w++) {
-        const dis = await renewBtn.isDisabled().catch(() => true);
-        const st = await page.locator('[class*="RenewBox2__StatusText"]').first().innerText().catch(() => '');
-        if (!dis || /지금|가능/.test(st)) break;
-        await page.waitForTimeout(1000);
-    }
-
-    const readExpiry = async () => {
-        let t = await page.locator('[class*="RenewBox2__ExpiryText"]').first().innerText().catch(() => '');
-        if (!t) {
-            const body = await page.locator('body').innerText().catch(() => '');
-            t = (body.match(/유[통효]기한[^\n]*/) || [])[0] || '';
-        }
-        return (t.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/) || [])[0] || '';
-    };
-    const statusText = (await page.locator('[class*="RenewBox2__StatusText"]').first().innerText().catch(() => '')).trim();
-    const expiryDt = await readExpiry();
-    const expiryLine = expiryDt ? `\n到期: ${expiryDt}` : '';
-    const renewableByStatus = /지금|가능/.test(statusText);
-    const disabled = (await renewBtn.isDisabled().catch(() => false)) && !renewableByStatus;
-
-    if (disabled) {
+    if (!snap.found) {
         try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-        console.log(`   >> [${sid}] ⏳ 暂不可续期。${statusText}`);
-        return { status: 'wait', message: `还没到时间${statusText ? '\n' + statusText : ''}${expiryLine}`, shot };
+        return { status: 'error', message: '未找到续期按钮(详见截图)', shot };
+    }
+
+    const expiryDt = dtOf(snap.expiry);
+    const expiryLine = expiryDt ? `\n到期: ${expiryDt}` : '';
+    const renewable = !snap.disabled || /지금|가능/.test(snap.status);
+
+    if (!renewable) {
+        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+        console.log(`   >> [${sid}] ⏳ 暂不可续期。${snap.status}`);
+        return { status: 'wait', message: `还没到时间${snap.status ? '\n' + snap.status : ''}${expiryLine}`, shot };
     }
 
     console.log(`   >> [${sid}] 点击 연장하기 续期...`);
-    const stillDisabled = await renewBtn.isDisabled().catch(() => false);
-    try {
-        if (stillDisabled) await renewBtn.click({ force: true });
-        else await renewBtn.click({ timeout: 8000 });
-    } catch (e) {
-        try { await renewBtn.click({ force: true }); } catch (e2) { console.log('   >> 点击续期失败:', e2.message); }
-    }
+    try { await _race(renewLoc().click({ force: true }), 10000); }
+    catch (e) { console.log('   >> 点击续期失败:', e.message); }
     await page.waitForTimeout(3000);
-    const after = await page.locator('body').innerText().catch(() => '');
-    const nowDisabled = await renewLoc().isDisabled().catch(() => false);
-    const ok = /성공|완료|renewed|success/i.test(after) || nowDisabled;
-    const newExpiry = await readExpiry();
+
+    const after = await readRenewBox(page);
+    const newExpiry = dtOf(after.expiry) || expiryDt;
     const newExpiryLine = newExpiry ? `\n到期: ${newExpiry}` : expiryLine;
+    const ok = after.disabled || (newExpiry && newExpiry !== expiryDt); // 点完变禁用 或 到期时间变了 = 成功
     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
     if (ok) {
-        console.log(`   >> [${sid}] ✅ 续期成功。到期: ${newExpiry || expiryDt}`);
+        console.log(`   >> [${sid}] ✅ 续期成功。到期: ${newExpiry}`);
         return { status: 'success', message: `服务器已续期！${newExpiryLine}`, shot };
     }
     console.log(`   >> [${sid}] ⚠️ 已点击续期，结果未知。`);
@@ -564,8 +567,8 @@ async function discoverServers(page) {
             const contentReady = () => page.locator('a[href*="/server/"], button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3, input[type="password"]').first();
             await passCloudflare(page, contentReady, '页面');
 
-            let loggedIn = !/\/auth\/login/i.test(page.url())
-                && !(await page.locator('input[type="password"]').first().isVisible().catch(() => false));
+            const pwdVisible = await _race(page.locator('input[type="password"]').first().isVisible(), 5000).catch(() => false);
+            let loggedIn = !/\/auth\/login/i.test(page.url()) && !pwdVisible;
 
             // 3. cookie 失效 → 完整登录 → 存新 cookie
             if (!loggedIn) {
