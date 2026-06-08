@@ -405,11 +405,12 @@ function withTimeout(promise, ms, label) {
 // 返回 { found, expiry, status, disabled }
 async function readRenewBox(page) {
     return await _race(page.evaluate(() => {
-        const btn = document.querySelector('button.RenewBox2__RenewButton-sc-jn9wls-3')
+        // 兼容两种组件：RenewBox__ (不带2) 和 RenewBox2__
+        const btn = document.querySelector('button[class*="RenewButton"]')
             || Array.from(document.querySelectorAll('button')).find(b => /연장하기/.test(b.textContent || ''));
-        const box = btn ? btn.closest('[class*="RenewBox2__RenewContainer"]') || btn.parentElement : null;
-        const exp = box && box.querySelector('[class*="RenewBox2__ExpiryText"]');
-        const st = box && box.querySelector('[class*="RenewBox2__StatusText"]');
+        const box = btn ? (btn.closest('[class*="RenewContainer"]') || btn.parentElement) : null;
+        const exp = box && box.querySelector('[class*="ExpiryText"]');
+        const st = box && box.querySelector('[class*="StatusText"]');
         return {
             found: !!btn,
             disabled: btn ? btn.disabled : true,
@@ -421,7 +422,7 @@ async function readRenewBox(page) {
 
 // 续期单个服务器，返回 { status: 'success'|'wait'|'unknown'|'error', message, shot }
 async function renewServer(page, user, serverUrl, photoDir) {
-    const renewLoc = () => page.locator('button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3').first();
+    const renewLoc = () => page.locator('button:has-text("연장하기"), button[class*="RenewButton"]').first();
     const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || 'srv';
     const shot = path.join(photoDir, `weirdhost_${user.username.replace(/[^a-z0-9]/gi, '_')}_${sid}.png`);
     const dtOf = (s) => (s.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/) || [])[0] || '';
@@ -548,7 +549,7 @@ async function discoverServers(page) {
             let targets = Array.isArray(user.serverUrls)
                 ? user.serverUrls.map(u => (u || '').trim()).filter(validUrl)
                 : (validUrl(user.serverUrl) ? [user.serverUrl.trim()] : null);
-            const renewLoc = () => page.locator('button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3').first();
+            const renewLoc = () => page.locator('button:has-text("연장하기"), button[class*="RenewButton"]').first();
 
             // 1. 注入 KV cookie 尝试免登录
             const saved = await kvGet(cookieKey);
@@ -564,7 +565,7 @@ async function discoverServers(page) {
             console.log(`打开: ${firstNav}`);
             await gotoWithRetry(page, firstNav);
             await page.waitForTimeout(2000);
-            const contentReady = () => page.locator('a[href*="/server/"], button:has-text("연장하기"), button.RenewBox2__RenewButton-sc-jn9wls-3, input[type="password"]').first();
+            const contentReady = () => page.locator('a[href*="/server/"], button:has-text("연장하기"), button[class*="RenewButton"], input[type="password"]').first();
             await passCloudflare(page, contentReady, '页面');
 
             const pwdVisible = await _race(page.locator('input[type="password"]').first().isVisible(), 5000).catch(() => false);
