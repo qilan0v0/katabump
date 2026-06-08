@@ -433,10 +433,22 @@ async function renewServer(page, user, serverUrl, photoDir) {
 
     // 轮询快照，等续期框出现并(可能)启用，最多 ~20 秒
     let snap = { found: false, disabled: true, expiry: '', status: '' };
+    let reloads = 0;
     for (let w = 0; w < 15; w++) {
         snap = await readRenewBox(page);
         if (snap.found && (!snap.disabled || /지금|가능/.test(snap.status))) break;
         if (snap.found && w >= 3) break; // 找到了但禁用，等几轮就够(确认是"未到时间")
+        // 页面报 "Something went wrong / could not be found"(SPA 路由偶发) → reload 重试
+        const errPage = await _race(page.evaluate(() =>
+            /something went wrong|could not be found|찾을 수 없습니다/i.test(document.body ? document.body.innerText : '')
+        ), 5000).catch(() => false);
+        if (errPage && reloads < 2) {
+            reloads++;
+            console.log(`   >> [${sid}] 页面报错(资源未找到)，reload 重试 ${reloads}/2...`);
+            await gotoWithRetry(page, serverUrl);
+            await page.waitForTimeout(2500);
+            continue;
+        }
         // 没找到可能是 CF 拦截，点一下(套超时，绝不卡死)
         if (!snap.found) await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
         await page.waitForTimeout(1500);
@@ -445,7 +457,7 @@ async function renewServer(page, user, serverUrl, photoDir) {
 
     if (!snap.found) {
         try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-        return { status: 'error', message: '未找到续期按钮(详见截图)', shot };
+        return { status: 'error', message: '未找到续期按钮(可能页面报错/资源未找到，详见截图)', shot };
     }
 
     const expiryDt = dtOf(snap.expiry);
