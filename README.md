@@ -163,7 +163,7 @@ node renew.js
 * `searcade_login.js`: Searcade (`searcade.com`) 登录保活脚本（云端，经 userveria OAuth 两步登录）。
 * `.github/workflows/searcade.yml`: Searcade 登录保活定时任务（每周一北京时间 11:00）。
 * `weirdhost_renew.js`: Weirdhost (`hub.weirdhost.xyz`) 续期脚本（云端，过 CF 全屏验证 + 韩文面板登录 + serverUrl 点 연장하기）。
-* `.github/workflows/weirdhost.yml`: Weirdhost 续期定时任务（每天北京时间 12:00）。
+* `.github/workflows/weirdhost.yml`: Weirdhost 续期定时任务（每天北京时间凌晨 1 点）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
 
 > **`action_renew.js` 已参数化**：默认面板是 katabump；设置环境变量 `DASH_BASE_URL`（如 `https://dash.aclclouds.com`）即可复用到同款面板。katabump 不设此变量，行为不变。
@@ -237,4 +237,4 @@ node renew.js
        -H "Authorization: Bearer <CF_API_TOKEN>" --data-binary @cookies.json
      ```
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
-- **触发**：每天北京时间 12:00，或手动 "Run workflow" (选 `Weirdhost Auto Renew`)。截图在 `weirdhost-screenshots` artifact。
+- **触发**：每天北京时间凌晨 1 点，或手动 "Run workflow" (选 `Weirdhost Auto Renew`)。截图在 `weirdhost-screenshots` artifact。

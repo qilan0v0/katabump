@@ -2,8 +2,8 @@ name: Weirdhost Auto Renew
 
 on:
   schedule:
-    # 每天 UTC 4点 (北京时间 12点) 运行 (续期窗口约每 1-2 天，建议每天跑)
-    - cron: '0 4 * * *'
+    # 每天北京时间凌晨 1 点 (UTC 前一天 17:05) 运行；偏 5 分钟避开整点拥堵
+    - cron: '5 17 * * *'
   workflow_dispatch: # 允许手动触发
 
 # 提前切到 Node.js 24 运行 actions/*，消除 Node 20 弃用警告
