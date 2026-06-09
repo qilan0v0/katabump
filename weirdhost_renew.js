@@ -483,10 +483,21 @@ async function renewServer(page, user, serverUrl, photoDir) {
     catch (e) { console.log('   >> 点击续期失败:', e.message); }
     await page.waitForTimeout(3000);
 
+    // 点击后会再弹一次 Cloudflare 验证，过了才真正续期成功
+    for (let c = 0; c < 8; c++) {
+        const onCf = await _race(page.evaluate(() => !!document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]')), 5000).catch(() => false);
+        if (!onCf) break;
+        console.log(`   >> [${sid}] 续期后出现 Cloudflare 验证，处理中 (${c + 1}/8)...`);
+        await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
+        await page.waitForTimeout(2000);
+    }
+    await page.waitForTimeout(2000);
+
     const after = await readRenewBox(page);
     const newExpiry = dtOf(after.expiry) || expiryDt;
     const newExpiryLine = newExpiry ? `\n到期: ${newExpiry}` : expiryLine;
-    const ok = after.disabled || (newExpiry && newExpiry !== expiryDt); // 点完变禁用 或 到期时间变了 = 成功
+    // 成功判定：点完按钮变禁用(进入冷却) 或 到期时间往后变了
+    const ok = after.disabled || (newExpiry && newExpiry !== expiryDt);
     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
     if (ok) {
         console.log(`   >> [${sid}] ✅ 续期成功。到期: ${newExpiry}`);
