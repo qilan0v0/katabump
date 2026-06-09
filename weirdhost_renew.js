@@ -76,6 +76,9 @@ chromium.use(stealth);
 const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
 const DEBUG_PORT = 9222;
 process.env.NO_PROXY = 'localhost,127.0.0.1';
+// 续期窗口按浏览器本地时区计算：runner 默认 UTC 会判定"未到时间"，强制用中国时区(UTC+8)
+const TIMEZONE = process.env.WEIRDHOST_TZ || 'Asia/Shanghai';
+process.env.TZ = TIMEZONE;
 
 const HTTP_PROXY = process.env.HTTP_PROXY;
 let PROXY_CONFIG = null;
@@ -253,7 +256,7 @@ async function launchChrome() {
     for (let attempt = 1; attempt <= 2; attempt++) {
         console.log(`正在启动 Chrome (路径: ${CHROME_PATH}, 第 ${attempt} 次)...`);
         let stderr = '';
-        const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+        const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TZ: TIMEZONE } });
         if (chrome.stderr) chrome.stderr.on('data', d => { stderr += d.toString(); });
         chrome.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
         chrome.unref();
@@ -451,14 +454,8 @@ async function renewServer(page, user, serverUrl, photoDir) {
             continue;
         }
 
-        // 续期框找到但显示禁用：可能续期状态还没刷新到位 → 第 6 轮时 reload 一次强制刷新
-        if (snap.found && w === 6 && reloads < 2) {
-            reloads++;
-            console.log(`   >> [${sid}] 续期状态疑似未刷新，reload 一次...`);
-            await gotoWithRetry(page, serverUrl);
-            await page.waitForTimeout(2500);
-            continue;
-        }
+        // 续期框找到但禁用：到点冷却结束(8시간 후에...)，确认几轮即可，无需久等
+        if (snap.found && w >= 3) break;
 
         // 没找到可能是 CF 拦截，点一下(套超时，绝不卡死)
         if (!snap.found) await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
@@ -540,6 +537,17 @@ async function discoverServers(page) {
     let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
     page.setDefaultTimeout(60000);
 
+    // 通过 CDP 强制浏览器时区为中国(双保险，确保续期窗口按 UTC+8 计算)
+    const applyTimezone = async (p) => {
+        try {
+            const cdp = await context.newCDPSession(p);
+            await cdp.send('Emulation.setTimezoneOverride', { timezoneId: TIMEZONE });
+            await cdp.detach();
+        } catch (e) { console.warn('[时区] 设置失败:', e.message); }
+    };
+    await applyTimezone(page);
+    console.log(`[时区] 已设置为 ${TIMEZONE}`);
+
     if (PROXY_CONFIG && PROXY_CONFIG.username) {
         console.log('[代理] 正在设置认证...');
         await context.setHTTPCredentials({ username: PROXY_CONFIG.username, password: PROXY_CONFIG.password });
@@ -563,6 +571,7 @@ async function discoverServers(page) {
             if (page.isClosed()) {
                 page = await context.newPage();
                 await page.addInitScript(INJECTED_SCRIPT);
+                await applyTimezone(page);
             }
             try { await context.clearCookies(); } catch (e) { }
 
