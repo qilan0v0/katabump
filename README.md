@@ -164,6 +164,8 @@ node renew.js
 * `.github/workflows/searcade.yml`: Searcade 登录保活定时任务（每周一北京时间 11:00）。
 * `freemchost_renew.js`: FreeMCHost (`new.freemchost.com`) 续期脚本（云端，登录后打开 serverUrl 点 Renew now 续期）。
 * `.github/workflows/freemchost.yml`: FreeMCHost 续期定时任务（每天北京时间凌晨 2 点）。
+* `zampto_renew.js`: Zampto (`zampto.net`) 续期脚本（云端，两步登录 + serverUrl 点续期，支持 KV cookie 缓存）。
+* `.github/workflows/zampto.yml`: Zampto 续期定时任务（每天北京时间凌晨 3 点）。
 * `weirdhost_renew.js`: Weirdhost (`hub.weirdhost.xyz`) 续期脚本（云端，过 CF 全屏验证 + 韩文面板登录 + serverUrl 点 연장하기）。
 * `.github/workflows/weirdhost.yml`: Weirdhost 续期定时任务（每天北京时间凌晨 1 点）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
@@ -223,6 +225,20 @@ node renew.js
 - **Cloudflare KV（可选）**：配齐 `CF_ACCOUNT_ID` / `CF_KV_NAMESPACE_ID` / `CF_API_TOKEN` 三个 Secret 后启用 cookie 缓存——先注入 KV 里的 cookie 尝试免登录，失效才重新登录并把新 cookie 存回 KV（与 weirdhost 共用同一套 KV Secret，cookie key 为 `freemchost_cookie_<用户名>`）。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间凌晨 2 点，或手动 "Run workflow" (选 `FreeMCHost Auto Renew`)。截图在 `freemchost-screenshots` artifact。
+
+---
+
+## 🚀 Zampto 续期 (附加)
+
+`zampto.net` 登录走 **auth.zampto.net 两步登录**（先邮箱、再密码），登录成功后打开服务器页面点续期按钮。脚本自动完成登录→打开 serverUrl→续期→截图通知。
+
+- **账号 Secret**：新建 `ZAMPTO_USERS_JSON`，**需要 `serverUrl`**：
+  ```json
+  [{"username":"a@b.com","password":"pwd","serverUrl":"https://..."}]
+  ```
+- **Cloudflare KV（可选）**：配齐 `CF_ACCOUNT_ID` / `CF_KV_NAMESPACE_ID` / `CF_API_TOKEN` 三个 Secret 后启用 cookie 缓存——先注入 KV 里的 cookie 尝试免登录，失效才重新登录并把新 cookie 存回 KV（与其它站共用同一套 KV Secret，cookie key 为 `zampto_cookie_<用户名>`）。
+- **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
+- **触发**：每天北京时间凌晨 3 点，或手动 "Run workflow" (选 `Zampto Auto Renew`)。截图在 `zampto-screenshots` artifact。
 
 ---
 
