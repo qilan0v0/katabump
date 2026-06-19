@@ -71,6 +71,10 @@ jobs:
         # Secret FREEMCHOST_USERS_JSON 格式:
         # [{"username":"xxx","password":"xxx","serverUrl":"https://new.freemchost.com/server/xxxx"}]
         FREEMCHOST_USERS_JSON: ${{ secrets.FREEMCHOST_USERS_JSON }}
+        # Cloudflare KV：缓存登录 cookie，免每次登录。三者都配齐才启用
+        CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+        CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}

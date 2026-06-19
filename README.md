@@ -220,6 +220,7 @@ node renew.js
   ```json
   [{"username":"a@b.com","password":"pwd","serverUrl":"https://new.freemchost.com/server/xxxx"}]
   ```
+- **Cloudflare KV（可选）**：配齐 `CF_ACCOUNT_ID` / `CF_KV_NAMESPACE_ID` / `CF_API_TOKEN` 三个 Secret 后启用 cookie 缓存——先注入 KV 里的 cookie 尝试免登录，失效才重新登录并把新 cookie 存回 KV（与 weirdhost 共用同一套 KV Secret，cookie key 为 `freemchost_cookie_<用户名>`）。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间凌晨 2 点，或手动 "Run workflow" (选 `FreeMCHost Auto Renew`)。截图在 `freemchost-screenshots` artifact。
 

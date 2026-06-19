@@ -94,6 +94,63 @@ if (HTTP_PROXY) {
     }
 }
 
+// --- Cloudflare KV：存取登录 cookie，避免每次都登录 ---
+const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const CF_KV_NAMESPACE_ID = process.env.CF_KV_NAMESPACE_ID;
+const CF_API_TOKEN = process.env.CF_API_TOKEN;
+const KV_ENABLED = !!(CF_ACCOUNT_ID && CF_KV_NAMESPACE_ID && CF_API_TOKEN);
+
+function kvUrl(key) {
+    return `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}`
+        + `/storage/kv/namespaces/${CF_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+}
+// 直连 (proxy:false)，不走 v2ray，避免被节点干扰
+async function kvGet(key) {
+    if (!KV_ENABLED) return null;
+    try {
+        const r = await axios.get(kvUrl(key), {
+            headers: { Authorization: `Bearer ${CF_API_TOKEN}` },
+            timeout: 15000, proxy: false, transformResponse: [(d) => d]
+        });
+        return typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+    } catch (e) {
+        if (e.response && e.response.status === 404) { console.log('[KV] 暂无已存 cookie'); return null; }
+        console.warn('[KV] 读取失败:', e.message);
+        return null;
+    }
+}
+async function kvPut(key, value) {
+    if (!KV_ENABLED) return false;
+    try {
+        await axios.put(kvUrl(key), value, {
+            headers: { Authorization: `Bearer ${CF_API_TOKEN}`, 'Content-Type': 'text/plain' },
+            timeout: 15000, proxy: false
+        });
+        console.log('[KV] cookie 已保存');
+        return true;
+    } catch (e) {
+        console.warn('[KV] 写入失败:', e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message);
+        return false;
+    }
+}
+
+// 规范化 cookie 数组为 Playwright addCookies 接受的格式 (兼容浏览器扩展导出的 expirationDate/sameSite 等)
+function normalizeCookies(arr) {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(c => {
+        const out = { name: c.name, value: String(c.value != null ? c.value : '') };
+        if (c.domain) out.domain = c.domain;
+        out.path = c.path || '/';
+        const exp = (typeof c.expires === 'number' ? c.expires : c.expirationDate);
+        if (typeof exp === 'number' && exp > 0) out.expires = Math.floor(exp);
+        out.httpOnly = !!c.httpOnly;
+        out.secure = !!c.secure;
+        const ss = (c.sameSite || '').toString().toLowerCase();
+        out.sameSite = ss === 'strict' ? 'Strict' : ss === 'none' ? 'None' : 'Lax';
+        return out;
+    }).filter(c => c.name && c.domain);
+}
+
 async function checkProxy() {
     if (!PROXY_CONFIG) return true;
     console.log('[代理] 正在验证代理连接...');
@@ -273,20 +330,49 @@ async function loginOnce(page, user) {
         const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
         console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`);
 
+        const cookieKey = `freemchost_cookie_${safeUser}`;
         try {
             if (page.isClosed()) page = await context.newPage();
             try { await context.clearCookies(); } catch (e) { }
 
-            const loggedIn = await loginOnce(page, user);
-            if (!loggedIn) {
-                const shot = path.join(photoDir, `freemchost_${safeUser}_loginfail.png`);
-                try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                console.log(`   >> ❌ 登录失败，停留在: ${page.url()}`);
-                await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n停留在: ${page.url()}`, shot);
-                console.log('用户处理完成');
-                continue;
+            // 1. 先注入 KV 里的 cookie，尝试免登录
+            const saved = await kvGet(cookieKey);
+            if (saved) {
+                try {
+                    const cks = normalizeCookies(JSON.parse(saved));
+                    if (cks.length) { await context.addCookies(cks); console.log(`   >> 已注入 KV cookie (${cks.length} 条)`); }
+                } catch (e) { console.warn('   >> cookie 解析失败:', e.message); }
             }
-            console.log(`   >> ✅ 登录成功: ${page.url()}`);
+
+            // 2. 用 cookie 直接打开服务器页(无 serverUrl 则打开登录页)，判断 cookie 是否有效
+            let loggedIn = false;
+            if (saved) {
+                const probeUrl = user.serverUrl || LOGIN_URL;
+                await gotoWithRetry(page, probeUrl);
+                await page.waitForTimeout(2500);
+                // 没被跳回登录页 = cookie 有效
+                loggedIn = !/\/login/i.test(page.url());
+                console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (当前: ${page.url()})`);
+            }
+
+            // 3. cookie 失效 → 完整登录 → 存新 cookie
+            if (!loggedIn) {
+                loggedIn = await loginOnce(page, user);
+                if (!loggedIn) {
+                    const shot = path.join(photoDir, `freemchost_${safeUser}_loginfail.png`);
+                    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+                    console.log(`   >> ❌ 登录失败，停留在: ${page.url()}`);
+                    await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n停留在: ${page.url()}`, shot);
+                    console.log('用户处理完成');
+                    continue;
+                }
+                console.log(`   >> ✅ 登录成功: ${page.url()}`);
+                // 保存新 cookie 到 KV
+                try {
+                    const cookies = await context.cookies();
+                    await kvPut(cookieKey, JSON.stringify(cookies));
+                } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
+            }
 
             if (!user.serverUrl) {
                 const shot = path.join(photoDir, `freemchost_${safeUser}.png`);
