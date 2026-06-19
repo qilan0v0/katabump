@@ -396,24 +396,9 @@ async function loginOnce(page, user) {
             await gotoWithRetry(page, user.serverUrl);
             await page.waitForTimeout(3000);
 
-            // 调试：打印页面上所有 button / a / [role=button] 的文字和关键属性，方便定位续期控件
-            try {
-                const controls = await page.evaluate(() => {
-                    const out = [];
-                    document.querySelectorAll('button, a, [role="button"]').forEach(el => {
-                        const txt = (el.innerText || el.textContent || '').trim().slice(0, 40);
-                        const cls = (el.className || '').toString().slice(0, 60);
-                        const href = el.getAttribute('href') || '';
-                        if (txt || cls) out.push(`<${el.tagName.toLowerCase()}> "${txt}" class="${cls}" href="${href}"`);
-                    });
-                    return out.slice(0, 60);
-                });
-                console.log('   >> 页面控件清单:\n' + controls.join('\n'));
-            } catch (e) { console.log('   >> 控件清单获取失败:', e.message); }
-
-            // 放宽匹配：button / a / [role=button]，关键词覆盖 renew/extend/add time/续期/延长
+            // 续期按钮：精确匹配 "Renew Server"（绿色按钮），兼容 button/a/[role=button] 及其它续期文案
             const renewBtn = page.locator('button, a, [role="button"]')
-                .filter({ hasText: /renew|extend|add\s?time|续期|延长/i })
+                .filter({ hasText: /renew\s*server|renew|extend|add\s?time|续期|延长/i })
                 .first();
             const shot = path.join(photoDir, `zampto_${safeUser}_renew.png`);
             try {
