@@ -162,6 +162,8 @@ node renew.js
 * `.github/workflows/aclclouds.yml`: ACLClouds (`dash.aclclouds.com`) 续期定时任务（与 katabump 同款面板，复用 `action_renew.js`）。
 * `searcade_login.js`: Searcade (`searcade.com`) 登录保活脚本（云端，经 userveria OAuth 两步登录）。
 * `.github/workflows/searcade.yml`: Searcade 登录保活定时任务（每周一北京时间 11:00）。
+* `freemchost_renew.js`: FreeMCHost (`new.freemchost.com`) 续期脚本（云端，登录后打开 serverUrl 点 Renew now 续期）。
+* `.github/workflows/freemchost.yml`: FreeMCHost 续期定时任务（每天北京时间凌晨 2 点）。
 * `weirdhost_renew.js`: Weirdhost (`hub.weirdhost.xyz`) 续期脚本（云端，过 CF 全屏验证 + 韩文面板登录 + serverUrl 点 연장하기）。
 * `.github/workflows/weirdhost.yml`: Weirdhost 续期定时任务（每天北京时间凌晨 1 点）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
@@ -207,6 +209,19 @@ node renew.js
   ```
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每周一北京时间 11:00，或手动 "Run workflow" (选 `Searcade Auto Login`)。截图在 `searcade-screenshots` artifact。
+
+---
+
+## ⛏️ FreeMCHost 续期 (附加)
+
+`new.freemchost.com` 登录后打开服务器页面点 **Renew now** 续期。脚本自动完成登录→打开 serverUrl→续期→截图通知。无验证码。
+
+- **账号 Secret**：新建 `FREEMCHOST_USERS_JSON`，**需要 `serverUrl`**：
+  ```json
+  [{"username":"a@b.com","password":"pwd","serverUrl":"https://new.freemchost.com/server/xxxx"}]
+  ```
+- **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
+- **触发**：每天北京时间凌晨 2 点，或手动 "Run workflow" (选 `FreeMCHost Auto Renew`)。截图在 `freemchost-screenshots` artifact。
 
 ---
 
