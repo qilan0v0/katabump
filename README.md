@@ -91,10 +91,10 @@ npm install
 
 ### 3. 配置账号
 
-项目中有一个 `login.json.template` 模板文件。
+在项目根目录**新建** `login.json`（已被 `.gitignore` 忽略，不会上传到 GitHub），填入你的账号密码：
 
-1. 将其**重命名**为 `login.json`。
-2. 用记事本或编辑器打开，填入你的账号密码：
+1. 新建文件 `login.json`。
+2. 用记事本或编辑器打开，填入账号数组：
    ```json
    [
        {
