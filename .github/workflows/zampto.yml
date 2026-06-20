@@ -45,8 +45,8 @@ jobs:
       env:
         PROJECT_NAME: Zampto
         # Secret ZAMPTO_USERS_JSON 格式:
-        # [{"username":"xxx","password":"xxx","serverUrl":"https://...","vmess":"vmess://..."}]
-        # 每个用户可通过 vmess 字段指定自己的代理节点，脚本自动启停
+        # [{"username":"xxx","password":"xxx","serverUrl":"https://...","proxy":"vmess://..."}]
+        # 每个用户可通过 proxy 字段指定自己的代理节点，脚本自动启停
         ZAMPTO_USERS_JSON: ${{ secrets.ZAMPTO_USERS_JSON }}
         # Cloudflare KV：缓存登录 cookie，免每次登录。三者都配齐才启用
         CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
