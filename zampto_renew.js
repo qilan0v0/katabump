@@ -450,7 +450,7 @@ async function processUser(context, page, user, photoDir) {
                     console.log(`   >> ❌ 登录失败，停留在: ${page.url()}`);
                     await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n停留在: ${page.url()}`, shot);
                     console.log('用户处理完成');
-                    continue;
+                    return;
                 }
                 console.log(`   >> ✅ 登录成功: ${page.url()}`);
                 // 保存新 cookie 到 KV
@@ -465,7 +465,7 @@ async function processUser(context, page, user, photoDir) {
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
                 await sendTelegramMessage(`✅ *登录成功*\n用户: ${user.username}\n(未配置 serverUrl，跳过续期)`, shot);
                 console.log('用户处理完成');
-                continue;
+                return;
             }
 
             // 打开服务器页并点续期
@@ -484,7 +484,7 @@ async function processUser(context, page, user, photoDir) {
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e2) { }
                 await sendTelegramMessage(`⚠️ *未找到续期按钮*\n用户: ${user.username}\n详见截图`, shot);
                 console.log('用户处理完成');
-                continue;
+                return;
             }
 
             const disabled = await renewBtn.isDisabled().catch(() => false);
@@ -514,9 +514,70 @@ async function processUser(context, page, user, photoDir) {
             await sendTelegramMessage(`❌ *处理异常*\n用户: ${user.username}\n错误: ${err.message}`, shot);
         }
         console.log('用户处理完成');
+}
+
+(async () => {
+    const users = getUsers();
+    if (users.length === 0) {
+        console.log('未在 ZAMPTO_USERS_JSON 中找到用户');
+        process.exit(1);
     }
 
+    const photoDir = path.join(process.cwd(), 'screenshots');
+    if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
+
+    let lastProxyConfig = null;
+
+    for (let i = 0; i < users.length; i++) {
+        const user = users[i];
+        console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`);
+
+        const { config: proxyConfig, label: proxyLabel } = await resolveUserProxy(user);
+        console.log(`   >> 使用代理: ${proxyLabel}`);
+
+        const proxyChanged = JSON.stringify(proxyConfig) !== JSON.stringify(lastProxyConfig);
+        if (proxyChanged) {
+            await stopChrome();
+            if (proxyConfig) {
+                const ok = await checkProxy(proxyConfig);
+                if (!ok) {
+                    console.error('[代理] 代理无效，跳过该用户。');
+                    continue;
+                }
+            }
+            await launchChrome(proxyConfig);
+            lastProxyConfig = proxyConfig;
+        }
+
+        console.log('正在连接 Chrome...');
+        let browser;
+        for (let k = 0; k < 5; k++) {
+            try {
+                browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
+                console.log('连接成功！');
+                break;
+            } catch (e) {
+                console.log(`连接尝试 ${k + 1} 失败。2秒后重试...`);
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+        if (!browser) { console.error('连接失败，跳过该用户。'); continue; }
+
+        const context = browser.contexts()[0];
+        let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
+        page.setDefaultTimeout(60000);
+
+        if (proxyConfig && proxyConfig.username) {
+            await context.setHTTPCredentials({ username: proxyConfig.username, password: proxyConfig.password });
+        } else {
+            await context.setHTTPCredentials(null);
+        }
+
+        await processUser(context, page, user, photoDir);
+        await browser.close();
+    }
+
+    stopAllV2ray();
     console.log('完成。');
-    await browser.close();
     process.exit(0);
 })();
