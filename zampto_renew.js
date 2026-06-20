@@ -403,7 +403,7 @@ async function resolveUserProxy(user) {
     if (user.proxy && typeof user.proxy === 'string' && user.proxy.trim()) {
         const link = user.proxy.trim();
         // http(s):// 或 socks5:// → 直接解析，不走 v2ray
-        if (/^(https?|socks5?):///i.test(link)) {
+        if (/^(https?|socks5?):\/\//i.test(link)) {
             const cfg = parseProxyUrl(link);
             if (cfg) return { config: cfg, label: `直连代理 (${cfg.server})` };
             console.warn(`   >> proxy 格式无效，回退到全局代理。`);
