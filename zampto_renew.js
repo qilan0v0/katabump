@@ -493,9 +493,10 @@ async function processUser(context, page, user, photoDir) {
             } else {
                 console.log('   >> 点击续期...');
                 try { await renewBtn.click({ timeout: 8000 }); } catch (e) { await renewBtn.click({ force: true }); }
-                await page.waitForTimeout(4000);
+                // 等 toast/弹窗出现；优先用 networkidle，降级到固定等待
+                await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => page.waitForTimeout(5000));
                 const after = await page.locator('body').innerText().catch(() => '');
-                const ok = /success|renewed|extended/i.test(after);
+                const ok = /success|renewed|successfully|extended/i.test(after);
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
                 if (ok) {
                     console.log('   >> ✅ 续期成功。');
