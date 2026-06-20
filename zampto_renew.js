@@ -524,7 +524,7 @@ async function processUser(context, page, user, photoDir) {
     const photoDir = path.join(process.cwd(), 'screenshots');
     if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
 
-    let lastProxyConfig = null;
+    let lastProxyConfig = undefined;
 
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
