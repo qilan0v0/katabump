@@ -418,8 +418,6 @@ async function processUser(context, page, user, photoDir) {
     try {
         if (page.isClosed()) page = await context.newPage();
         try { await context.clearCookies(); } catch (e) { }
-            if (page.isClosed()) page = await context.newPage();
-            try { await context.clearCookies(); } catch (e) { }
 
             // 1. 先注入 KV 里的 cookie，尝试免登录
             const saved = await kvGet(cookieKey);
