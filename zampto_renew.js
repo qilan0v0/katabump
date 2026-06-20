@@ -237,12 +237,36 @@ function normalizeCookies(arr) {
 async function checkProxy(proxyConfig) {
     if (!proxyConfig) return true;
     console.log('[代理] 正在验证代理连接...');
+    const proxyUrl = new URL(proxyConfig.server);
+    const isSocks = /^socks/i.test(proxyUrl.protocol);
+
+    if (isSocks) {
+        // SOCKS5: 只用 TCP 连通性测试（axios 不支持 socks），Chrome 原生支持 socks5://
+        console.log(`[代理] SOCKS5 代理, 测试 TCP 连通性 ${proxyUrl.hostname}:${proxyUrl.port}...`);
+        try {
+            await new Promise((resolve, reject) => {
+                const sock = require('net').createConnection(proxyUrl.port, proxyUrl.hostname, () => {
+                    sock.destroy();
+                    resolve();
+                });
+                sock.on('error', reject);
+                sock.setTimeout(10000, () => { sock.destroy(); reject(new Error('超时')); });
+            });
+            console.log('[代理] TCP 连接成功！(SOCKS5)');
+            return true;
+        } catch (error) {
+            console.error(`[代理] TCP 连接失败: ${error.message}`);
+            return false;
+        }
+    }
+
+    // HTTP/HTTPS 代理: 用 axios 通过代理访问 Google 验证
     try {
         const axiosConfig = {
             proxy: {
-                protocol: 'http',
-                host: new URL(proxyConfig.server).hostname,
-                port: new URL(proxyConfig.server).port,
+                protocol: proxyUrl.protocol.replace(/:$/, ''),
+                host: proxyUrl.hostname,
+                port: proxyUrl.port,
             },
             timeout: 10000
         };
