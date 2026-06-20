@@ -394,16 +394,27 @@ async function loginOnce(page, user) {
     return !/sign-in|\/login/i.test(page.url());
 }
 
-// 解析每个用户应使用的代理: 用户自带 proxy 链接 → 为其启动 per-user v2ray (本地 http url);
-// 不带 proxy → 回退到全局 HTTP_PROXY。返回 { config, label } (config 为 null 表示直连)。
+// 解析每个用户应使用的代理:
+//   proxy = http(s)://... 或 socks5:// → 直接用该代理，不启 v2ray
+//   proxy = vmess:// / vless://       → 为其启动 per-user v2ray (本地 http url)
+//   不带 proxy                        → 回退到全局 HTTP_PROXY
+// 返回 { config, label } (config 为 null 表示直连)
 async function resolveUserProxy(user) {
     if (user.proxy && typeof user.proxy === 'string' && user.proxy.trim()) {
         const link = user.proxy.trim();
-        const localUrl = await startV2rayForLink(link);
-        if (localUrl) {
-            return { config: parseProxyUrl(localUrl), label: `专属代理 (${localUrl})` };
+        // http(s):// 或 socks5:// → 直接解析，不走 v2ray
+        if (/^(https?|socks5?):///i.test(link)) {
+            const cfg = parseProxyUrl(link);
+            if (cfg) return { config: cfg, label: `直连代理 (${cfg.server})` };
+            console.warn(`   >> proxy 格式无效，回退到全局代理。`);
+        } else {
+            // vmess:// / vless:// → 启动 per-user v2ray
+            const localUrl = await startV2rayForLink(link);
+            if (localUrl) {
+                return { config: parseProxyUrl(localUrl), label: `专属 v2ray (${localUrl})` };
+            }
+            console.warn(`   >> 用户专属 proxy 启动失败，回退到全局代理。`);
         }
-        console.warn(`   >> 用户专属 proxy 启动失败，回退到全局代理。`);
     }
     return {
         config: GLOBAL_PROXY_CONFIG,
