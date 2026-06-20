@@ -89,6 +89,10 @@ function buildConfig(link, httpPort) {
             protocol: 'http',
             settings: { allowTransparent: false }
         }],
+        routing: {
+            domainStrategy: 'UseIPv4',
+            rules: []
+        },
         outbounds: [
             { ...outbound, tag: 'proxy' },
             { protocol: 'freedom', tag: 'direct' }
