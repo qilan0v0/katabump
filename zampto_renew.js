@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
 const http = require('http');
+const net = require('net');
 const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
 
 const LOGIN_URL = 'https://auth.zampto.net/sign-in';
@@ -315,6 +316,92 @@ async function checkProxy(proxyConfig) {
     }
 }
 
+// --- SOCKS5 认证中继 ---
+// Chrome 的 --proxy-server 不支持 socks5://user:pass@host:port,
+// 所以需要创建一个本地 HTTP 代理，把 CONNECT 请求中继到带认证的 SOCKS5 代理。
+// 返回 { server, close }，server 是 http://127.0.0.1:PORT，close 用于关闭监听。
+function startSocksRelay(socksHost, socksPort, username, password) {
+    const server = http.createServer();
+    server.on('connect', (req, clientSocket, head) => {
+        const [targetHost, targetPort] = req.url.split(':');
+
+        const socks = net.createConnection(socksPort, socksHost, () => {
+            // 1. SOCKS5 握手：认证方法协商
+            socks.write(Buffer.from([0x05, 0x01, 0x02])); // SOCKS5, 1 method, username/pass
+        });
+
+        // 统一错误处理：任一 socket 出错，两边都关闭
+        function cleanup() {
+            try { socks.destroy(); } catch (e) {}
+            try { clientSocket.destroy(); } catch (e) {}
+        }
+        socks.on('error', cleanup);
+        clientSocket.on('error', cleanup);
+
+        // 2. 读取 SOCKS5 认证方法响应
+        socks.once('data', resp => {
+            if (resp[0] !== 0x05 || (resp[1] !== 0x02 && resp[1] !== 0x00)) {
+                if (!clientSocket.destroyed) clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+                return cleanup();
+            }
+
+            if (resp[1] === 0x02) {
+                // 3. 服务器要求 username/password 认证 (RFC 1929)
+                const u = Buffer.from(username || '');
+                const p = Buffer.from(password || '');
+                socks.write(Buffer.concat([Buffer.from([0x01, u.length]), u, Buffer.from([p.length]), p]));
+                // 4. 读取认证响应
+                socks.once('data', authResp => {
+                    if (authResp[0] !== 0x01 || authResp[1] !== 0x00) {
+                        if (!clientSocket.destroyed) clientSocket.end('HTTP/1.1 502 Proxy Auth Failed\r\n\r\n');
+                        return cleanup();
+                    }
+                    doConnect();
+                });
+            } else {
+                // 无认证
+                doConnect();
+            }
+        });
+
+        function doConnect() {
+            // 5. SOCKS5 CONNECT 请求
+            const hostBuf = Buffer.from(targetHost);
+            const portNum = parseInt(targetPort, 10);
+            socks.write(Buffer.concat([
+                Buffer.from([0x05, 0x01, 0x00, 0x03, hostBuf.length]),
+                hostBuf,
+                Buffer.from([(portNum >> 8) & 0xff, portNum & 0xff])
+            ]));
+            // 6. 读取 CONNECT 响应
+            socks.once('data', connectResp => {
+                if (connectResp[0] !== 0x05 || connectResp[1] !== 0x00) {
+                    if (!clientSocket.destroyed) clientSocket.end('HTTP/1.1 502 Proxy Connect Failed\r\n\r\n');
+                    return cleanup();
+                }
+                // 7. 通知客户端 CONNECT 成功
+                clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+                // 8. 转发可能已收到的 head 数据
+                if (head && head.length > 0) socks.unshift(head);
+                // 9. 双向中继
+                clientSocket.pipe(socks).pipe(clientSocket);
+            });
+        }
+    });
+    return new Promise(resolve => {
+        server.listen(0, '127.0.0.1', () => {
+            const port = server.address().port;
+            console.log(`[中继] 本地 SOCKS5 中继已启动: http://127.0.0.1:${port}`);
+            resolve({
+                server: `http://127.0.0.1:${port}`,
+                close: () => { try { server.close(); } catch (e) {} }
+            });
+        });
+    });
+}
+
+const socksRelays = []; // 启动的中继列表，退出时统一清理
+
 function checkPort(port) {
     return new Promise((resolve) => {
         const req = http.get(`http://localhost:${port}/json/version`, () => resolve(true));
@@ -456,8 +543,19 @@ async function resolveUserProxy(user) {
         // http(s):// 或 socks5:// → 直接解析，不走 v2ray
         if (/^(https?|socks5?):\/\//i.test(link)) {
             const cfg = parseProxyUrl(link);
-            if (cfg) return { config: cfg, label: `直连代理 (${cfg.server})` };
-            console.warn(`   >> proxy 格式无效，回退到全局代理。`);
+            if (!cfg) {
+                console.warn(`   >> proxy 格式无效，回退到全局代理。`);
+            } else if (cfg.username && /^socks5/i.test(cfg.server)) {
+                // SOCKS5 + 认证：Chrome 不支持 --proxy-server 直接带认证，
+                // 启动本地 HTTP 中继来转发
+                const url = new URL(cfg.server);
+                const relay = await startSocksRelay(url.hostname, url.port, cfg.username, cfg.password);
+                socksRelays.push(relay);
+                const localCfg = parseProxyUrl(relay.server);
+                return { config: localCfg, label: `本地中继 → SOCKS5 (${url.hostname}:${url.port})` };
+            } else {
+                return { config: cfg, label: `直连代理 (${cfg.server})` };
+            }
         } else {
             // vmess:// / vless:// → 启动 per-user v2ray
             const localUrl = await startV2rayForLink(link);
@@ -639,6 +737,7 @@ async function processUser(context, page, user, photoDir) {
     }
 
     stopAllV2ray();
+    for (const r of socksRelays) r.close();
     console.log('完成。');
     process.exit(0);
 })();
