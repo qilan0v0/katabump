@@ -1,15 +1,7 @@
 // 将 vmess:// / vless:// 分享链接解析为带本地 HTTP 入站的 v2ray config.json
-// 用法: node gen-v2ray-config.js "<share-link>" <http-port> <out-path>
+// 用法 (CLI): node gen-v2ray-config.js "<share-link>" <http-port> <out-path>
+// 用法 (模块): const { buildConfig } = require('./gen-v2ray-config'); buildConfig(link, port)
 const fs = require('fs');
-
-const link = (process.argv[2] || '').trim();
-const httpPort = parseInt(process.argv[3] || '10809', 10);
-const outPath = process.argv[4] || 'v2ray-config.json';
-
-if (!link) {
-    console.error('[v2ray] 缺少分享链接 (Secret V2RAY_VMESS 未设置?)');
-    process.exit(1);
-}
 
 function b64decode(s) {
     s = s.replace(/-/g, '+').replace(/_/g, '/');
@@ -17,6 +9,8 @@ function b64decode(s) {
     return Buffer.from(s, 'base64').toString('utf8');
 }
 
+// 解析分享链接为 v2ray outbound 对象（vmess:// 或 vless://）
+function parseOutbound(link) {
 let outbound;
 
 if (link.startsWith('vmess://')) {
@@ -78,24 +72,48 @@ if (link.startsWith('vmess://')) {
         streamSettings
     };
 } else {
-    console.error('[v2ray] 不支持的链接类型，仅支持 vmess:// 或 vless://');
-    process.exit(1);
+    throw new Error('[v2ray] 不支持的链接类型，仅支持 vmess:// 或 vless://');
+}
+    return outbound;
 }
 
-const config = {
-    log: { loglevel: 'warning' },
-    inbounds: [{
-        tag: 'http-in',
-        port: httpPort,
-        listen: '127.0.0.1',
-        protocol: 'http',
-        settings: { allowTransparent: false }
-    }],
-    outbounds: [
-        { ...outbound, tag: 'proxy' },
-        { protocol: 'freedom', tag: 'direct' }
-    ]
-};
+// 构建完整的 v2ray config 对象（含本地 HTTP 入站）
+function buildConfig(link, httpPort) {
+    const outbound = parseOutbound((link || '').trim());
+    return {
+        log: { loglevel: 'warning' },
+        inbounds: [{
+            tag: 'http-in',
+            port: httpPort,
+            listen: '127.0.0.1',
+            protocol: 'http',
+            settings: { allowTransparent: false }
+        }],
+        outbounds: [
+            { ...outbound, tag: 'proxy' },
+            { protocol: 'freedom', tag: 'direct' }
+        ]
+    };
+}
 
-fs.writeFileSync(outPath, JSON.stringify(config, null, 2));
-console.log(`[v2ray] 已生成配置 ${outPath} (协议=${outbound.protocol}, HTTP 入站=127.0.0.1:${httpPort})`);
+module.exports = { parseOutbound, buildConfig, b64decode };
+
+// CLI 入口：仅在被直接执行时运行
+if (require.main === module) {
+    const link = (process.argv[2] || '').trim();
+    const httpPort = parseInt(process.argv[3] || '10809', 10);
+    const outPath = process.argv[4] || 'v2ray-config.json';
+    if (!link) {
+        console.error('[v2ray] 缺少分享链接 (Secret V2RAY_VMESS 未设置?)');
+        process.exit(1);
+    }
+    let config;
+    try {
+        config = buildConfig(link, httpPort);
+    } catch (e) {
+        console.error(e.message);
+        process.exit(1);
+    }
+    fs.writeFileSync(outPath, JSON.stringify(config, null, 2));
+    console.log(`[v2ray] 已生成配置 ${outPath} (协议=${config.outbounds[0].protocol}, HTTP 入站=127.0.0.1:${httpPort})`);
+}

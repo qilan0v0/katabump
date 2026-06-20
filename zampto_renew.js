@@ -2,7 +2,10 @@
 // 流程: 打开登录页 → 输邮箱点继续 → 输密码点登录 → 登录成功
 //       → 打开配置的 serverUrl → 点续期按钮
 // 账号来源: Secret ZAMPTO_USERS_JSON =
-//   [{"username":"a@b.com","password":"pwd","serverUrl":"https://..."}]
+//   [{"username":"a@b.com","password":"pwd","serverUrl":"https://...","proxy":"vmess://..."}]
+//   proxy 字段可选: 每个用户可带自己的 vmess:// / vless:// 分享链接, 脚本会为其
+//   启动独立的本地 v2ray 实例并让该用户的浏览器走它; 不带 proxy 的用户回退到
+//   全局 HTTP_PROXY (workflow 用 V2RAY_VMESS 启动的 127.0.0.1:10809)。
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const axios = require('axios');
@@ -10,8 +13,78 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
 const http = require('http');
+const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
 
 const LOGIN_URL = 'https://auth.zampto.net/sign-in';
+
+// --- Per-user v2ray 进程管理 ---
+// 每个不同的 proxy 分享链接 → 一个独立 v2ray 实例, 本地 HTTP 端口从 10810 起递增。
+const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
+const PER_USER_PROXY_BASE_PORT = 10810;
+const v2rayProcs = [];        // 已启动的 { proc, port, link } 列表, 退出时统一清理
+const v2rayByLink = new Map(); // link → 本地 http 代理 url (复用同一链接的实例)
+let nextProxyPort = PER_USER_PROXY_BASE_PORT;
+
+function waitProxyReady(port, tries = 15) {
+    return new Promise((resolve) => {
+        let n = 0;
+        const tick = () => {
+            const req = http.get({
+                host: '127.0.0.1', port, path: '/', timeout: 3000,
+                // 通过本地 http 代理请求一个轻量目标, 能连上即视为就绪
+                headers: {}
+            }, () => resolve(true));
+            req.on('error', () => {
+                if (++n >= tries) return resolve(false);
+                setTimeout(tick, 2000);
+            });
+            req.on('timeout', () => { req.destroy(); if (++n >= tries) return resolve(false); else setTimeout(tick, 2000); });
+            req.end();
+        };
+        tick();
+    });
+}
+
+// 为某个分享链接启动 v2ray, 返回本地 http 代理 url (http://127.0.0.1:port)。失败返回 null。
+async function startV2rayForLink(link) {
+    if (v2rayByLink.has(link)) return v2rayByLink.get(link);
+    if (!fs.existsSync(V2RAY_BIN)) {
+        console.error(`[v2ray] 未找到 v2ray 二进制 (${V2RAY_BIN})，无法为用户启动专属代理。`);
+        return null;
+    }
+    const port = nextProxyPort++;
+    let cfgPath;
+    try {
+        const cfg = buildConfig(link, port);
+        cfgPath = path.join(process.cwd(), `v2ray-user-${port}.json`);
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+    } catch (e) {
+        console.error(`[v2ray] 解析用户 proxy 链接失败: ${e.message}`);
+        return null;
+    }
+    console.log(`[v2ray] 为用户代理启动实例 (端口 ${port})...`);
+    const proc = spawn(V2RAY_BIN, ['run', '-config', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
+    v2rayProcs.push({ proc, port, link });
+    const ready = await waitProxyReady(port);
+    if (!ready) {
+        console.error(`[v2ray] 端口 ${port} 未就绪。stderr 末尾:\n${stderr.slice(-400)}`);
+        return null;
+    }
+    const url = `http://127.0.0.1:${port}`;
+    v2rayByLink.set(link, url);
+    console.log(`[v2ray] 用户代理就绪: ${url}`);
+    return url;
+}
+
+function stopAllV2ray() {
+    for (const { proc, port } of v2rayProcs) {
+        try { process.kill(-proc.pid); } catch (e) { try { proc.kill(); } catch (e2) { } }
+        try { fs.unlinkSync(path.join(process.cwd(), `v2ray-user-${port}.json`)); } catch (e) { }
+    }
+}
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
@@ -77,21 +150,30 @@ const DEBUG_PORT = 9222;
 process.env.NO_PROXY = 'localhost,127.0.0.1';
 
 // --- Proxy Configuration ---
-const HTTP_PROXY = process.env.HTTP_PROXY;
-let PROXY_CONFIG = null;
-if (HTTP_PROXY) {
+// 全局 HTTP_PROXY (workflow 用 V2RAY_VMESS 启动的 127.0.0.1:10809) 作为回退代理。
+// 把一个 http://[user:pass@]host:port 形式的代理 url 解析为 { server, username, password }。
+// 解析失败返回 null。
+function parseProxyUrl(httpProxy) {
+    if (!httpProxy) return null;
     try {
-        const proxyUrl = new URL(HTTP_PROXY);
-        PROXY_CONFIG = {
+        const proxyUrl = new URL(httpProxy);
+        return {
             server: `${proxyUrl.protocol}//${proxyUrl.hostname}:${proxyUrl.port}`,
             username: proxyUrl.username ? decodeURIComponent(proxyUrl.username) : undefined,
             password: proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined
         };
-        console.log(`[代理] 检测到配置: 服务器=${PROXY_CONFIG.server}, 认证=${PROXY_CONFIG.username ? '是' : '否'}`);
     } catch (e) {
-        console.error('[代理] HTTP_PROXY 格式无效。期望: http://user:pass@host:port 或 http://host:port');
-        process.exit(1);
+        console.error(`[代理] 代理 url 格式无效 (${httpProxy})。期望: http://user:pass@host:port 或 http://host:port`);
+        return null;
     }
+}
+
+// 全局回退代理 (来自 HTTP_PROXY 环境变量)
+const GLOBAL_PROXY_CONFIG = parseProxyUrl(process.env.HTTP_PROXY);
+if (GLOBAL_PROXY_CONFIG) {
+    console.log(`[代理] 全局回退代理: 服务器=${GLOBAL_PROXY_CONFIG.server}, 认证=${GLOBAL_PROXY_CONFIG.username ? '是' : '否'}`);
+} else if (process.env.HTTP_PROXY) {
+    console.error('[代理] HTTP_PROXY 解析失败，将以直连方式运行。');
 }
 
 // --- Cloudflare KV：存取登录 cookie，避免每次都登录 ---
@@ -151,20 +233,21 @@ function normalizeCookies(arr) {
     }).filter(c => c.name && c.domain);
 }
 
-async function checkProxy() {
-    if (!PROXY_CONFIG) return true;
+// 验证某个代理配置能否连通 (proxyConfig 为 null 表示直连, 直接返回 true)
+async function checkProxy(proxyConfig) {
+    if (!proxyConfig) return true;
     console.log('[代理] 正在验证代理连接...');
     try {
         const axiosConfig = {
             proxy: {
                 protocol: 'http',
-                host: new URL(PROXY_CONFIG.server).hostname,
-                port: new URL(PROXY_CONFIG.server).port,
+                host: new URL(proxyConfig.server).hostname,
+                port: new URL(proxyConfig.server).port,
             },
             timeout: 10000
         };
-        if (PROXY_CONFIG.username && PROXY_CONFIG.password) {
-            axiosConfig.proxy.auth = { username: PROXY_CONFIG.username, password: PROXY_CONFIG.password };
+        if (proxyConfig.username && proxyConfig.password) {
+            axiosConfig.proxy.auth = { username: proxyConfig.username, password: proxyConfig.password };
         }
         await axios.get('https://www.google.com', axiosConfig);
         try {
@@ -189,7 +272,24 @@ function checkPort(port) {
     });
 }
 
-async function launchChrome() {
+let chromeProc = null; // 当前 Chrome 进程句柄, 供重启时杀掉旧实例
+
+// 杀掉当前 Chrome 并清掉用户数据目录, 以便用不同代理重新启动
+async function stopChrome() {
+    if (chromeProc) {
+        try { process.kill(-chromeProc.pid); } catch (e) { try { chromeProc.kill(); } catch (e2) { } }
+        chromeProc = null;
+    }
+    try { fs.rmSync('/tmp/chrome_user_data', { recursive: true, force: true }); } catch (e) { }
+    // 等端口释放, 避免新实例抢不到 DEBUG_PORT
+    for (let i = 0; i < 10; i++) {
+        if (!(await checkPort(DEBUG_PORT))) break;
+        await new Promise(r => setTimeout(r, 500));
+    }
+}
+
+// 启动 Chrome; proxyConfig 为 null 表示直连, 否则把 server 写进 --proxy-server。
+async function launchChrome(proxyConfig) {
     console.log('检查 Chrome 是否已在端口 ' + DEBUG_PORT + ' 上运行...');
     if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已开启。'); return; }
     const args = [
@@ -204,8 +304,8 @@ async function launchChrome() {
         '--disable-dev-shm-usage',
         '--user-data-dir=/tmp/chrome_user_data'
     ];
-    if (PROXY_CONFIG) {
-        args.push(`--proxy-server=${PROXY_CONFIG.server}`);
+    if (proxyConfig) {
+        args.push(`--proxy-server=${proxyConfig.server}`);
         args.push('--proxy-bypass-list=<-loopback>');
     }
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -215,6 +315,7 @@ async function launchChrome() {
         if (chrome.stderr) chrome.stderr.on('data', d => { stderr += d.toString(); });
         chrome.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
         chrome.unref();
+        chromeProc = chrome;
         console.log('正在等待 Chrome 初始化...');
         for (let i = 0; i < 40; i++) {
             if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已就绪。'); return; }
@@ -222,6 +323,7 @@ async function launchChrome() {
         }
         console.error(`Chrome 第 ${attempt} 次未在端口 ${DEBUG_PORT} 起来。stderr 末尾:\n` + stderr.slice(-800));
         try { process.kill(-chrome.pid); } catch (e) { }
+        chromeProc = null;
         try { fs.rmSync('/tmp/chrome_user_data', { recursive: true, force: true }); } catch (e) { }
         await new Promise(r => setTimeout(r, 2000));
     }
@@ -292,55 +394,30 @@ async function loginOnce(page, user) {
     return !/sign-in|\/login/i.test(page.url());
 }
 
-(async () => {
-    const users = getUsers();
-    if (users.length === 0) {
-        console.log('未在 ZAMPTO_USERS_JSON 中找到用户');
-        process.exit(1);
-    }
-
-    if (PROXY_CONFIG) {
-        const ok = await checkProxy();
-        if (!ok) { console.error('[代理] 代理无效，终止运行。'); process.exit(1); }
-    }
-
-    await launchChrome();
-
-    console.log('正在连接 Chrome...');
-    let browser;
-    for (let k = 0; k < 5; k++) {
-        try {
-            browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
-            console.log('连接成功！');
-            break;
-        } catch (e) {
-            console.log(`连接尝试 ${k + 1} 失败。2秒后重试...`);
-            await new Promise(r => setTimeout(r, 2000));
+// 解析每个用户应使用的代理: 用户自带 proxy 链接 → 为其启动 per-user v2ray (本地 http url);
+// 不带 proxy → 回退到全局 HTTP_PROXY。返回 { config, label } (config 为 null 表示直连)。
+async function resolveUserProxy(user) {
+    if (user.proxy && typeof user.proxy === 'string' && user.proxy.trim()) {
+        const link = user.proxy.trim();
+        const localUrl = await startV2rayForLink(link);
+        if (localUrl) {
+            return { config: parseProxyUrl(localUrl), label: `专属代理 (${localUrl})` };
         }
+        console.warn(`   >> 用户专属 proxy 启动失败，回退到全局代理。`);
     }
-    if (!browser) { console.error('连接失败。退出。'); process.exit(1); }
+    return {
+        config: GLOBAL_PROXY_CONFIG,
+        label: GLOBAL_PROXY_CONFIG ? `全局代理 (${GLOBAL_PROXY_CONFIG.server})` : '直连 (无代理)'
+    };
+}
 
-    const context = browser.contexts()[0];
-    let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
-    page.setDefaultTimeout(60000);
-
-    if (PROXY_CONFIG && PROXY_CONFIG.username) {
-        console.log('[代理] 正在设置认证...');
-        await context.setHTTPCredentials({ username: PROXY_CONFIG.username, password: PROXY_CONFIG.password });
-    } else {
-        await context.setHTTPCredentials(null);
-    }
-
-    const photoDir = path.join(process.cwd(), 'screenshots');
-    if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
-
-    for (let i = 0; i < users.length; i++) {
-        const user = users[i];
-        const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
-        console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`);
-
-        const cookieKey = `zampto_cookie_${safeUser}`;
-        try {
+// 处理单个用户的完整续期流程 (在已就绪的 context/page 上)。
+async function processUser(context, page, user, photoDir) {
+    const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
+    const cookieKey = `zampto_cookie_${safeUser}`;
+    try {
+        if (page.isClosed()) page = await context.newPage();
+        try { await context.clearCookies(); } catch (e) { }
             if (page.isClosed()) page = await context.newPage();
             try { await context.clearCookies(); } catch (e) { }
 
