@@ -155,17 +155,44 @@ process.env.NO_PROXY = 'localhost,127.0.0.1';
 // 解析失败返回 null。
 function parseProxyUrl(httpProxy) {
     if (!httpProxy) return null;
+    // 标准格式: socks5://user:pass@host:port
     try {
         const proxyUrl = new URL(httpProxy);
-        return {
-            server: `${proxyUrl.protocol}//${proxyUrl.hostname}:${proxyUrl.port}`,
-            username: proxyUrl.username ? decodeURIComponent(proxyUrl.username) : undefined,
-            password: proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined
-        };
-    } catch (e) {
-        console.error(`[代理] 代理 url 格式无效 (${httpProxy})。期望: http://user:pass@host:port 或 http://host:port`);
-        return null;
-    }
+        if (proxyUrl.hostname) {
+            const hasAuth = !!(proxyUrl.username && proxyUrl.password);
+            const protocol = proxyUrl.protocol;
+            const hostPort = `${proxyUrl.hostname}:${proxyUrl.port}`;
+            let server;
+            if (hasAuth && /^socks/i.test(protocol)) {
+                // SOCKS5 认证必须嵌在 URL 里传给 Chrome
+                server = `${protocol}//${encodeURIComponent(proxyUrl.username)}:${encodeURIComponent(proxyUrl.password)}@${hostPort}`;
+            } else {
+                server = `${protocol}//${hostPort}`;
+            }
+            return {
+                server,
+                username: proxyUrl.username ? decodeURIComponent(proxyUrl.username) : undefined,
+                password: proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined
+            };
+        }
+    } catch (e) { /* 尝试非标准格式 */ }
+
+    // 非标准格式: socks5://host:port:user:pass (如 CliProxy)
+    try {
+        const rest = httpProxy.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '');
+        const parts = rest.split(':');
+        if (parts.length === 4) {
+            const [host, port, username, password] = parts;
+            return {
+                server: `socks5://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${host}:${port}`,
+                username: decodeURIComponent(username),
+                password: decodeURIComponent(password)
+            };
+        }
+    } catch (e2) { /* 放弃 */ }
+
+    console.error(`[代理] 代理 url 格式无效 (${httpProxy})。期望: socks5://user:pass@host:port 或 socks5://host:port:user:pass`);
+    return null;
 }
 
 // 全局回退代理 (来自 HTTP_PROXY 环境变量)
