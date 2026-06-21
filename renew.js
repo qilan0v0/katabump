@@ -376,6 +376,12 @@ async function attemptTurnstileCdp(page) {
     await page.addInitScript(INJECTED_SCRIPT);
     console.log('Injection script added to page context.');
 
+    if (KV_ENABLED) {
+        console.log('[KV] Cloudflare KV 已启用，将缓存登录 cookie 避免重复登录。');
+    } else {
+        console.log('[KV] Cloudflare KV 未配置 (缺少 CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID / CF_API_TOKEN)，每次都将完整登录。');
+    }
+
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
         console.log(`\n=== Processing User ${i + 1}/${users.length}: ${user.username} ===`);
@@ -386,6 +392,9 @@ async function attemptTurnstileCdp(page) {
                 // Context credentials should persist, no need to re-auth per page
                 await page.addInitScript(INJECTED_SCRIPT); // 新页面也要注入
             }
+
+            // 清除上一个用户的 cookie，防止跨账号污染
+            try { await context.clearCookies(); } catch (e) { }
 
             const cookieKey = `katabump_cookie_${user.username.replace(/[^a-z0-9]/gi, '_')}`;
 
@@ -431,7 +440,7 @@ async function attemptTurnstileCdp(page) {
                     await emailInput.fill(user.username);
                     const pwdInput = page.getByRole('textbox', { name: 'Password' });
                     await pwdInput.fill(user.password);
-                await page.waitForTimeout(500);
+                    await page.waitForTimeout(500);
 
                 // --- Cloudflare Turnstile Bypass for Login ---
                 console.log('   >> Checking for Turnstile before login (using CDP bypass)...');
