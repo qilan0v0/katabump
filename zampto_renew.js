@@ -18,6 +18,36 @@ const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
 
 const LOGIN_URL = 'https://auth.zampto.net/sign-in';
 
+// --- Turnstile CDP Bypass 注入脚本 ---
+// 劫持 attachShadow 捕获 Turnstile checkbox，计算位置比例存入 window.__turnstile_data
+const INJECTED_SCRIPT = `
+(function() {
+    if (window.self === window.top) return;
+    try {
+        function getRandomInt(m,n){return Math.floor(Math.random()*(n-m+1))+m}
+        let screenX = getRandomInt(800,1200), screenY = getRandomInt(400,600);
+        Object.defineProperty(MouseEvent.prototype,'screenX',{value:screenX});
+        Object.defineProperty(MouseEvent.prototype,'screenY',{value:screenY});
+    } catch(e){}
+    try {
+        const o=Element.prototype.attachShadow;
+        Element.prototype.attachShadow=function(i){
+            const s=o.call(this,i);
+            if(s){const c=()=>{
+                const cb=s.querySelector('input[type="checkbox"]');
+                if(cb){const r=cb.getBoundingClientRect();
+                if(r.width>0&&r.height>0&&window.innerWidth>0&&window.innerHeight>0){
+                    window.__turnstile_data={xRatio:(r.left+r.width/2)/window.innerWidth,yRatio:(r.top+r.height/2)/window.innerHeight};
+                    return true;
+                }}
+                return false;
+            };if(!c()){const m=new MutationObserver(()=>{if(c())m.disconnect()});m.observe(s,{childList:true,subtree:true});}}
+            return s;
+        };
+    } catch(e){}
+})();
+`;
+
 // --- Per-user v2ray 进程管理 ---
 // 每个不同的 proxy 分享链接 → 一个独立 v2ray 实例, 本地 HTTP 端口从 10810 起递增。
 const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
@@ -493,6 +523,34 @@ async function gotoWithRetry(page, url, retries = 3) {
     }
 }
 
+// 遍历所有 Frames，查找被注入脚本标记的 Turnstile 坐标，用 CDP 发送原生鼠标点击
+async function attemptTurnstileCdp(page) {
+    const frames = page.frames();
+    for (const frame of frames) {
+        try {
+            const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
+            if (data) {
+                console.log('   >> 在 Frame 中找到 Turnstile:', data);
+                const iframeElement = await frame.frameElement();
+                if (!iframeElement) continue;
+                const box = await iframeElement.boundingBox();
+                if (!box) continue;
+                const clickX = box.x + (box.width * data.xRatio);
+                const clickY = box.y + (box.height * data.yRatio);
+                console.log(`   >> CDP 点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
+                const client = await page.context().newCDPSession(page);
+                await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                console.log('   >> CDP 点击发送成功。');
+                await client.detach();
+                return true;
+            }
+        } catch (e) { /* 忽略跨域 Frame 错误 */ }
+    }
+    return false;
+}
+
 // 登录单个账号（两步：先邮箱后密码）：返回 true/false
 async function loginOnce(page, user) {
     await gotoWithRetry(page, LOGIN_URL);
@@ -576,7 +634,7 @@ async function processUser(context, page, user, photoDir) {
     const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
     const cookieKey = `zampto_cookie_${safeUser}`;
     try {
-        if (page.isClosed()) page = await context.newPage();
+        if (page.isClosed()) { page = await context.newPage(); await page.addInitScript(INJECTED_SCRIPT); }
         try { await context.clearCookies(); } catch (e) { }
 
             // 1. 先注入 KV 里的 cookie，尝试免登录
@@ -653,7 +711,47 @@ async function processUser(context, page, user, photoDir) {
             } else {
                 console.log('   >> 点击续期...');
                 try { await renewBtn.click({ timeout: 8000 }); } catch (e) { await renewBtn.click({ force: true }); }
-                // 等 toast/弹窗出现；优先用 networkidle，降级到固定等待
+
+                // --- 等待弹窗出现 + CF Turnstile 处理 ---
+                await page.waitForTimeout(3000);
+                console.log('   >> 等待 Turnstile 弹窗...');
+                let cdpClicked = false;
+                for (let findAttempt = 0; findAttempt < 20; findAttempt++) {
+                    cdpClicked = await attemptTurnstileCdp(page);
+                    if (cdpClicked) break;
+                    await page.waitForTimeout(1000);
+                }
+                if (cdpClicked) {
+                    console.log('   >> CDP 点击成功，等待验证结果...');
+                    for (let waitSec = 0; waitSec < 15; waitSec++) {
+                        let isSuccess = false;
+                        for (const f of page.frames()) {
+                            if (f.url().includes('cloudflare')) {
+                                try { if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) { isSuccess = true; break; } } catch (e) { }
+                            }
+                        }
+                        if (isSuccess) { console.log('   >> ✅ Turnstile 验证成功！'); break; }
+                        await page.waitForTimeout(1000);
+                    }
+                } else {
+                    console.log('   >> ⚠️ 未找到 Turnstile，继续...');
+                }
+                // 弹窗确认按钮
+                const confirmBtn = page.locator('#renew-modal button, #renew-modal [role="button"], button, a, [role="button"]')
+                    .filter({ hasText: /renew|confirm|续期|确定/i }).first();
+                if (await confirmBtn.isVisible().catch(() => false)) {
+                    await confirmBtn.click({ timeout: 8000 });
+                    try {
+                        if (await page.getByText('Please complete the captcha').isVisible({ timeout: 3000 })) {
+                            console.log('   >> ⚠️ Captcha 未通过，刷新重试...');
+                            await page.reload();
+                            await page.waitForTimeout(3000);
+                            console.log('用户处理完成（需重试）');
+                            return;
+                        }
+                    } catch (e) { }
+                }
+                // 检查结果
                 await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => page.waitForTimeout(5000));
                 const after = await page.locator('body').innerText().catch(() => '');
                 const ok = /success|renewed|successfully|extended/i.test(after);
@@ -725,6 +823,7 @@ async function processUser(context, page, user, photoDir) {
         const context = browser.contexts()[0];
         let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
         page.setDefaultTimeout(60000);
+        await page.addInitScript(INJECTED_SCRIPT);
 
         if (proxyConfig && proxyConfig.username) {
             await context.setHTTPCredentials({ username: proxyConfig.username, password: proxyConfig.password });
