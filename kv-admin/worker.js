@@ -193,9 +193,9 @@ const HTML = '<!DOCTYPE html>' +
 '  setTimeout(function(){t.classList.remove("show")},3000)' +
 '}' +
 'async function loadData(){' +
-'  document.getElementById("tableWrap").innerHTML="<div class=\"loading\">Loading...</div>";' +
+'  document.getElementById("tableWrap").innerHTML="<div class=\\"loading\\">Loading...</div>";' +
 '  var r=await api("/api/list",{});' +
-'  if(!r.ok){document.getElementById("tableWrap").innerHTML="<div class=\"empty\">Failed to load</div>";return}' +
+'  if(!r.ok){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">Failed to load</div>";return}' +
 '  DATA=(r.entries||[]).map(function(e){' +
 '    var ck=[];try{ck=JSON.parse(e.value||"[]")}catch(_){}' +
 '    if(!Array.isArray(ck))ck=[];' +
@@ -221,11 +221,11 @@ const HTML = '<!DOCTYPE html>' +
 '  var p={};' +
 '  for(var i=0;i<DATA.length;i++){var pr=DATA[i].project;p[pr]=(p[pr]||0)+1}' +
 '  var tabs=document.getElementById("tabs");' +
-'  var h="<button class=\"tab"+(activeTab==="All"?" active":"")+"\" data-action=\"switchTab\" data-tab=\"All\">All ("+DATA.length+")</button>";' +
+'  var h="<button class=\\"tab"+(activeTab==="All"?" active":"")+"\\" data-action=\\"switchTab\\" data-tab=\\"All\\">All ("+DATA.length+")</button>";' +
 '  var keys=Object.keys(p).sort();' +
 '  for(var i=0;i<keys.length;i++){' +
 '    var proj=keys[i];' +
-'    h+="<button class=\"tab"+(activeTab===proj?" active":"")+"\" data-action=\"switchTab\" data-tab=\""+proj+"\">"+proj+" ("+p[proj]+")</button>"' +
+'    h+="<button class=\\"tab"+(activeTab===proj?" active":"")+"\\" data-action=\\"switchTab\\" data-tab=\\""+proj+"\\">"+proj+" ("+p[proj]+")</button>"' +
 '  }' +
 '  tabs.innerHTML=h' +
 '}' +
@@ -239,7 +239,7 @@ const HTML = '<!DOCTYPE html>' +
 '  });' +
 '  f.sort(function(a,b){return a.key<b.key?-1:a.key>b.key?1:0});' +
 '  document.getElementById("countLabel").textContent=f.length+" entries";' +
-'  if(f.length===0){document.getElementById("tableWrap").innerHTML="<div class=\"empty\">No entries</div>";return}' +
+'  if(f.length===0){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">No entries</div>";return}' +
 '  var pbc=function(proj){' +
 '    var m={Katabump:"proj-katabump",Zampto:"proj-zampto",Vortexa:"proj-vortexa",Weirdhost:"proj-weirdhost",FreeMCHost:"proj-freemchost"};' +
 '    return m[proj]||"proj-unknown"' +
@@ -248,18 +248,18 @@ const HTML = '<!DOCTYPE html>' +
 '  for(var i=0;i<f.length;i++){' +
 '    var d=f[i];' +
 '    var exp=expandedKey===d.key;' +
-'    h+="<tr class=\""+(exp?"expanded":"")+"\" data-action=\"toggleExpand\" data-key=\""+d.key+"\">";' +
-'    h+="<td class=\"key-cell\" title=\""+d.key+"\">"+d.key+"</td>";' +
-'    h+="<td><span class=\"proj-badge "+pbc(d.project)+"\">"+d.project+"</span></td>";' +
-'    h+="<td class=\"email-cell\" title=\""+d.email+"\">"+d.email+"</td>";' +
-'    h+="<td><span class=\"num-badge\">"+d.count+"</span></td>";' +
-'    h+="<td class=\"expiry-cell\">"+(d.earliestExpiry?fmtDate2(d.earliestExpiry):"-")+"</td>";' +
-'    h+="<td class=\"updated-cell\">"+(d.updated?fmtDate2(d.updated):"-")+"</td>";' +
-'    h+="<td class=\"actions-cell\"><button class=\"btn-del\" data-action=\"deleteKey\" data-key=\""+d.key+"\">Delete</button></td>";' +
+'    h+="<tr class=\\""+(exp?"expanded":"")+"\\" data-action=\\"toggleExpand\\" data-key=\\""+d.key+"\\">";' +
+'    h+="<td class=\\"key-cell\\" title=\\""+d.key+"\\">"+d.key+"</td>";' +
+'    h+="<td><span class=\\"proj-badge "+pbc(d.project)+"\\">"+d.project+"</span></td>";' +
+'    h+="<td class=\\"email-cell\\" title=\\""+d.email+"\\">"+d.email+"</td>";' +
+'    h+="<td><span class=\\"num-badge\\">"+d.count+"</span></td>";' +
+'    h+="<td class=\\"expiry-cell\\">"+(d.earliestExpiry?fmtDate2(d.earliestExpiry):"-")+"</td>";' +
+'    h+="<td class=\\"updated-cell\\">"+(d.updated?fmtDate2(d.updated):"-")+"</td>";' +
+'    h+="<td class=\\"actions-cell\\"><button class=\\"btn-del\\" data-action=\\"deleteKey\\" data-key=\\""+d.key+"\\">Delete</button></td>";' +
 '    h+="</tr>";' +
 '    if(exp){' +
-'      h+="<tr class=\"detail-row\"><td colspan=\"7\"><div class=\"detail-inner\">";' +
-'      h+="<div class=\"meta\">Key: "+d.key+" &middot; "+d.count+" cookies</div>";' +
+'      h+="<tr class=\\"detail-row\\"><td colspan=\\"7\\"><div class=\\"detail-inner\\">";' +
+'      h+="<div class=\\"meta\\">Key: "+d.key+" &middot; "+d.count+" cookies</div>";' +
 '      h+="<pre>"+JSON.stringify(d.cookies,null,2)+"</pre>";' +
 '      h+="</div></td></tr>"' +
 '    }' +
@@ -274,7 +274,7 @@ const HTML = '<!DOCTYPE html>' +
 'async function confirmDelete(key){' +
 '  var box=document.createElement("div");' +
 '  box.className="modal-overlay";' +
-'  box.innerHTML="<div class=\"modal-box\"><h3>Delete cookie entry?</h3><p>Key: <strong>"+key+"</strong><br>This will remove the saved login cookie.</p><div class=\"modal-actions\"><button class=\"cancel\" data-action=\"closeModal\">Cancel</button><button class=\"confirm\" data-action=\"confirmDelete\" data-key=\""+key+"\">Delete</button></div></div>";' +
+'  box.innerHTML="<div class=\\"modal-box\\"><h3>Delete cookie entry?</h3><p>Key: <strong>"+key+"</strong><br>This will remove the saved login cookie.</p><div class=\\"modal-actions\\"><button class=\\"cancel\\" data-action=\\"closeModal\\">Cancel</button><button class=\\"confirm\\" data-action=\\"confirmDelete\\" data-key=\\""+key+"\\">Delete</button></div></div>";' +
 '  document.body.appendChild(box)' +
 '}' +
 'async function doDelete(key){' +
