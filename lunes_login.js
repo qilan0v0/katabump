@@ -15,6 +15,62 @@ const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const TG_THREAD_ID = process.env.TG_THREAD_ID; // 可选：超级群话题(Topic)的 message_thread_id
 const PROJECT = process.env.PROJECT_NAME || 'Lunes'; // 项目名，加在每条 TG 推送前缀
+// --- KV Admin Worker：通过 Worker API 存取登录 cookie ---
+const KV_ADMIN_URL = process.env.KV_ADMIN_URL;
+const KV_ADMIN_PASS = process.env.KV_ADMIN_PASS;
+const KV_ENABLED = !!(KV_ADMIN_URL && KV_ADMIN_PASS);
+
+if (!KV_ENABLED) console.log('[KV] 未配置 KV_ADMIN_URL/KV_ADMIN_PASS，跳过 cookie 缓存');
+
+async function kvGet(key) {
+    if (!KV_ENABLED) return null;
+    try {
+        const r = await axios.post(KV_ADMIN_URL + '/api/get', { key }, {
+            headers: { 'X-Admin-Pass': KV_ADMIN_PASS, 'Content-Type': 'application/json' },
+            timeout: 15000, proxy: false
+        });
+        if (r.data.ok && r.data.value != null) {
+            console.log('[KV] 读取成功，长度:', String(r.data.value).length);
+            return typeof r.data.value === 'string' ? r.data.value : JSON.stringify(r.data.value);
+        }
+        console.log('[KV] 暂无已存 cookie');
+        return null;
+    } catch (e) {
+        if (e.response && e.response.status === 404) { console.log('[KV] 暂无已存 cookie'); return null; }
+        console.warn('[KV] 读取失败:', e.message);
+        return null;
+    }
+}
+
+async function kvPut(key, value) {
+    if (!KV_ENABLED) return false;
+    try {
+        await axios.post(KV_ADMIN_URL + '/api/set', { key, value: String(value) }, {
+            headers: { 'X-Admin-Pass': KV_ADMIN_PASS, 'Content-Type': 'application/json' },
+            timeout: 15000, proxy: false
+        });
+        console.log('[KV] cookie 已保存');
+        return true;
+    } catch (e) {
+        console.warn('[KV] 写入失败:', e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message);
+        return false;
+    }
+}
+
+function normalizeCookies(arr) {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(function(c) {
+        var out = { name: c.name, value: String(c.value != null ? c.value : '') };
+        if (c.domain) out.domain = c.domain;
+        out.path = c.path || '/';
+        if (c.httpOnly) out.httpOnly = true;
+        if (c.secure) out.secure = true;
+        if (c.sameSite) out.sameSite = c.sameSite;
+        if (typeof c.expires === 'number' && c.expires > 0) out.expires = c.expires;
+        else if (typeof c.expirationDate === 'number' && c.expirationDate > 0) out.expires = c.expirationDate;
+        return out;
+    });
+}
 
 async function sendTelegramMessage(message, imagePath = null) {
     if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
@@ -391,6 +447,30 @@ async function solveCaptcha(page) {
             // 清掉上一个账号的会话，确保干净登录
             try { await context.clearCookies(); } catch (e) { }
 
+            // 尝试从 KV 读取已存 cookie
+            const cookieKey = 'lunes_cookie_' + user.username.replace(/[^a-z0-9]/gi, '_');
+            const saved = await kvGet(cookieKey);
+            if (saved) {
+                try {
+                    const cks = normalizeCookies(JSON.parse(saved));
+                    await context.addCookies(cks);
+                    console.log('   >> 已注入 KV cookie (' + cks.length + ' 条)');
+                    await gotoWithRetry(page, LOGIN_URL);
+                    await page.waitForTimeout(3000);
+                    if (!page.url().includes('/login')) {
+                        console.log('   >> cookie 有效，跳过登录');
+                        const shotPath2 = path.join(photoDir, 'lunes_' + user.username.replace(/[^a-z0-9]/gi, '_') + '.png');
+                        try { await page.screenshot({ path: shotPath2, fullPage: true }); } catch (e) { }
+                        await sendTelegramMessage('✅ *登录成功 (cookie 缓存)*\n用户: ' + user.username, shotPath2);
+                        continue;
+                    } else {
+                        console.log('   >> cookie 无效/已过期，重新登录');
+                    }
+                } catch (e) {
+                    console.log('   >> cookie 解析失败，重新登录');
+                }
+            }
+
             await gotoWithRetry(page, LOGIN_URL);
             await page.waitForTimeout(2000);
 
@@ -430,6 +510,8 @@ async function solveCaptcha(page) {
 
             if (loggedIn) {
                 console.log(`   >> ✅ 登录成功，当前页面: ${page.url()}`);
+                // 保存 cookie 到 KV
+                try { const cookies = await context.cookies(); await kvPut(cookieKey, JSON.stringify(cookies)); } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
                 await sendTelegramMessage(`✅ *Lunes 登录成功*\n用户: ${user.username}\n页面: ${page.url()}`, shotPath);
             } else {
                 console.log(`   >> ❌ 登录失败，仍停留在: ${page.url()}`);

@@ -72,6 +72,9 @@ jobs:
         # Secret LUNES_USERS_JSON 格式: [{"username": "xxx", "password": "xxx"}, ...]
         LUNES_USERS_JSON: ${{ secrets.LUNES_USERS_JSON }}
         # 若设置了 V2RAY_VMESS 则使用本地 v2ray HTTP 代理，否则回退到 secrets.HTTP_PROXY
+        # KV Admin Worker：缓存登录 cookie，免每次登录
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
