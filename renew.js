@@ -99,6 +99,60 @@ const INJECTED_SCRIPT = `
 })();
 `;
 
+// --- Cloudflare KV：存取登录 cookie，避免每次都登录 ---
+const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const CF_KV_NAMESPACE_ID = process.env.CF_KV_NAMESPACE_ID;
+const CF_API_TOKEN = process.env.CF_API_TOKEN;
+const KV_ENABLED = !!(CF_ACCOUNT_ID && CF_KV_NAMESPACE_ID && CF_API_TOKEN);
+
+function kvUrl(key) {
+    return `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}`
+        + `/storage/kv/namespaces/${CF_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+}
+async function kvGet(key) {
+    if (!KV_ENABLED) return null;
+    try {
+        const r = await axios.get(kvUrl(key), {
+            headers: { Authorization: `Bearer ${CF_API_TOKEN}` },
+            timeout: 15000, proxy: false, transformResponse: [(d) => d]
+        });
+        return typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+    } catch (e) {
+        if (e.response && e.response.status === 404) { console.log('[KV] 暂无已存 cookie'); return null; }
+        console.warn('[KV] 读取失败:', e.message);
+        return null;
+    }
+}
+async function kvPut(key, value) {
+    if (!KV_ENABLED) return false;
+    try {
+        await axios.put(kvUrl(key), value, {
+            headers: { Authorization: `Bearer ${CF_API_TOKEN}`, 'Content-Type': 'text/plain' },
+            timeout: 15000, proxy: false
+        });
+        console.log('[KV] cookie 已保存');
+        return true;
+    } catch (e) {
+        console.warn('[KV] 写入失败:', e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message);
+        return false;
+    }
+}
+function normalizeCookies(arr) {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(c => {
+        const out = { name: c.name, value: String(c.value != null ? c.value : '') };
+        if (c.domain) out.domain = c.domain;
+        out.path = c.path || '/';
+        const exp = (typeof c.expires === 'number' ? c.expires : c.expirationDate);
+        if (typeof exp === 'number' && exp > 0) out.expires = Math.floor(exp);
+        out.httpOnly = !!c.httpOnly;
+        out.secure = !!c.secure;
+        const ss = (c.sameSite || '').toString().toLowerCase();
+        out.sameSite = ss === 'strict' ? 'Strict' : ss === 'none' ? 'None' : 'Lax';
+        return out;
+    }).filter(c => c.name && c.domain);
+}
+
 // 辅助函数：检测代理是否可用
 async function checkProxy() {
     if (!PROXY_CONFIG) return true;
@@ -333,30 +387,50 @@ async function attemptTurnstileCdp(page) {
                 await page.addInitScript(INJECTED_SCRIPT); // 新页面也要注入
             }
 
-            // 登录逻辑保持不变...
-            console.log('Checking session state...');
-            if (page.url().includes('/auth/login')) {
-                // Already on login logic
-            } else if (page.url().includes('dashboard')) {
-                await page.goto('https://dashboard.katabump.com/auth/logout');
+            const cookieKey = `katabump_cookie_${user.username.replace(/[^a-z0-9]/gi, '_')}`;
+
+            // 1. 尝试注入 KV cookie 免登录
+            let loggedIn = false;
+            const saved = await kvGet(cookieKey);
+            if (saved) {
+                try {
+                    const cks = normalizeCookies(JSON.parse(saved));
+                    if (cks.length) { await context.addCookies(cks); console.log(`   >> 已注入 KV cookie (${cks.length} 条)`); }
+                } catch (e) { console.warn('   >> cookie 解析失败:', e.message); }
+                // 用 cookie 直接打开 dashboard 看是否有效
+                await page.goto('https://dashboard.katabump.com', { waitUntil: 'load', timeout: 15000 }).catch(() => {});
                 await page.waitForTimeout(2000);
-            } else {
-                await page.goto('https://dashboard.katabump.com/auth/login');
-                await page.waitForTimeout(2000);
-                if (page.url().includes('dashboard')) {
+                loggedIn = !page.url().includes('/auth/login');
+                console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (${page.url()})`);
+            }
+
+            // 2. cookie 失效 → 走完整登录流程
+            if (!loggedIn) {
+                console.log('Checking session state...');
+                if (page.url().includes('/auth/login')) {
+                    // Already on login logic
+                } else if (page.url().includes('dashboard')) {
                     await page.goto('https://dashboard.katabump.com/auth/logout');
                     await page.waitForTimeout(2000);
+                } else {
                     await page.goto('https://dashboard.katabump.com/auth/login');
+                    await page.waitForTimeout(2000);
+                    if (page.url().includes('dashboard')) {
+                        await page.goto('https://dashboard.katabump.com/auth/logout');
+                        await page.waitForTimeout(2000);
+                        await page.goto('https://dashboard.katabump.com/auth/login');
+                    }
                 }
             }
 
-            console.log('Filling credentials...');
-            try {
-                const emailInput = page.getByRole('textbox', { name: 'Email' });
-                await emailInput.waitFor({ state: 'visible', timeout: 5000 });
-                await emailInput.fill(user.username);
-                const pwdInput = page.getByRole('textbox', { name: 'Password' });
-                await pwdInput.fill(user.password);
+            if (!loggedIn) {
+                console.log('Filling credentials...');
+                try {
+                    const emailInput = page.getByRole('textbox', { name: 'Email' });
+                    await emailInput.waitFor({ state: 'visible', timeout: 5000 });
+                    await emailInput.fill(user.username);
+                    const pwdInput = page.getByRole('textbox', { name: 'Password' });
+                    await pwdInput.fill(user.password);
                 await page.waitForTimeout(500);
 
                 // --- Cloudflare Turnstile Bypass for Login ---
@@ -418,11 +492,18 @@ async function attemptTurnstileCdp(page) {
                 // 可能已经登录了，或者是其他 UI 状态
                 console.log('Login form interaction error (maybe already logged in?):', e.message);
             }
+            } // end if (!loggedIn)
 
+            // Cookie 免登录或刚登录成功 → 保存到 KV
             console.log('Waiting for "See" link...');
             try {
                 await page.getByRole('link', { name: 'See' }).first().waitFor({ timeout: 15000 });
                 await page.waitForTimeout(1000);
+                // 登录成功，保存 cookie 到 KV（无论是免登录还是新登录）
+                if (!loggedIn) {
+                    try { const cookies = await context.cookies(); await kvPut(cookieKey, JSON.stringify(cookies)); } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
+                    loggedIn = true;
+                }
                 await page.getByRole('link', { name: 'See' }).first().click();
             } catch (e) {
                 console.log('Could not find "See" button. Checking if already on detail page or login failed.');
