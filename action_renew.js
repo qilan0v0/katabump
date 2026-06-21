@@ -159,6 +159,60 @@ const INJECTED_SCRIPT = `
 })();
 `;
 
+// --- Cloudflare KV：存取登录 cookie，避免每次都登录 ---
+const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const CF_KV_NAMESPACE_ID = process.env.CF_KV_NAMESPACE_ID;
+const CF_API_TOKEN = process.env.CF_API_TOKEN;
+const KV_ENABLED = !!(CF_ACCOUNT_ID && CF_KV_NAMESPACE_ID && CF_API_TOKEN);
+
+function kvUrl(key) {
+    return `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}`
+        + `/storage/kv/namespaces/${CF_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+}
+async function kvGet(key) {
+    if (!KV_ENABLED) return null;
+    try {
+        const r = await axios.get(kvUrl(key), {
+            headers: { Authorization: `Bearer ${CF_API_TOKEN}` },
+            timeout: 15000, proxy: false, transformResponse: [(d) => d]
+        });
+        return typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+    } catch (e) {
+        if (e.response && e.response.status === 404) { console.log('[KV] 暂无已存 cookie'); return null; }
+        console.warn('[KV] 读取失败:', e.message);
+        return null;
+    }
+}
+async function kvPut(key, value) {
+    if (!KV_ENABLED) return false;
+    try {
+        await axios.put(kvUrl(key), value, {
+            headers: { Authorization: `Bearer ${CF_API_TOKEN}`, 'Content-Type': 'text/plain' },
+            timeout: 15000, proxy: false
+        });
+        console.log('[KV] cookie 已保存');
+        return true;
+    } catch (e) {
+        console.warn('[KV] 写入失败:', e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message);
+        return false;
+    }
+}
+function normalizeCookies(arr) {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(c => {
+        const out = { name: c.name, value: String(c.value != null ? c.value : '') };
+        if (c.domain) out.domain = c.domain;
+        out.path = c.path || '/';
+        const exp = (typeof c.expires === 'number' ? c.expires : c.expirationDate);
+        if (typeof exp === 'number' && exp > 0) out.expires = Math.floor(exp);
+        out.httpOnly = !!c.httpOnly;
+        out.secure = !!c.secure;
+        const ss = (c.sameSite || '').toString().toLowerCase();
+        out.sameSite = ss === 'strict' ? 'Strict' : ss === 'none' ? 'None' : 'Lax';
+        return out;
+    }).filter(c => c.name && c.domain);
+}
+
 // 辅助函数：检测代理是否可用
 async function checkProxy() {
     if (!PROXY_CONFIG) return true;
@@ -406,6 +460,12 @@ async function clickSimpleCaptcha(page, scope) {
 async function gotoWithRetry(page, url, retries = 3) {
     for (let i = 1; i <= retries; i++) {
         try {
+            // 如果当前页面崩溃 (chrome-error)，先导航到 about:blank 恢复
+            const cur = page.url();
+            if (cur.includes('chrome-error') || cur.includes('chromewebdata')) {
+                await page.goto('about:blank', { waitUntil: 'load', timeout: 10000 }).catch(() => {});
+                await page.waitForTimeout(1000);
+            }
             await page.goto(url, { waitUntil: 'load', timeout: 30000 });
             return;
         } catch (e) {
@@ -514,6 +574,12 @@ async function goToServerPage(page, user) {
     await page.addInitScript(INJECTED_SCRIPT);
     console.log('注入脚本已添加。');
 
+    if (KV_ENABLED) {
+        console.log('[KV] Cloudflare KV 已启用，将缓存登录 cookie 避免重复登录。');
+    } else {
+        console.log('[KV] Cloudflare KV 未配置 (缺少 CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID / CF_API_TOKEN)，每次都将完整登录。');
+    }
+
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
         console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`); // 隐去具体邮箱 logging
@@ -525,94 +591,119 @@ async function goToServerPage(page, user) {
                 await page.addInitScript(INJECTED_SCRIPT);
             }
 
-            // 清掉上一个账号的会话，确保干净登录 (多账号时避免串号)
+            // 清掉上一个账号的 cookie，防止跨账号污染
             try { await context.clearCookies(); } catch (e) { }
 
-            // --- 登录逻辑 (简略版，逻辑一致) ---
-            if (page.url().includes('dashboard')) {
-                await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
-                await page.waitForTimeout(2000);
-            }
-            // 总是先去登录页
-            await gotoWithRetry(page, `${BASE_URL}/auth/login`);
-            await page.waitForTimeout(2000);
-            if (page.url().includes('dashboard')) {
-                // 如果登出没成功，再次登出
-                await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
-                await page.waitForTimeout(2000);
-                await gotoWithRetry(page, `${BASE_URL}/auth/login`);
-            }
+            const cookieKey = `katabump_cookie_${user.username.replace(/[^a-z0-9]/gi, '_')}`;
 
-            console.log('正在输入凭据...');
-            try {
-                const emailInput = page.getByRole('textbox', { name: 'Email' });
-                await emailInput.waitFor({ state: 'visible', timeout: 5000 });
-                await emailInput.fill(user.username);
-                const pwdInput = page.getByRole('textbox', { name: 'Password' });
-                await pwdInput.fill(user.password);
-                await page.waitForTimeout(500);
-
-                // --- 登录验证码处理 ---
-                // 先试自定义复选框 (aclclouds)，命中就跳过 Turnstile
-                const simpleCaptcha = await clickSimpleCaptcha(page);
-
-                console.log('   >> 正在登录前检查 Turnstile (使用 CDP 绕过)...');
-                let cdpClickResult = false;
-                if (!simpleCaptcha) {
-                    for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
-                        cdpClickResult = await attemptTurnstileCdp(page);
-                        if (cdpClickResult) break;
-                        await page.waitForTimeout(1000);
-                    }
-                }
-
-                if (simpleCaptcha) {
-                    console.log('   >> 登录验证码 (自定义复选框) 已处理。');
-                } else if (cdpClickResult) {
-                    console.log('   >> 登录 CDP 点击生效。正在等待最多 10秒 Cloudflare 成功标志...');
-                    for (let waitSec = 0; waitSec < 10; waitSec++) {
-                        const frames = page.frames();
-                        let isSuccess = false;
-                        for (const f of frames) {
-                            if (f.url().includes('cloudflare')) {
-                                try {
-                                    if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) {
-                                        isSuccess = true;
-                                        break;
-                                    }
-                                } catch (e) { }
-                            }
-                        }
-                        if (isSuccess) {
-                            console.log('   >> 登录前 Turnstile 验证成功。');
-                            break;
-                        }
-                        await page.waitForTimeout(1000);
-                    }
-                } else {
-                    console.log('   >> 登录前未检测到或未点击 Turnstile，继续操作...');
-                }
-                // --------------------------------------------
-
-                // 登录按钮：katabump 是 "Login"，aclclouds 是 "Sign in"
-                await page.getByRole('button', { name: /^(log\s?in|sign\s?in)$/i }).first().click();
-
-                // User Request: Check for incorrect password
+            // 1. 尝试注入 KV cookie 免登录
+            let loggedIn = false;
+            const saved = await kvGet(cookieKey);
+            if (saved) {
                 try {
-                    const errorMsg = page.getByText('Incorrect password or no account');
-                    if (await errorMsg.isVisible({ timeout: 3000 })) {
-                        console.error(`   >> ❌ 登录失败: 用户 ${user.username} 账号或密码错误`);
-                        const failShotPath = path.join(photoDir, `${safeUsername}.png`);
-                        try { await page.screenshot({ path: failShotPath, fullPage: true }); } catch (e) { }
+                    const cks = normalizeCookies(JSON.parse(saved));
+                    if (cks.length) { await context.addCookies(cks); console.log(`   >> 已注入 KV cookie (${cks.length} 条)`); }
+                } catch (e) { console.warn('   >> cookie 解析失败:', e.message); }
+                // 用 cookie 直接打开 dashboard 探测是否有效
+                await page.goto(`${BASE_URL}`, { waitUntil: 'load', timeout: 15000 }).catch(() => {});
+                await page.waitForTimeout(2000);
+                loggedIn = !page.url().includes('/auth/login');
+                // 如果 chrome-error (页面崩溃)，cookie 无效
+                if (page.url().includes('chrome-error')) loggedIn = false;
+                console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (${page.url()})`);
+            }
 
-                        await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: 账号或密码错误`, failShotPath);
+            // 2. cookie 无效或没有 → 完整登录
+            if (!loggedIn) {
+                // 如果当前处于 chrome-error 崩溃状态，先恢复
+                if (page.url().includes('chrome-error') || page.url().includes('chromewebdata')) {
+                    await page.goto('about:blank').catch(() => {});
+                    await page.waitForTimeout(1000);
+                }
+                if (page.url().includes('dashboard')) {
+                    await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
+                    await page.waitForTimeout(2000);
+                }
+                await gotoWithRetry(page, `${BASE_URL}/auth/login`);
+                await page.waitForTimeout(2000);
+                if (page.url().includes('dashboard')) {
+                    await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
+                    await page.waitForTimeout(2000);
+                    await gotoWithRetry(page, `${BASE_URL}/auth/login`);
+                }
 
-                        continue;
+                console.log('正在输入凭据...');
+                try {
+                    const emailInput = page.getByRole('textbox', { name: 'Email' });
+                    await emailInput.waitFor({ state: 'visible', timeout: 5000 });
+                    await emailInput.fill(user.username);
+                    const pwdInput = page.getByRole('textbox', { name: 'Password' });
+                    await pwdInput.fill(user.password);
+                    await page.waitForTimeout(500);
+
+                    // --- 登录验证码处理 ---
+                    const simpleCaptcha = await clickSimpleCaptcha(page);
+
+                    console.log('   >> 正在登录前检查 Turnstile (使用 CDP 绕过)...');
+                    let cdpClickResult = false;
+                    if (!simpleCaptcha) {
+                        for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
+                            cdpClickResult = await attemptTurnstileCdp(page);
+                            if (cdpClickResult) break;
+                            await page.waitForTimeout(1000);
+                        }
                     }
-                } catch (e) { }
 
-            } catch (e) {
-                console.log('登录错误:', e.message);
+                    if (simpleCaptcha) {
+                        console.log('   >> 登录验证码 (自定义复选框) 已处理。');
+                    } else if (cdpClickResult) {
+                        console.log('   >> 登录 CDP 点击生效。正在等待最多 10秒 Cloudflare 成功标志...');
+                        for (let waitSec = 0; waitSec < 10; waitSec++) {
+                            const frames = page.frames();
+                            let isSuccess = false;
+                            for (const f of frames) {
+                                if (f.url().includes('cloudflare')) {
+                                    try {
+                                        if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) {
+                                            isSuccess = true;
+                                            break;
+                                        }
+                                    } catch (e) { }
+                                }
+                            }
+                            if (isSuccess) {
+                                console.log('   >> 登录前 Turnstile 验证成功。');
+                                break;
+                            }
+                            await page.waitForTimeout(1000);
+                        }
+                    } else {
+                        console.log('   >> 登录前未检测到或未点击 Turnstile，继续操作...');
+                    }
+
+                    await page.getByRole('button', { name: /^(log\s?in|sign\s?in)$/i }).first().click();
+
+                    // Check for incorrect password
+                    try {
+                        const errorMsg = page.getByText('Incorrect password or no account');
+                        if (await errorMsg.isVisible({ timeout: 3000 })) {
+                            console.error(`   >> ❌ 登录失败: 用户 ${user.username} 账号或密码错误`);
+                            const failShotPath = path.join(photoDir, `${safeUsername}.png`);
+                            try { await page.screenshot({ path: failShotPath, fullPage: true }); } catch (e) { }
+                            await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: 账号或密码错误`, failShotPath);
+                            continue;
+                        }
+                    } catch (e) { }
+
+                } catch (e) {
+                    console.log('登录错误:', e.message);
+                }
+            } // end if (!loggedIn)
+
+            // 3. 登录成功 → 保存 cookie 到 KV
+            if (!loggedIn) {
+                try { const cookies = await context.cookies(); await kvPut(cookieKey, JSON.stringify(cookies)); } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
+                loggedIn = true;
             }
 
             if (RENEW_ON_HOME) {
