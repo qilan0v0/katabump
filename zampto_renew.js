@@ -740,7 +740,9 @@ async function processUser(context, page, user, photoDir) {
                 const confirmBtn = page.locator('#renew-modal button, #renew-modal [role="button"], button, a, [role="button"]')
                     .filter({ hasText: /renew|confirm|续期|确定/i }).first();
                 if (await confirmBtn.isVisible().catch(() => false)) {
-                    await confirmBtn.click({ timeout: 8000 });
+                    console.log('   >> 点击弹窗确认按钮...');
+                    // Google Ad iframe 可能遮挡按钮，先 force: true 绕过
+                    await confirmBtn.click({ timeout: 8000, force: true }).catch(() => confirmBtn.click({ force: true, timeout: 8000 }));
                     try {
                         if (await page.getByText('Please complete the captcha').isVisible({ timeout: 3000 })) {
                             console.log('   >> ⚠️ Captcha 未通过，刷新重试...');
