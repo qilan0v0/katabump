@@ -54,7 +54,7 @@ const HTML = '<!DOCTYPE html>' +
 '<head>' +
 '<meta charset="UTF-8">' +
 '<meta name="viewport" content="width=device-width,initial-scale=1.0">' +
-'<title>KV Cookie Admin</title>' +
+'<title>KV Cookie 管理</title>' +
 '<style>' +
 '*{margin:0;padding:0;box-sizing:border-box}' +
 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0d1117;color:#e6edf3}' +
@@ -117,21 +117,21 @@ const HTML = '<!DOCTYPE html>' +
 '<body>' +
 '<div id="app">' +
 '  <div class="login-box" id="loginBox">' +
-'    <h1>KV Cookie Admin</h1>' +
-'    <input type="password" id="passInput" placeholder="Enter admin password" autofocus>' +
-'    <button id="loginBtn" class="login-btn">Sign In</button>' +
-'    <div class="err" id="loginErr">Invalid password</div>' +
+'    <h1>KV Cookie 管理</h1>' +
+'    <input type="password" id="passInput" placeholder="输入管理员密码" autofocus>' +
+'    <button id="loginBtn" class="login-btn">登录</button>' +
+'    <div class="err" id="loginErr">密码错误</div>' +
 '  </div>' +
 '  <div id="mainPanel" style="display:none">' +
 '    <div class="container">' +
 '      <div style="display:flex;justify-content:space-between;align-items:center">' +
-'        <div><h1>KV Cookie Admin</h1><div class="sub">Manage KV-stored login cookies</div></div>' +
-'        <button class="btn-del" data-action="refresh" style="color:#8b949e;border-color:#30363d">Refresh</button>' +
+'        <div><h1>KV Cookie 管理</h1><div class="sub">管理 KV 中存储的登录 Cookie</div></div>' +
+'        <button class="btn-del" data-action="refresh" style="color:#8b949e;border-color:#30363d">刷新</button>' +
 '      </div>' +
 '      <div class="tabs" id="tabs"></div>' +
 '      <div class="search-row">' +
-'        <input type="text" id="searchInput" placeholder="Search by key or email...">' +
-'        <span class="count" id="countLabel">0 entries</span>' +
+'        <input type="text" id="searchInput" placeholder="按 Key 或邮箱搜索…">' +
+'        <span class="count" id="countLabel">0 条记录</span>' +
 '      </div>' +
 '      <div id="tableWrap"></div>' +
 '    </div>' +
@@ -141,7 +141,7 @@ const HTML = '<!DOCTYPE html>' +
 '<script>' +
 'const PASS=(new URLSearchParams(location.search)).get("pass")||"";' +
 'let DATA=[];' +
-'let activeTab="All";' +
+'let activeTab="全部";' +
 'let expandedKey=null;' +
 'if(PASS) sessionStorage.setItem("kv_admin_pass",PASS);' +
 'window.addEventListener("error",function(e){console.error("[ERR]",e.message)});' +
@@ -171,7 +171,7 @@ const HTML = '<!DOCTYPE html>' +
 '      document.getElementById("mainPanel").style.display="block";' +
 '      loadData()' +
 '    }else document.getElementById("loginErr").style.display="block"' +
-'  }catch(e){console.error(e);document.getElementById("loginErr").textContent="Error: "+e.message;document.getElementById("loginErr").style.display="block"}' +
+'  }catch(e){console.error(e);document.getElementById("loginErr").textContent="错误： "+e.message;document.getElementById("loginErr").style.display="block"}' +
 '}' +
 '(async function(){' +
 '  var s=sessionStorage.getItem("kv_admin_pass");' +
@@ -193,9 +193,9 @@ const HTML = '<!DOCTYPE html>' +
 '  setTimeout(function(){t.classList.remove("show")},3000)' +
 '}' +
 'async function loadData(){' +
-'  document.getElementById("tableWrap").innerHTML="<div class=\\"loading\\">Loading...</div>";' +
+'  document.getElementById("tableWrap").innerHTML="<div class=\\"loading\\">加载中…</div>";' +
 '  var r=await api("/api/list",{});' +
-'  if(!r.ok){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">Failed to load</div>";return}' +
+'  if(!r.ok){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">加载失败</div>";return}' +
 '  DATA=(r.entries||[]).map(function(e){' +
 '    var ck=[];try{ck=JSON.parse(e.value||"[]")}catch(_){}' +
 '    if(!Array.isArray(ck))ck=[];' +
@@ -221,7 +221,7 @@ const HTML = '<!DOCTYPE html>' +
 '  var p={};' +
 '  for(var i=0;i<DATA.length;i++){var pr=DATA[i].project;p[pr]=(p[pr]||0)+1}' +
 '  var tabs=document.getElementById("tabs");' +
-'  var h="<button class=\\"tab"+(activeTab==="All"?" active":"")+"\\" data-action=\\"switchTab\\" data-tab=\\"All\\">All ("+DATA.length+")</button>";' +
+'  var h="<button class=\\"tab"+(activeTab==="全部"?" active":"")+"\\" data-action=\\"switchTab\\" data-tab=\\"全部\\">全部 ("+DATA.length+")</button>";' +
 '  var keys=Object.keys(p).sort();' +
 '  for(var i=0;i<keys.length;i++){' +
 '    var proj=keys[i];' +
@@ -233,18 +233,18 @@ const HTML = '<!DOCTYPE html>' +
 'function renderTable(){' +
 '  var q=document.getElementById("searchInput").value.toLowerCase().trim();' +
 '  var f=DATA.filter(function(d){' +
-'    if(activeTab!=="All"&&d.project!==activeTab)return false;' +
+'    if(activeTab!=="全部"&&d.project!==activeTab)return false;' +
 '    if(q&&d.key.toLowerCase().indexOf(q)===-1&&d.email.toLowerCase().indexOf(q)===-1)return false;' +
 '    return true' +
 '  });' +
 '  f.sort(function(a,b){return a.key<b.key?-1:a.key>b.key?1:0});' +
-'  document.getElementById("countLabel").textContent=f.length+" entries";' +
-'  if(f.length===0){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">No entries</div>";return}' +
+'  document.getElementById("countLabel").textContent=f.length+" 条记录";' +
+'  if(f.length===0){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">无记录</div>";return}' +
 '  var pbc=function(proj){' +
 '    var m={Katabump:"proj-katabump",Zampto:"proj-zampto",Vortexa:"proj-vortexa",Weirdhost:"proj-weirdhost",FreeMCHost:"proj-freemchost"};' +
 '    return m[proj]||"proj-unknown"' +
 '  };' +
-'  var h="<table><thead><tr><th>Key</th><th>Project</th><th>Email</th><th>Cookies</th><th>Earliest Expiry</th><th>Updated</th><th>Actions</th></tr></thead><tbody>";' +
+'  var h="<table><thead><tr><th>键名</th><th>项目</th><th>邮箱</th><th>Cookie</th><th>最早过期</th><th>更新时间</th><th>操作</th></tr></thead><tbody>";' +
 '  for(var i=0;i<f.length;i++){' +
 '    var d=f[i];' +
 '    var exp=expandedKey===d.key;' +
@@ -255,11 +255,11 @@ const HTML = '<!DOCTYPE html>' +
 '    h+="<td><span class=\\"num-badge\\">"+d.count+"</span></td>";' +
 '    h+="<td class=\\"expiry-cell\\">"+(d.earliestExpiry?fmtDate2(d.earliestExpiry):"-")+"</td>";' +
 '    h+="<td class=\\"updated-cell\\">"+(d.updated?fmtDate2(d.updated):"-")+"</td>";' +
-'    h+="<td class=\\"actions-cell\\"><button class=\\"btn-del\\" data-action=\\"deleteKey\\" data-key=\\""+d.key+"\\">Delete</button></td>";' +
+'    h+="<td class=\\"actions-cell\\"><button class=\\"btn-del\\" data-action=\\"deleteKey\\" data-key=\\""+d.key+"\\">删除</button></td>";' +
 '    h+="</tr>";' +
 '    if(exp){' +
 '      h+="<tr class=\\"detail-row\\"><td colspan=\\"7\\"><div class=\\"detail-inner\\">";' +
-'      h+="<div class=\\"meta\\">Key: "+d.key+" &middot; "+d.count+" cookies</div>";' +
+'      h+="<div class=\\"meta\\">键名： "+d.key+" &middot; "+d.count+" 个 Cookie</div>";' +
 '      h+="<pre>"+JSON.stringify(d.cookies,null,2)+"</pre>";' +
 '      h+="</div></td></tr>"' +
 '    }' +
@@ -274,14 +274,14 @@ const HTML = '<!DOCTYPE html>' +
 'async function confirmDelete(key){' +
 '  var box=document.createElement("div");' +
 '  box.className="modal-overlay";' +
-'  box.innerHTML="<div class=\\"modal-box\\"><h3>Delete cookie entry?</h3><p>Key: <strong>"+key+"</strong><br>This will remove the saved login cookie.</p><div class=\\"modal-actions\\"><button class=\\"cancel\\" data-action=\\"closeModal\\">Cancel</button><button class=\\"confirm\\" data-action=\\"confirmDelete\\" data-key=\\""+key+"\\">Delete</button></div></div>";' +
+'  box.innerHTML="<div class=\\"modal-box\\"><h3>删除此 Cookie 记录？</h3><p>键名： <strong>"+key+"</strong><br>这将移除已保存的登录 Cookie。</p><div class=\\"modal-actions\\"><button class=\\"cancel\\" data-action=\\"closeModal\\">取消</button><button class=\\"confirm\\" data-action=\\"confirmDelete\\" data-key=\\""+key+"\\">删除</button></div></div>";' +
 '  document.body.appendChild(box)' +
 '}' +
 'async function doDelete(key){' +
 '  var r=await api("/api/delete",{key:key});' +
-'  if(r.ok){toast("Deleted: "+key);await loadData()}else toast("Delete failed","err")' +
+'  if(r.ok){toast("已删除： "+key);await loadData()}else toast("删除失败","err")' +
 '}' +
-'function doRefresh(){loadData();toast("Refreshed")}' +
+'function doRefresh(){loadData();toast("已刷新")}' +
 '</script>' +
 '</body>' +
 '</html>';
