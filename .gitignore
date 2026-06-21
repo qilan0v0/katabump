@@ -5,3 +5,9 @@ ChromeData_Katabump/
 *.log
 .DS_Store
 photo/
+kv-admin/.wrangler/
+.claude/
+.playwright-mcp/
+.reasonix/
+reasonix.toml
+tmp/
