@@ -16,6 +16,7 @@
 - **自动重试 + 快速失败**: 内置重试机制，连续多次验证失败会提前放弃，避免空转浪费 CI 时间。
 - **多用户支持**: 支持配置多个账号批量续期。
 - **Telegram 通知**: 续期成功 / 失败 / 跳过时推送消息（含截图），支持超级群话题(Topic)。
+- **KV Cookie 缓存（Worker API）**：通过部署的 KV Admin Worker（`/api/get`、`/api/set`）统一存取登录 cookie，避免重复登录。仅需 `KV_ADMIN_URL` + `KV_ADMIN_PASS` 两个 Secret。支持所有项目（Katabump / ACLClouds / FreeMCHost / Zampto / Weirdhost / Lunes / Searcade）。
 - **代理支持**: 支持普通 HTTP 代理，也支持云端自动安装 v2ray 用节点作为代理。
 - **云端/本地**: 既可以在本地电脑跑，也可以利用 GitHub Actions 每天定时自动跑。
 
@@ -52,7 +53,19 @@
    - 同时设置了 `V2RAY_VMESS` 和 `HTTP_PROXY` 时，**优先使用 v2ray**。
    > 注意：续期的 ALTCHA 不看 IP 信誉，所以**仅为续期的话其实不需要代理**；代理主要用于登录的 Cloudflare 或站点本身被墙的场景。默认不启用。
 
-6. **(可选) Telegram 消息推送**:
+6. **(可选) KV Cookie 缓存（所有项目通用）**:
+   通过部署 **KV Admin Worker** 来缓存登录 cookie，所有脚本统一通过 Worker API 存取 cookie，免重复登录。
+   
+   **部署 Worker**（只需做一次）：
+   1. 在 GitHub Secrets 中添加 `CF_API_TOKEN`（Cloudflare API Token，需 Workers + KV 权限）和 `CF_ACCOUNT_ID`
+   2. 手动触发 Actions 中的 **Deploy KV Cookie Admin** workflow，它会自动部署
+   3. 部署完成后，在 GitHub Secrets 中添加：
+      - `KV_ADMIN_URL`: 部署成功的 Worker 地址，例如 `https://kv-cookie-admin.xxxx.workers.dev`
+      - `KV_ADMIN_PASS`: 设置管理员密码（部署时自动从你的 `CF_API_TOKEN` 生成，或你自己记住的密码）
+   
+   > 所有 8 个项目（Katabump / ACLClouds / FreeMCHost / Zampto / Weirdhost / Lunes / Searcade / Vortexa）都共用同一套 `KV_ADMIN_URL` / `KV_ADMIN_PASS`。不配置则每次完整登录，功能不受影响。
+
+7. **(可选) Telegram 消息推送**:
    如果你希望在续期成功、失败或跳过时收到 Telegram 通知（包含截图），请配置以下 Secret：
    - `TG_BOT_TOKEN`: 你的 Telegram Bot Token (从 @BotFather 获取)。
    - `TG_CHAT_ID`: 你的 Chat ID (用户 ID 或群组 ID)。
@@ -153,21 +166,26 @@ node renew.js
 
 ## 🛠️ 项目结构
 
-* `renew.js`: Windows 本地运行的主程序。
-* `action_renew.js`: 专门用于 GitHub Actions 环境的脚本（适配 Linux/Headless）。
-* `.github/workflows/renew.yml`: GitHub Actions 的定时任务配置文件。
+* `renew.js`: Windows 本地运行的主程序（Katabump）。
+* `action_renew.js`: 专门用于 GitHub Actions 环境的脚本（Katabump / ACLClouds）。
+* `.github/workflows/renew.yml`: Katabump 续期定时任务（每天北京时间 08:00）。
+* `.github/workflows/aclclouds.yml`: ACLClouds 续期定时任务（每天北京时间 10:00）。
 * `.github/scripts/gen-v2ray-config.js`: 把 `vmess://` / `vless://` 分享链接解析为带本地 HTTP 入站的 v2ray 配置。
-* `lunes_login.js`: Lunes Host (`betadash.lunes.host`) 登录保活脚本（云端，登录过 Cloudflare Turnstile 后进 dashboard 截图通知）。
-* `.github/workflows/lunes.yml`: Lunes 登录保活的定时任务（每周一北京时间 09:00）。
-* `.github/workflows/aclclouds.yml`: ACLClouds (`dash.aclclouds.com`) 续期定时任务（与 katabump 同款面板，复用 `action_renew.js`）。
-* `searcade_login.js`: Searcade (`searcade.com`) 登录保活脚本（云端，经 userveria OAuth 两步登录）。
-* `.github/workflows/searcade.yml`: Searcade 登录保活定时任务（每周一北京时间 11:00）。
-* `freemchost_renew.js`: FreeMCHost (`new.freemchost.com`) 续期脚本（云端，登录后打开 serverUrl 点 Renew now 续期）。
+* `lunes_login.js`: Lunes Host (`betadash.lunes.host`) 登录保活脚本（支持 KV cookie 缓存）。
+* `.github/workflows/lunes.yml`: Lunes 登录保活的定时任务（每天，支持 KV cookie 缓存）。
+* `searcade_login.js`: Searcade (`searcade.com`) 登录保活脚本（经 userveria OAuth 两步登录，支持 KV cookie 缓存）。
+* `.github/workflows/searcade.yml`: Searcade 登录保活定时任务（每周一北京时间 11:00，支持 KV cookie 缓存）。
+* `freemchost_renew.js`: FreeMCHost (`new.freemchost.com`) 续期脚本（支持 KV cookie 缓存）。
 * `.github/workflows/freemchost.yml`: FreeMCHost 续期定时任务（每天北京时间凌晨 2 点）。
-* `zampto_renew.js`: Zampto (`zampto.net`) 续期脚本（云端，两步登录 + serverUrl 点续期，支持 KV cookie 缓存）。
+* `zampto_renew.js`: Zampto (`zampto.net`) 续期脚本（两步登录 + serverUrl 点续期，支持 KV cookie 缓存）。
 * `.github/workflows/zampto.yml`: Zampto 续期定时任务（每天北京时间凌晨 3 点）。
-* `weirdhost_renew.js`: Weirdhost (`hub.weirdhost.xyz`) 续期脚本（云端，过 CF 全屏验证 + 韩文面板登录 + serverUrl 点 연장하기）。
+* `weirdhost_renew.js`: Weirdhost (`hub.weirdhost.xyz`) 续期脚本（过 CF 全屏验证 + 韩文面板登录 + serverUrl 点 연장하기，支持 KV cookie 缓存）。
 * `.github/workflows/weirdhost.yml`: Weirdhost 续期定时任务（每天北京时间凌晨 1 点）。
+* `vortexa_renew.js`: Vortexa (`vortexa.cloud`) VM 启动保活脚本（支持 KV cookie 缓存）。
+* `.github/workflows/vortexa.yml`: Vortexa 保活定时任务（每天北京时间凌晨 4 点）。
+* `kv-admin/worker.js`: KV Cookie 管理面板（Cloudflare Worker），提供 `/api/get`、`/api/set`、`/api/list`、`/api/delete` 接口，用于所有脚本统一存取 cookie。
+* `kv-admin/wrangler.toml`: Worker 部署配置，绑定 KV 命名空间。
+* `.github/workflows/deploy-kv-admin.yml`: KV Admin Worker 部署 workflow（手动触发）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
 
 > **`action_renew.js` 已参数化**：默认面板是 katabump；设置环境变量 `DASH_BASE_URL`（如 `https://dash.aclclouds.com`）即可复用到同款面板。katabump 不设此变量，行为不变。
@@ -183,6 +201,7 @@ node renew.js
   [{"username": "a@b.com", "password": "pwd"}, {"username": "c@d.com", "password": "pwd2"}]
   ```
 - **验证码**：登录页是 **Cloudflare Turnstile**，脚本通过 CDP 模拟点击绕过。
+- **KV Cookie 缓存**：支持通过 `KV_ADMIN_URL` / `KV_ADMIN_PASS` 缓存 cookie（`lunes_cookie_<用户名>`），避免每次完整登录。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_BOT_TOKEN` / `TG_CHAT_ID` / `TG_THREAD_ID` Secret。
 - **触发**：每天定时，或在 Actions 页手动 "Run workflow" (选 `Lunes Auto Login`)。截图在 `lunes-screenshots` artifact。
 
@@ -210,6 +229,7 @@ node renew.js
   [{"username": "a@b.com", "password": "pwd"}]
   ```
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
+- **KV Cookie 缓存**：支持通过 `KV_ADMIN_URL` / `KV_ADMIN_PASS` 缓存 cookie（`searcade_cookie_<用户名>`），避免每次完整登录。
 - **触发**：每周一北京时间 11:00，或手动 "Run workflow" (选 `Searcade Auto Login`)。截图在 `searcade-screenshots` artifact。
 
 ---
@@ -222,7 +242,7 @@ node renew.js
   ```json
   [{"username":"a@b.com","password":"pwd","serverUrl":"https://new.freemchost.com/server/xxxx"}]
   ```
-- **Cloudflare KV（可选）**：配齐 `CF_ACCOUNT_ID` / `CF_KV_NAMESPACE_ID` / `CF_API_TOKEN` 三个 Secret 后启用 cookie 缓存——先注入 KV 里的 cookie 尝试免登录，失效才重新登录并把新 cookie 存回 KV（与 weirdhost 共用同一套 KV Secret，cookie key 为 `freemchost_cookie_<用户名>`）。
+- **KV Cookie 缓存（可选）**：配置 `KV_ADMIN_URL` / `KV_ADMIN_PASS` 两个 Secret 后启用 cookie 缓存——先注入 Worker 里的 cookie 尝试免登录，失效才重新登录并把新 cookie 存回 Worker（所有项目共用同一套 KV 配置，cookie key 为 `freemchost_cookie_<用户名>`）。详见上方 KV Admin Worker 部署说明。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间凌晨 2 点，或手动 "Run workflow" (选 `FreeMCHost Auto Renew`)。截图在 `freemchost-screenshots` artifact。
 
@@ -236,7 +256,7 @@ node renew.js
   ```json
   [{"username":"a@b.com","password":"pwd","serverUrl":"https://..."}]
   ```
-- **Cloudflare KV（可选）**：配齐 `CF_ACCOUNT_ID` / `CF_KV_NAMESPACE_ID` / `CF_API_TOKEN` 三个 Secret 后启用 cookie 缓存——先注入 KV 里的 cookie 尝试免登录，失效才重新登录并把新 cookie 存回 KV（与其它站共用同一套 KV Secret，cookie key 为 `zampto_cookie_<用户名>`）。
+- **KV Cookie 缓存（可选）**：配置 `KV_ADMIN_URL` / `KV_ADMIN_PASS` 两个 Secret 后启用 cookie 缓存——先注入 Worker 里的 cookie 尝试免登录，失效才重新登录并把新 cookie 存回 Worker（所有项目共用同一套 KV 配置，cookie key 为 `zampto_cookie_<用户名>`）。详见上方 KV Admin Worker 部署说明。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间凌晨 3 点，或手动 "Run workflow" (选 `Zampto Auto Renew`)。截图在 `zampto-screenshots` artifact。
 
@@ -246,7 +266,7 @@ node renew.js
 
 `hub.weirdhost.xyz` 是韩文 Pterodactyl 面板，打开有 **Cloudflare 全屏验证**（脚本 CDP 点击通过），登录需勾选同意框并点 `로그인`，续期在服务器页点 `연장하기`（未到时间按钮禁用）。
 
-> ⚠️ **登录有 Google reCAPTCHA（会弹"选公交车"图片挑战），无法自动破解。** 因此采用 **Cloudflare KV 缓存登录 cookie**：首次手动登录把 cookie 存进 KV，之后每次工作流注入 cookie **免登录**直接续期；仅当 cookie 失效才需重新登录（脚本会发 TG 提醒你手动更新）。weirdhost 登录态长期有效，所以基本一劳永逸。
+> ⚠️ **登录有 Google reCAPTCHA（会弹"选公交车"图片挑战），无法自动破解。** 因此采用 **KV Admin Worker 缓存登录 cookie**：首次手动登录后通过 Worker API 把 cookie 存进 KV，之后每次工作流注入 cookie **免登录**直接续期；仅当 cookie 失效才需重新登录（脚本会发 TG 提醒你手动更新）。weirdhost 登录态长期有效，所以基本一劳永逸。
 
 - **账号 Secret `WEIRDHOST_USERS_JSON`**（一个账号多台服务器用 `serverUrls` 数组列出；单台也可用 `serverUrl`）：
   ```json
@@ -256,17 +276,17 @@ node renew.js
   ]}]
   ```
   > 每台服务器单独续期、单独发 TG 通知（含服务器 ID + 到期时间 + 截图）。`serverUrls`/`serverUrl` 都不填时会登录后自动发现账号下所有服务器。
-- **Cloudflare KV Secret**（三者都配齐才启用 cookie 缓存）：
-  - `CF_ACCOUNT_ID`：Cloudflare 账户 ID
-  - `CF_KV_NAMESPACE_ID`：KV 命名空间 ID（在 CF 控制台 Workers & Pages → KV 新建一个）
-  - `CF_API_TOKEN`：API Token，需 **Workers KV Storage: Edit** 权限
-- **初始化 cookie（首次，手动一次）**：
+- **KV Cookie 缓存**：配置 `KV_ADMIN_URL` / `KV_ADMIN_PASS` 两个 Secret 后启用（详见上方 KV Admin Worker 部署说明）。cookie key 为 `weirdhost_cookie_<用户名>`。
+- **初始化 cookie（首次，只需手动一次）**：
   1. 在真实浏览器登录 `hub.weirdhost.xyz`；
   2. 用 Cookie-Editor 等扩展把 `hub.weirdhost.xyz` 的 cookie **Export as JSON** 存为 `cookies.json`；
-  3. 上传到 KV（key 为 `weirdhost_cookie_<用户名>`，用户名里非字母数字替换成 `_`，如 `ql@282820.xyz` → `weirdhost_cookie_ql_282820_xyz`）：
+  3. 通过 KV Admin Worker API 上传：
      ```bash
-     curl -X PUT "https://api.cloudflare.com/client/v4/accounts/<CF_ACCOUNT_ID>/storage/kv/namespaces/<CF_KV_NAMESPACE_ID>/values/weirdhost_cookie_ql_282820_xyz" \
-       -H "Authorization: Bearer <CF_API_TOKEN>" --data-binary @cookies.json
+     curl -X POST "$KV_ADMIN_URL/api/set" \
+       -H "X-Admin-Pass: $KV_ADMIN_PASS" \
+       -H "Content-Type: application/json" \
+       -d '{"key":"weirdhost_cookie_ql_282820_xyz","value":'\'$(cat cookies.json)\''}'
      ```
+     或用浏览器打开 KV Cookie 管理面板 → 新增 → 选择 Weirdhost → 填写标识 → 粘贴 cookie JSON → 保存。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间凌晨 1 点，或手动 "Run workflow" (选 `Weirdhost Auto Renew`)。截图在 `weirdhost-screenshots` artifact。
