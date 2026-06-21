@@ -282,26 +282,38 @@ async function loginOnce(page, user) {
     return !/\/login/i.test(page.url());
 }
 
-// 检查服务器状态是否为 Offline
-async function isServerOffline(page) {
+// 检查服务器状态：返回 'offline' | 'starting' | 'online' | 'unknown'
+async function getServerStatus(page) {
     try {
-        // 查找状态标签中的 "Offline" 文字
+        // 查找状态标签
+        const pageText = await page.locator('body').innerText().catch(() => '');
+
+        // 按优先级检测：Starting > Online > Offline (避免子串误匹配)
+        if (/Starting/i.test(pageText)) {
+            console.log('   >> 检测到机器状态: Starting (启动中，正常)');
+            return 'starting';
+        }
+        if (/Online/i.test(pageText)) {
+            console.log('   >> 检测到机器状态: Online (运行中)');
+            return 'online';
+        }
+        // 精确匹配 Offline 标签（span 中的 Offline 文字）
         const offlineBadge = page.locator('span:has-text("Offline")').first();
-        if (await offlineBadge.isVisible({ timeout: 3000 }).catch(() => false)) {
+        if (await offlineBadge.isVisible({ timeout: 2000 }).catch(() => false)) {
             console.log('   >> 检测到机器状态: Offline');
-            return true;
+            return 'offline';
         }
         // 也检查 console 中的 offline 提示
         const consoleOffline = page.locator('text=Server status: offline').first();
-        if (await consoleOffline.isVisible({ timeout: 3000 }).catch(() => false)) {
+        if (await consoleOffline.isVisible({ timeout: 2000 }).catch(() => false)) {
             console.log('   >> 检测到 Console 提示: Server status: offline');
-            return true;
+            return 'offline';
         }
-        console.log('   >> 机器状态非 Offline (可能已在运行)');
-        return false;
+        console.log('   >> 未能识别机器状态 (可能状态标签未加载)');
+        return 'unknown';
     } catch (e) {
         console.warn('   >> 检查状态时出错:', e.message);
-        return false;
+        return 'unknown';
     }
 }
 
@@ -316,17 +328,21 @@ async function waitServerOnline(page, timeoutMs = 120000) {
         await page.waitForTimeout(2000);
 
         try {
-            const onlineBadge = page.locator('span:has-text("Online")').first();
-            if (await onlineBadge.isVisible({ timeout: 2000 }).catch(() => false)) {
+            const pageText = await page.locator('body').innerText().catch(() => '');
+            if (/Online/i.test(pageText)) {
                 console.log('   >> ✅ 机器状态已变为 Online!');
                 return true;
+            }
+            if (/Starting/i.test(pageText)) {
+                console.log(`   >> 机器正在启动中 Starting... (已等待 ${Math.round((Date.now() - startTime) / 1000)}s)`);
+                continue;
             }
             const offlineBadge = page.locator('span:has-text("Offline")').first();
             if (await offlineBadge.isVisible({ timeout: 2000 }).catch(() => false)) {
                 console.log(`   >> 仍处于 Offline... (已等待 ${Math.round((Date.now() - startTime) / 1000)}s)`);
                 continue;
             }
-            // 状态标签可能消失了（非 offline 也非 online），也可能是其他状态文字
+            // 状态标签可能消失了（非 offline/starting 也非 online）
             console.log(`   >> 状态标签无匹配，可能已变更... (已等待 ${Math.round((Date.now() - startTime) / 1000)}s)`);
         } catch (e) {
             console.log(`   >> 刷新检查异常: ${e.message}`);
@@ -445,14 +461,24 @@ async function waitServerOnline(page, timeoutMs = 120000) {
             await page.waitForTimeout(3000);
 
             // 5. 检查机器状态
-            const offline = await isServerOffline(page);
+            const status = await getServerStatus(page);
             const shot = path.join(photoDir, `vortexa_${safeUser}.png`);
 
-            if (!offline) {
-                // 机器已在运行，截个图通知即可
+            if (status === 'online' || status === 'starting') {
+                // 机器已在运行或正在启动中，都正常，跳过
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                console.log('   >> ✅ 服务器已在运行，无需启动。');
-                await sendTelegramMessage(`✅ *服务器已在运行*\n用户: ${user.username}\n服务器: ${user.serverUrl}`, shot);
+                const statusLabel = status === 'online' ? 'Online (运行中)' : 'Starting (启动中)';
+                console.log(`   >> ✅ 服务器状态=${statusLabel}，无需启动。`);
+                await sendTelegramMessage(`✅ *服务器状态正常*\n用户: ${user.username}\n服务器: ${user.serverUrl}\n状态: ${statusLabel}`, shot);
+                console.log('用户处理完成');
+                continue;
+            }
+
+            if (status === 'unknown') {
+                // 未知状态：可能是页面没加载完，截个图通知但不点 Start
+                try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+                console.log('   >> ⚠️ 无法确认机器状态，跳过启动以免误操作。');
+                await sendTelegramMessage(`⚠️ *无法确认状态*\n用户: ${user.username}\n服务器: ${user.serverUrl}\n未能读取状态标签，已跳过启动`, shot);
                 console.log('用户处理完成');
                 continue;
             }
