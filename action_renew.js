@@ -580,9 +580,9 @@ async function goToServerPage(page, user) {
     console.log('注入脚本已添加。');
 
     if (KV_ENABLED) {
-        console.log('[KV] Cloudflare KV 已启用，将缓存登录 cookie 避免重复登录。');
+        console.log('[KV] KV Admin Worker 已启用，将缓存登录 cookie 避免重复登录。');
     } else {
-        console.log('[KV] KV Admin Worker 未配置 (缺少 KV_ADMIN_URL / KV_ADMIN_PASS)，每次都将完整登录。');
+        // [KV] 未配置信息已在启动时输出
     }
 
     for (let i = 0; i < users.length; i++) {
