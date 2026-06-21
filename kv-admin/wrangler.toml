@@ -1,0 +1,12 @@
+name = "kv-cookie-admin"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+# KV namespace binding — 绑定到脚本们共用的那个 KV
+# 部署前先确认 namespace_id，用 wrangler kv:namespace list 查看
+kv_namespaces = [
+  { binding = "COOKIE_KV", id = "YOUR_KV_NAMESPACE_ID" }
+]
+
+# 管理密码 (部署时设为 secret)
+# npx wrangler secret put KV_ADMIN_PASS
