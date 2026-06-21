@@ -359,6 +359,7 @@ export default {
     if (url.pathname === '/api/auth' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
       const pass = body.pass || '';
+      console.log(`[auth] ADMIN_PASS set: ${!!ADMIN_PASS}, received pass length: ${pass.length}, match: ${pass === ADMIN_PASS}`);
       if (!ADMIN_PASS || pass === ADMIN_PASS) {
         return json({ ok: true });
       }
