@@ -703,11 +703,23 @@ async function processUser(context, page, user, photoDir) {
                 return;
             }
 
+            // 抓取续期前的时间信息
+            async function getRenewTimes() {
+                try {
+                    const last = await page.locator('#lastRenewalTime').innerText().catch(() => '未知');
+                    const next = await page.locator('#nextRenewalTime').innerText().catch(() => '未知');
+                    return { last, next };
+                } catch (e) { return { last: '未知', next: '未知' }; }
+            }
+
             const disabled = await renewBtn.isDisabled().catch(() => false);
+            const beforeTimes = await getRenewTimes();
+            const beforeInfo = `上次续期: ${beforeTimes.last}\n到期: ${beforeTimes.next}`;
+
             if (disabled) {
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
                 console.log('   >> ⏳ 暂不可续期 (按钮禁用)。');
-                await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n原因: 续期按钮禁用 (可能未到时间)`, shot);
+                await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n${beforeInfo}\n原因: 续期按钮禁用 (可能未到时间)`, shot);
             } else {
                 console.log('   >> 点击续期...');
                 try { await renewBtn.click({ timeout: 8000 }); } catch (e) { await renewBtn.click({ force: true }); }
@@ -741,7 +753,6 @@ async function processUser(context, page, user, photoDir) {
                     .filter({ hasText: /renew|confirm|续期|确定/i }).first();
                 if (await confirmBtn.isVisible().catch(() => false)) {
                     console.log('   >> 点击弹窗确认按钮...');
-                    // Google Ad iframe 可能遮挡按钮，先 force: true 绕过
                     await confirmBtn.click({ timeout: 8000, force: true }).catch(() => confirmBtn.click({ force: true, timeout: 8000 }));
                     try {
                         if (await page.getByText('Please complete the captcha').isVisible({ timeout: 3000 })) {
@@ -753,17 +764,22 @@ async function processUser(context, page, user, photoDir) {
                         }
                     } catch (e) { }
                 }
-                // 检查结果
+                // 等待页面刷新或更新
                 await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => page.waitForTimeout(5000));
-                const after = await page.locator('body').innerText().catch(() => '');
-                const ok = /success|renewed|successfully|extended/i.test(after);
+                await page.waitForTimeout(2000);
+                // 抓取续期后的时间信息
+                const afterTimes = await getRenewTimes();
+                const afterInfo = `上次续期: ${afterTimes.last}\n到期: ${afterTimes.next}`;
+                const timeChanged = beforeTimes.last !== afterTimes.last || beforeTimes.next !== afterTimes.next;
+                const detailInfo = `📋 *续期信息*\n${timeChanged ? afterInfo : `(时间未变)\n${afterInfo}`}`;
+
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                if (ok) {
-                    console.log('   >> ✅ 续期成功。');
-                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n服务器已续期！`, shot);
+                if (timeChanged) {
+                    console.log(`   >> ✅ 续期成功！(时间已更新: ${beforeTimes.last} → ${afterTimes.last})`);
+                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n${detailInfo}`, shot);
                 } else {
-                    console.log('   >> ⚠️ 已点击续期，结果未知。');
-                    await sendTelegramMessage(`⚠️ *续期结果未知*\n用户: ${user.username}\n已点击续期，详见截图`, shot);
+                    console.log('   >> ⚠️ 已点击续期，但时间未变化。');
+                    await sendTelegramMessage(`⚠️ *续期结果未知*\n用户: ${user.username}\n${detailInfo}\n时间未发生变化，详见截图`, shot);
                 }
             }
         } catch (err) {
