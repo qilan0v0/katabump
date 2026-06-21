@@ -92,8 +92,12 @@ const HTML = '<!DOCTYPE html>' +
 '.num-badge{display:inline-block;min-width:22px;text-align:center;padding:1px 6px;border-radius:8px;font-size:11px;background:#30363d;color:#e6edf3}' +
 '.expiry-cell{font-size:12px;color:#8b949e;white-space:nowrap}' +
 '.updated-cell{font-size:12px;color:#8b949e;white-space:nowrap}' +
-'.btn-del{padding:4px 10px;border-radius:4px;border:1px solid #f8514944;background:transparent;color:#f85149;font-size:11px;cursor:pointer}' +
+'.btn-del{display:inline-block;padding:4px 10px;border-radius:4px;border:1px solid #f8514944;background:transparent;color:#f85149;font-size:11px;cursor:pointer}' +
 '.btn-del:hover{background:#f8514911;border-color:#f85149}' +
+'.btn-edit{display:inline-block;padding:4px 10px;border-radius:4px;border:1px solid #58a6ff44;background:transparent;color:#58a6ff;font-size:11px;cursor:pointer}' +
+'.btn-edit:hover{background:#58a6ff11;border-color:#58a6ff}' +
+'.btn-add{display:inline-block;padding:4px 12px;border-radius:4px;border:1px solid #3fb95044;background:#3fb95011;color:#3fb950;font-size:12px;cursor:pointer}' +
+'.btn-add:hover{background:#3fb95022}' +
 '.detail-row td{padding:0}' +
 '.detail-inner{padding:12px 16px 16px 60px;background:#0d1117;border-bottom:1px solid #30363d}' +
 '.detail-inner pre{font-size:11px;line-height:1.5;background:#161b22;padding:12px;border-radius:6px;overflow-x:auto;max-height:400px}' +
@@ -112,6 +116,14 @@ const HTML = '<!DOCTYPE html>' +
 '.modal-actions button{padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;border:1px solid #30363d}' +
 '.modal-actions .cancel{background:transparent;color:#e6edf3}' +
 '.modal-actions .confirm{background:#f85149;color:#fff;border-color:#f85149}' +
+'.modal-wide{max-width:640px}' +
+'.editor-row{display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap}' +
+'.editor-row select,.editor-row input{flex:1;min-width:120px;padding:8px 12px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#e6edf3;font-size:13px;outline:none}' +
+'.editor-row select:focus,.editor-row input:focus{border-color:#58a6ff}' +
+'.key-preview{padding:6px 10px;border-radius:4px;background:#21262d;color:#8b949e;font-size:11px;font-family:monospace;word-break:break-all;margin-bottom:12px}' +
+'.editor-value textarea{width:100%;padding:10px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#e6edf3;font-size:12px;font-family:monospace;outline:none;resize:vertical;min-height:180px}' +
+'.editor-value textarea:focus{border-color:#58a6ff}' +
+'.editor-hint{font-size:11px;color:#8b949e;margin-bottom:8px}' +
 '</style>' +
 '</head>' +
 '<body>' +
@@ -126,7 +138,7 @@ const HTML = '<!DOCTYPE html>' +
 '    <div class="container">' +
 '      <div style="display:flex;justify-content:space-between;align-items:center">' +
 '        <div><h1>KV Cookie 管理</h1><div class="sub">管理 KV 中存储的登录 Cookie</div></div>' +
-'        <button class="btn-del" data-action="refresh" style="color:#8b949e;border-color:#30363d">刷新</button>' +
+'        <div style="display:flex;gap:6px"><button class="btn-add" data-action="addCK">新增</button><button class="btn-del" data-action="refresh" style="color:#8b949e;border-color:#30363d">刷新</button></div>' +
 '      </div>' +
 '      <div class="tabs" id="tabs"></div>' +
 '      <div class="search-row">' +
@@ -157,7 +169,10 @@ const HTML = '<!DOCTYPE html>' +
 '  else if(a==="deleteKey"){e.stopPropagation();confirmDelete(t.dataset.key)}' +
 '  else if(a==="closeModal"){t.closest(".modal-overlay").remove()}' +
 '  else if(a==="confirmDelete"){t.closest(".modal-overlay").remove();doDelete(t.dataset.key)}' +
-'  else if(a==="refresh")doRefresh()' +
+'  else if(a==="refresh")doRefresh();' +
+'  else if(a==="addCK")showCKEditor(null,null);' +
+'  else if(a==="editCK"){e.stopPropagation();(function(){var k=t.dataset.key;for(var i=0;i<DATA.length;i++){if(DATA[i].key===k){showCKEditor(k,JSON.stringify(DATA[i].cookies,null,2));return}}})()}' +
+'  else if(a==="saveCK"){var k=t.dataset.key||"";doSaveCK(k)}' +
 '});' +
 'async function doLogin(){' +
 '  var p=document.getElementById("passInput").value||sessionStorage.getItem("kv_admin_pass");' +
@@ -255,11 +270,11 @@ const HTML = '<!DOCTYPE html>' +
 '    h+="<td><span class=\\"num-badge\\">"+d.count+"</span></td>";' +
 '    h+="<td class=\\"expiry-cell\\">"+(d.earliestExpiry?fmtDate2(d.earliestExpiry):"-")+"</td>";' +
 '    h+="<td class=\\"updated-cell\\">"+(d.updated?fmtDate2(d.updated):"-")+"</td>";' +
-'    h+="<td class=\\"actions-cell\\"><button class=\\"btn-del\\" data-action=\\"deleteKey\\" data-key=\\""+d.key+"\\">删除</button></td>";' +
+'    h+="<td class=\\"actions-cell\\"><button class=\\"btn-edit\\" data-action=\\"editCK\\" data-key=\\""+d.key+"\\" style=\\"margin-right:4px\\">编辑</button><button class=\\"btn-del\\" data-action=\\"deleteKey\\" data-key=\\""+d.key+"\\">删除</button></td>";' +
 '    h+="</tr>";' +
 '    if(exp){' +
 '      h+="<tr class=\\"detail-row\\"><td colspan=\\"7\\"><div class=\\"detail-inner\\">";' +
-'      h+="<div class=\\"meta\\">键名： "+d.key+" &middot; "+d.count+" 个 Cookie</div>";' +
+'      h+="<div class=\\"meta\\">键名： "+d.key+" &middot; "+d.count+" 个 Cookie <button class=\\"btn-edit\\" data-action=\\"editCK\\" data-key=\\""+d.key+"\\" style=\\"margin-left:8px\\">编辑</button></div>";' +
 '      h+="<pre>"+JSON.stringify(d.cookies,null,2)+"</pre>";' +
 '      h+="</div></td></tr>"' +
 '    }' +
@@ -282,6 +297,34 @@ const HTML = '<!DOCTYPE html>' +
 '  if(r.ok){toast("已删除： "+key);await loadData()}else toast("删除失败","err")' +
 '}' +
 'function doRefresh(){loadData();toast("已刷新")}' +
+'var PROJECTS=[{label:"Katabump",prefix:"katabump_cookie_"},{label:"Zampto",prefix:"zampto_cookie_"},{label:"Vortexa",prefix:"vortexa_cookie_"},{label:"Weirdhost",prefix:"weirdhost_cookie_"},{label:"FreeMCHost",prefix:"freemchost_cookie_"}];' +
+'function showCKEditor(key,rawVal){' +
+'  var isNew=!key;var proj="";var suf="";var ckText="[]";' +
+'  if(key){for(var i=0;i<PROJECTS.length;i++){if(key.startsWith(PROJECTS[i].prefix)){proj=PROJECTS[i].label;suf=key.slice(PROJECTS[i].prefix.length);break}}}' +
+'  if(rawVal){try{ckText=JSON.stringify(JSON.parse(rawVal),null,2)}catch(e){ckText=rawVal}}' +
+'  var box=document.createElement("div");box.className="modal-overlay";' +
+'  var h="<div class=\\"modal-box modal-wide\\"><h3>"+(isNew?"新增 Cookie":"编辑 Cookie")+"</h3>";' +
+'  h+="<div class=\\"editor-row\\"><select id=\\"ckProject\\">";' +
+'  for(var i=0;i<PROJECTS.length;i++){h+="<option value=\\""+PROJECTS[i].label+"\\""+(PROJECTS[i].label===proj?" selected":"")+">"+PROJECTS[i].label+"</option>"}' +
+'  h+="</select><input id=\\"ckSuffix\\" value=\\""+suf+"\\" placeholder=\\"邮箱或标识\\"></div>";' +
+'  h+="<div id=\\"ckKeyPreview\\" class=\\"key-preview\\">"+(key?key:"")+"</div>";' +
+'  h+="<div class=\\"editor-value\\"><div class=\\"editor-hint\\">Cookie JSON 数组（每个对象含 name,value,domain,expires 等字段）</div><textarea id=\\"ckValue\\">"+ckText+"</textarea></div>";' +
+'  h+="<div class=\\"modal-actions\\"><button class=\\"cancel\\" data-action=\\"closeModal\\">取消</button>";' +
+'  if(key){h+="<button class=\\"confirm\\" data-action=\\"saveCK\\" data-key=\\""+key+"\\" style=\\"background:#238636;border-color:#238636\\">保存</button>"}else{h+="<button class=\\"confirm\\" data-action=\\"saveCK\\" style=\\"background:#238636;border-color:#238636\\">保存</button>"}' +
+'  h+="</div></div>";box.innerHTML=h;document.body.appendChild(box);' +
+'  document.getElementById("ckProject").addEventListener("change",function(){updateKeyPreview()});' +
+'  document.getElementById("ckSuffix").addEventListener("input",function(){updateKeyPreview()});' +
+'  function updateKeyPreview(){var sel=document.getElementById("ckProject");var pfx="";for(var i=0;i<PROJECTS.length;i++){if(PROJECTS[i].label===sel.value){pfx=PROJECTS[i].prefix;break}}document.getElementById("ckKeyPreview").textContent=pfx+document.getElementById("ckSuffix").value}' +
+'}' +
+'function getFullKey(){var sel=document.getElementById("ckProject");var pfx="";for(var i=0;i<PROJECTS.length;i++){if(PROJECTS[i].label===sel.value){pfx=PROJECTS[i].prefix;break}}return pfx+document.getElementById("ckSuffix").value}' +
+'async function doSaveCK(key){' +
+'  var fullKey=key||getFullKey();' +
+'  if(!fullKey||fullKey.indexOf("_cookie_")===-1){toast("Key 格式错误","err");return}' +
+'  var val=document.getElementById("ckValue").value;' +
+'  if(!val){toast("请输入 Cookie 数据","err");return}' +
+'  try{JSON.parse(val)}catch(e){toast("JSON 格式错误: "+e.message,"err");return}' +
+'  var r=await api("/api/set",{key:fullKey,value:val});' +
+'  if(r.ok){toast("已保存: "+fullKey);var m=document.querySelector(".modal-overlay");if(m)m.remove();await loadData()}else toast("保存失败","err")}' +
 '</script>' +
 '</body>' +
 '</html>';
@@ -348,6 +391,16 @@ export default {
       if (!key) return json({ ok: false, error: 'missing key' });
       const value = await env.COOKIE_KV.get(key);
       return json({ ok: true, key, value });
+    }
+
+    if (url.pathname === '/api/set' && method === 'POST') {
+      const body = await request.json();
+      const key = body.key;
+      const value = body.value;
+      if (!key) return json({ ok: false, error: 'missing key' });
+      if (value === undefined || value === null) return json({ ok: false, error: 'missing value' });
+      await env.COOKIE_KV.put(key, String(value));
+      return json({ ok: true, key });
     }
 
     if (url.pathname === '/api/delete' && method === 'POST') {
