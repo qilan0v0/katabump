@@ -71,10 +71,9 @@ jobs:
         # Secret WEIRDHOST_USERS_JSON 格式:
         # [{"username":"xxx","password":"xxx","serverUrl":"https://hub.weirdhost.xyz/server/xxxxxxx"}]
         WEIRDHOST_USERS_JSON: ${{ secrets.WEIRDHOST_USERS_JSON }}
-        # Cloudflare KV：缓存登录 cookie，免每次登录(避开 reCAPTCHA)。三者都配齐才启用
-        CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
-        CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        # KV Admin Worker：缓存登录 cookie，免每次登录
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}

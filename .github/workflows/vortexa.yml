@@ -34,10 +34,9 @@ jobs:
         # Secret VORTEXA_USERS_JSON 格式:
         # [{"username":"xxx","password":"xxx","serverUrl":"https://www.vortexa.cloud/server/xxxx"}]
         VORTEXA_USERS_JSON: ${{ secrets.VORTEXA_USERS_JSON }}
-        # Cloudflare KV：缓存登录 cookie，免每次登录。三者都配齐才启用
-        CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
-        CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        # KV Admin Worker：缓存登录 cookie，免每次登录
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}

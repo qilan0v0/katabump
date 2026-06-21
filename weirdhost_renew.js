@@ -97,36 +97,38 @@ if (HTTP_PROXY) {
     }
 }
 
-// --- Cloudflare KV：存取登录 cookie，避免每次都登录(weirdhost 登录后长期有效) ---
-const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
-const CF_KV_NAMESPACE_ID = process.env.CF_KV_NAMESPACE_ID;
-const CF_API_TOKEN = process.env.CF_API_TOKEN;
-const KV_ENABLED = !!(CF_ACCOUNT_ID && CF_KV_NAMESPACE_ID && CF_API_TOKEN);
+// --- KV Cookie Admin Worker：通过 Worker API 存取登录 cookie (weirdhost 登录后长期有效) ---
+const KV_ADMIN_URL = process.env.KV_ADMIN_URL;
+const KV_ADMIN_PASS = process.env.KV_ADMIN_PASS;
+const KV_ENABLED = !!(KV_ADMIN_URL && KV_ADMIN_PASS);
 
-function kvUrl(key) {
-    return `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}`
-        + `/storage/kv/namespaces/${CF_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
-}
-// 直连 (proxy:false)，不走 v2ray，避免被节点干扰
+if (!KV_ENABLED) console.log('[KV] 未配置 KV_ADMIN_URL/KV_ADMIN_PASS，跳过 cookie 缓存');
+
 async function kvGet(key) {
     if (!KV_ENABLED) return null;
     try {
-        const r = await axios.get(kvUrl(key), {
-            headers: { Authorization: `Bearer ${CF_API_TOKEN}` },
-            timeout: 15000, proxy: false, transformResponse: [(d) => d]
+        const r = await axios.post(KV_ADMIN_URL + '/api/get', { key }, {
+            headers: { 'X-Admin-Pass': KV_ADMIN_PASS, 'Content-Type': 'application/json' },
+            timeout: 15000, proxy: false
         });
-        return typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+        if (r.data.ok && r.data.value != null) {
+            console.log('[KV] 读取成功，长度:', String(r.data.value).length);
+            return typeof r.data.value === 'string' ? r.data.value : JSON.stringify(r.data.value);
+        }
+        console.log('[KV] 暂无已存 cookie');
+        return null;
     } catch (e) {
         if (e.response && e.response.status === 404) { console.log('[KV] 暂无已存 cookie'); return null; }
         console.warn('[KV] 读取失败:', e.message);
         return null;
     }
 }
+
 async function kvPut(key, value) {
     if (!KV_ENABLED) return false;
     try {
-        await axios.put(kvUrl(key), value, {
-            headers: { Authorization: `Bearer ${CF_API_TOKEN}`, 'Content-Type': 'text/plain' },
+        await axios.post(KV_ADMIN_URL + '/api/set', { key, value: String(value) }, {
+            headers: { 'X-Admin-Pass': KV_ADMIN_PASS, 'Content-Type': 'application/json' },
             timeout: 15000, proxy: false
         });
         console.log('[KV] cookie 已保存');
@@ -136,6 +138,10 @@ async function kvPut(key, value) {
         return false;
     }
 }
+
+
+// 规范化 cookie 数组为 Playwright addCookies 接受的格式 (兼容浏览器扩展导出的 expirationDate/sameSite 等)
+
 
 // 规范化 cookie 数组为 Playwright addCookies 接受的格式 (兼容浏览器扩展导出的 expirationDate/sameSite 等)
 function normalizeCookies(arr) {
@@ -624,7 +630,7 @@ async function discoverServers(page) {
                     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
                     console.log(`   >> ❌ 登录失败，停留在: ${page.url()}`);
                     await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n停留在: ${page.url()}\n` +
-                        (KV_ENABLED ? '⚠️ 可能遇到 reCAPTCHA。请手动登录后更新 KV 中的 cookie。' : '⚠️ 未配置 CF KV，每次都需登录。'), shot);
+                        (KV_ENABLED ? '⚠️ 可能遇到 reCAPTCHA。请手动登录后更新 KV 中的 cookie。' : '⚠️ 未配置 KV Admin Worker，每次都需登录。'), shot);
                     console.log('用户处理完成');
                     continue;
                 }

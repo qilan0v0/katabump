@@ -48,10 +48,9 @@ jobs:
         # [{"username":"xxx","password":"xxx","serverUrl":"https://...","proxy":"vmess://..."}]
         # 每个用户可通过 proxy 字段指定自己的代理节点，脚本自动启停
         ZAMPTO_USERS_JSON: ${{ secrets.ZAMPTO_USERS_JSON }}
-        # Cloudflare KV：缓存登录 cookie，免每次登录。三者都配齐才启用
-        CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
-        CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        # KV Admin Worker：缓存登录 cookie，免每次登录
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         # 全局回退代理（用户未配置 vmess 时使用）
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         V2RAY_BIN: ${{ format('{0}/v2ray/v2ray', env.HOME) }}
