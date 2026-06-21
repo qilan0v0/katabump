@@ -1,0 +1,52 @@
+name: Vortexa Keep Alive
+
+on:
+  schedule:
+    # 每天北京时间凌晨 2 点 (UTC 前一天 18:05) 运行；偏 5 分钟避开整点拥堵
+    - cron: '5 18 * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        npm install
+        npx playwright install-deps chrome
+
+    - name: Run Vortexa Script
+      env:
+        PROJECT_NAME: Vortexa
+        # Secret VORTEXA_USERS_JSON 格式:
+        # [{"username":"xxx","password":"xxx","serverUrl":"https://www.vortexa.cloud/server/xxxx"}]
+        VORTEXA_USERS_JSON: ${{ secrets.VORTEXA_USERS_JSON }}
+        # Cloudflare KV：缓存登录 cookie，免每次登录。三者都配齐才启用
+        CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+        CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node vortexa_renew.js
+
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: vortexa-screenshots
+        path: screenshots/
