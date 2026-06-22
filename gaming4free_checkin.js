@@ -348,15 +348,20 @@ function _race(p, ms) {
         }
 
         // 2. 打开签到页
-        console.log(`打开签到页: ${CLAIM_URL}`);
+        console.log('打开签到页: ' + CLAIM_URL);
+        // 先清广告遮罩再导航
+        await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
         await gotoWithRetry(page, CLAIM_URL);
         await page.waitForTimeout(5000);
 
-        // 关广告弹窗
-        await page.evaluate(() => {
-            const overlay = document.getElementById('__g4f_adblock_overlay');
-            if (overlay) overlay.remove();
-        }).catch(() => {});
+        // 关广告弹窗（导航后也清一次）
+        await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+        const adBtn = page.locator('button:has-text("I\'ve Disabled")').first();
+        if (await adBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await adBtn.click();
+            console.log('   >> 已关闭广告拦截弹窗');
+            await page.waitForTimeout(3000);
+        }
 
         // 3. 检查是否已登录（页面是否跳回登录页）
         if (page.url().includes('/login')) {
@@ -366,16 +371,23 @@ function _race(p, ms) {
             continue;
         }
 
-        // 3b. 检查是否已重定向到首页（今日已签到，create-free-server 自动跳转）
+        // 3b. 检查是否被重定向到首页（有可能是已签到也有可能是广告遮挡导致）
+        // 不管怎样，如果到了首页，再尝试一下直接打开签到页
         const currentUrl = page.url().replace(/\/+$/, '');
         if (currentUrl === 'https://control.gaming4free.net' || currentUrl === 'https://control.gaming4free.net/') {
-            console.log('   >> 已重定向到首页，今日已签到过');
-            try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) {}
-            await sendTelegramMessage(
-                '✅ *Gaming4Free 今日已签到*\n用户: ' + escapeMd(safeUser) + '\n无需重复签到',
-                shotPath
-            );
-            continue;
+            console.log('   >> URL 跳到了首页，尝试重新打开签到页...');
+            await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+            try { await page.goto(CLAIM_URL, { waitUntil: 'domcontentloaded', timeout: 20000 }); } catch (e) {}
+            await page.waitForTimeout(5000);
+            await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+            // 如果还是首页，则判定为已签到
+            const url2 = page.url().replace(/\/+$/, '');
+            if (url2 === 'https://control.gaming4free.net' || url2 === 'https://control.gaming4free.net/') {
+                console.log('   >> 重试后仍在首页，今日已签到过');
+                try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) {}
+                await sendTelegramMessage('✅ *Gaming4Free 今日已签到*\n用户: ' + escapeMd(safeUser) + '\n无需重复签到', shotPath);
+                continue;
+            }
         }
 
         console.log('   >> 当前 URL:', page.url());
@@ -435,8 +447,16 @@ function _race(p, ms) {
             const claimBtn = page.locator('.lsm-claim-btn, button:has-text("Claim Daily Rewar"), button:has-text("⚡")').first();
             if (await claimBtn.isVisible().catch(() => false)) {
                 const btnText = await claimBtn.innerText().catch(() => '');
-                console.log(`   >> 找到签到按钮: "${btnText}"`);
-                await claimBtn.click();
+                console.log('   >> 找到签到按钮: "' + btnText + '"');
+                // 尝试普通点击，如果被广告遮罩阻挡则用 force
+                try { await claimBtn.click({ timeout: 5000 }); }
+                catch (e) {
+                    // 移除广告遮罩再试
+                    await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+                    await page.waitForTimeout(500);
+                    try { await claimBtn.click({ force: true, timeout: 5000 }); }
+                    catch (e2) { console.log('   >> 点击失败:', e2.message); continue; }
+                }
                 console.log('   >> ✅ 已点击签到按钮');
                 await page.waitForTimeout(5000);
                 claimed = true;
@@ -446,7 +466,12 @@ function _race(p, ms) {
             // 也检查普通按钮文本
             const anyClaim = page.locator('button:has-text("Claim")').first();
             if (await anyClaim.isVisible().catch(() => false)) {
-                await anyClaim.click();
+                try { await anyClaim.click({ timeout: 5000 }); }
+                catch (e) {
+                    await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+                    await page.waitForTimeout(500);
+                    try { await anyClaim.click({ force: true, timeout: 5000 }); } catch (e2) {}
+                }
                 console.log('   >> ✅ 已点击 Claim 按钮');
                 await page.waitForTimeout(5000);
                 claimed = true;
