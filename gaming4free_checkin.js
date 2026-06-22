@@ -143,7 +143,13 @@ function normalizeCookies(arr) {
         out.path = c.path || '/';
         if (c.httpOnly) out.httpOnly = true;
         if (c.secure) out.secure = true;
-        if (c.sameSite) out.sameSite = c.sameSite;
+        // sameSite 映射：Playwright 只接受 Strict/Lax/None
+        if (c.sameSite && typeof c.sameSite === 'string') {
+            var s = c.sameSite.toLowerCase();
+            if (s === 'no_restriction' || s === 'none') out.sameSite = 'None';
+            else if (s === 'lax') out.sameSite = 'Lax';
+            else if (s === 'strict') out.sameSite = 'Strict';
+        }
         if (typeof c.expires === 'number' && c.expires > 0) out.expires = c.expires;
         else if (typeof c.expirationDate === 'number' && c.expirationDate > 0) out.expires = c.expirationDate;
         return out;
