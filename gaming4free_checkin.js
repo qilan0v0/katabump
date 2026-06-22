@@ -314,6 +314,9 @@ function _race(p, ms) {
         console.log('\n=== 用户 ' + (ui + 1) + '/' + g4fUsers.length + ': ' + safeUser + ' ===');
 
         try {
+            // 清掉上一个用户的 cookie 会话
+            try { await context.clearCookies(); } catch (e) {}
+
             // 1. 加载该用户的 cookie
             const cookieKey = 'gaming4free_cookie_' + safeUser;
             let cookieStr = await kvGet(cookieKey);
