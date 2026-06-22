@@ -305,7 +305,7 @@ function _race(p, ms) {
         }
 
         if (!cookieStr) {
-            console.error('未找到 cookie（KV 和 G4F_COOKIE_JSON 都没有）。请先在浏览器登录后导出 cookie 上传到 KV Admin 面板 (key: gaming4free_cookie_g4f_user)');
+            console.error('未找到 cookie（KV 和 G4F_COOKIE_JSON 都没有）。请先在浏览器登录后导出 cookie 上传到 KV Admin 面板 (key: ' + escapeMd('gaming4free_cookie_g4f_user') + ')');
             await sendTelegramMessage('❌ *Gaming4Free 签到失败*\n\n未找到 cookie\n请先在浏览器登录后导出 cookie 上传到 KV Admin\n→ 面板新增 → Gaming4Free → 标识: g4f_user → 粘贴 cookie JSON → 保存');
             process.exit(1);
         }
@@ -339,8 +339,20 @@ function _race(p, ms) {
         if (page.url().includes('/login')) {
             console.log('   >> cookie 已过期，被重定向到登录页');
             await page.screenshot({ path: shotPath, fullPage: true }).catch(() => {});
-            await sendTelegramMessage('❌ *Gaming4Free 签到失败*\ncookie 已过期\n请重新在浏览器登录后导出 cookie\n→ 打开 KV 管理面板 → 找到 gaming4free_cookie_g4f_user → 编辑 → 粘贴新 cookie → 保存', shotPath);
+            await sendTelegramMessage('❌ *Gaming4Free 签到失败*\ncookie 已过期\n请重新在浏览器登录后导出 cookie\n→ 打开 KV 管理面板 → 找到 ' + escapeMd('gaming4free_cookie_g4f_user') + ' → 编辑 → 粘贴新 cookie → 保存', shotPath);
             process.exit(1);
+        }
+
+        // 3b. 检查是否已重定向到首页（今日已签到，create-free-server 自动跳转）
+        const currentUrl = page.url().replace(/\/+$/, '');
+        if (currentUrl === 'https://control.gaming4free.net' || currentUrl === 'https://control.gaming4free.net/') {
+            console.log('   >> 已重定向到首页，今日已签到过');
+            try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) {}
+            await sendTelegramMessage(
+                `✅ *Gaming4Free 今日已签到*\n用户: g4f_user\n无需重复签到`,
+                shotPath
+            );
+            process.exit(0);
         }
 
         console.log('   >> 当前 URL:', page.url());
