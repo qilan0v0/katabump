@@ -352,7 +352,27 @@ async function extendServer(page, serverUrl, photoDir) {
         }
         await page.waitForTimeout(1000);
     }
-    console.log(`   >> 剩余时间: ${remainingTime || '未知'}`);
+    console.log('   >> 剩余时间: ' + (remainingTime || '未知'));
+
+    // 读取进度条和 cap 上限，判断是否已满
+    const capInfo = await page.evaluate(() => {
+        const segs = document.querySelectorAll('.seg-track i');
+        const onSegs = document.querySelectorAll('.seg-track i.on');
+        const capEl = document.querySelector('.rt-badge-cap');
+        return {
+            total: segs.length,
+            on: onSegs.length,
+            cap: capEl ? capEl.textContent.trim() : ''
+        };
+    }).catch(() => ({ total: 0, on: 0, cap: '' }));
+    console.log('   >> 进度: ' + capInfo.on + '/' + capInfo.total + ' 格 | ' + capInfo.cap);
+
+    // 满格判断：16格全部 on 表示 48h 上限已到，无需续时
+    if (capInfo.total > 0 && capInfo.on >= capInfo.total) {
+        console.log('   >> ✅ 续时已满 (' + capInfo.cap + ')，无需继续续时');
+        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
+        return { status: 'full', remaining: remainingTime, capInfo: capInfo, shot };
+    }
 
     // 找 +90 min 按钮
     const extendBtn = page.locator('button.rt-btn-free:not(.disabled)').first();
@@ -518,21 +538,34 @@ async function extendServer(page, serverUrl, photoDir) {
     // 汇总通知
     const extended = results.filter(r => r.status === 'extended');
     const cooldown = results.filter(r => r.status === 'cooldown');
+    const full = results.filter(r => r.status === 'full');
+
+    if (full.length > 0) {
+        // 满格/已达上限，只发一条汇总通知，不发截图
+        const fullList = full.map(r => {
+            const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
+            const cap = r.capInfo ? r.capInfo.cap : '48h cap';
+            return '  `' + sid + '`: ' + escapeMd(cap) + ' 已满';
+        }).join('\n');
+        const stillGoing = extended.length > 0 ? '\n' + extended.length + ' 个已续时' : '';
+        const cooling = cooldown.length > 0 ? '\n' + cooldown.length + ' 个冷却中' : '';
+        await sendTelegramMessage('✅ *续时已达上限*\n' + fullList + stillGoing + cooling);
+    }
 
     if (extended.length > 0) {
         for (const r of extended) {
             const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
-            const msg = `✅ *续时成功*\n服务器: \`${sid}\`\n剩余: ${escapeMd(r.remaining || '?')}\n时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+            const msg = '✅ *续时成功*\n服务器: `' + sid + '`\n剩余: ' + escapeMd(r.remaining || '?') + '\n时间: ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
             await sendTelegramMessage(msg, r.shot);
         }
     }
-    if (cooldown.length > 0 && extended.length === 0) {
+    if (cooldown.length > 0 && extended.length === 0 && full.length === 0) {
         // 全部冷却中，只发一条汇总
         const waitingList = cooldown.map(r => {
             const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
-            return `  \`${sid}\`: 剩余 ${escapeMd(r.remaining || '?')}`;
+            return '  `' + sid + '`: 剩余 ' + escapeMd(r.remaining || '?');
         }).join('\n');
-        await sendTelegramMessage(`⏳ *续时冷却中*\n暂无可用续时\n\n当前剩余:\n${waitingList}`);
+        await sendTelegramMessage('⏳ *续时冷却中*\n暂无可用续时\n\n当前剩余:\n' + waitingList);
     }
 
     console.log('\n完成。');
