@@ -232,6 +232,78 @@ function _race(p, ms) {
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
 }
 
+// 注入脚本：hook 子 frame 里的 attachShadow，定位 Turnstile 复选框
+const INJECTED_SCRIPT = `
+(function() {
+    if (window.self === window.top) return;
+    try {
+        function getRandomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+        let screenX = getRandomInt(800, 1200);
+        let screenY = getRandomInt(400, 600);
+        Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
+        Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
+    } catch (e) { }
+    try {
+        const originalAttachShadow = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function(init) {
+            const shadowRoot = originalAttachShadow.call(this, init);
+            if (shadowRoot) {
+                const checkAndReport = () => {
+                    const checkbox = shadowRoot.querySelector('input[type="checkbox"]');
+                    if (checkbox) {
+                        const rect = checkbox.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
+                            const xRatio = (rect.left + rect.width / 2) / window.innerWidth;
+                            const yRatio = (rect.top + rect.height / 2) / window.innerHeight;
+                            window.__turnstile_data = { xRatio, yRatio };
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                if (!checkAndReport()) {
+                    const observer = new MutationObserver(() => { if (checkAndReport()) observer.disconnect(); });
+                    observer.observe(shadowRoot, { childList: true, subtree: true });
+                }
+            }
+            return shadowRoot;
+        };
+    } catch (e) { console.error('[注入] Hook attachShadow 失败:', e); }
+})();
+`;
+
+// Cloudflare Turnstile CDP 点击绕过
+async function attemptTurnstileCdp(page) {
+    const frames = page.frames();
+    for (const frame of frames) {
+        const fu = (frame.url() || '');
+        if (fu && !/cloudflare|turnstile|challenges|hcaptcha|^about:|^$/i.test(fu)) {
+            if (frame !== page.mainFrame()) continue;
+        }
+        try {
+            const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
+            if (data) {
+                console.log('>> 在 frame 中发现 Turnstile。比例:', data);
+                const iframeElement = await frame.frameElement();
+                if (!iframeElement) continue;
+                const box = await iframeElement.boundingBox();
+                if (!box) continue;
+                const clickX = box.x + (box.width * data.xRatio);
+                const clickY = box.y + (box.height * data.yRatio);
+                console.log('>> 计算点击坐标: (' + clickX.toFixed(2) + ', ' + clickY.toFixed(2) + ')');
+                const client = await page.context().newCDPSession(page);
+                await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                console.log('>> CDP 点击已发送。');
+                await client.detach();
+                return true;
+            }
+        } catch (e) { }
+    }
+    return false;
+}
+
 // 关掉 Ad Blocker 弹窗和遮罩层
 async function dismissAdblockPopup(page) {
     // 1. 尝试点击关闭按钮
@@ -307,21 +379,25 @@ async function extendServer(page, serverUrl, photoDir) {
     try {
         await extendBtn.click({ timeout: 10000 });
     } catch (e) {
-        console.log('   >> 普通点击失败(${e.message})，尝试 force 点击...');
+        console.log('   >> 普通点击失败(' + e.message + ')，尝试 force 点击...');
         try { await extendBtn.click({ force: true, timeout: 5000 }); }
         catch (e2) { console.log('   >> force 点击也失败:', e2.message); }
     }
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
 
-    // 等待按钮文本变化（冷却）或弹 captcha
-    let newBtnText = '';
-    for (let w = 0; w < 10; w++) {
-        newBtnText = await extendBtn.innerText().catch(() => '');
-        if (/cd|wait/i.test(newBtnText) || newBtnText.includes('loading')) {
-            console.log(`   >> ✅ 续时成功，按钮变为: "${newBtnText}"`);
+    // 点击后续时按钮下方会弹出 Cloudflare Turnstile 验证，需要 CDP 点击通过
+    console.log('   >> 处理 CF Turnstile 验证...');
+    let turnstileDone = false;
+    for (let w = 0; w < 20; w++) {
+        // 边点 Turnstile 边检查按钮是否已进入冷却（说明续时成功）
+        const curBtnText = await extendBtn.innerText().catch(() => '');
+        if (/cd|wait/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
+            console.log('   >> 按钮已进入冷却，续时成功');
+            turnstileDone = true;
             break;
         }
-        await page.waitForTimeout(1000);
+        await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
+        await page.waitForTimeout(1500);
     }
 
     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
@@ -377,6 +453,9 @@ async function extendServer(page, serverUrl, photoDir) {
     } else {
         await context.setHTTPCredentials(null);
     }
+
+    // 注入 Turnstile 检测脚本
+    await page.addInitScript(INJECTED_SCRIPT);
 
     const photoDir = path.join(process.cwd(), 'screenshots');
     if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
