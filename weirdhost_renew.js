@@ -437,7 +437,7 @@ function withTimeout(promise, ms, label) {
 }
 
 // 一次性快照读续期框状态(用 evaluate，不走会自动重试的 locator —— 实时刷新页上 locator 会重试到 60s 超时)
-// 返回 { found, expiry, status, disabled }
+// 返回 { found, disabled, expiry, expiryDt, status }
 async function readRenewBox(page) {
     return await _race(page.evaluate(() => {
         // 兼容两种组件：RenewBox__ (不带2) 和 RenewBox2__
@@ -446,13 +446,18 @@ async function readRenewBox(page) {
         const box = btn ? (btn.closest('[class*="RenewContainer"]') || btn.parentElement) : null;
         const exp = box && box.querySelector('[class*="ExpiryText"]');
         const st = box && box.querySelector('[class*="StatusText"]');
+        const expiryFull = exp ? (exp.textContent || '').trim() : '';
+        // 从 "유통기한 2026-06-29 18:02:54" 提取日期时间
+        const expiryDt = (expiryFull.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(:\d{2})?)/) || [])[0] || '';
+        const statusFull = st ? (st.textContent || '').trim() : '';
         return {
             found: !!btn,
             disabled: btn ? btn.disabled : true,
-            expiry: exp ? (exp.textContent || '').trim() : '',
-            status: st ? (st.textContent || '').trim() : ''
+            expiry: expiryFull,
+            expiryDt: expiryDt,
+            status: statusFull
         };
-    }), 8000).catch(() => ({ found: false, disabled: true, expiry: '', status: '' }));
+    }), 8000).catch(() => ({ found: false, disabled: true, expiry: '', expiryDt: '', status: '' }));
 }
 
 // 续期单个服务器，返回 { status: 'success'|'wait'|'unknown'|'error', message, shot }
@@ -460,7 +465,6 @@ async function renewServer(page, user, serverUrl, photoDir) {
     const renewLoc = () => page.locator('button:has-text("연장하기"), button[class*="RenewButton"]').first();
     const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || 'srv';
     const shot = path.join(photoDir, `weirdhost_${user.username.replace(/[^a-z0-9]/gi, '_')}_${sid}.png`);
-    const dtOf = (s) => (s.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/) || [])[0] || '';
 
     console.log(`打开续费页: ${serverUrl}`);
     await gotoWithRetry(page, serverUrl);
@@ -493,21 +497,41 @@ async function renewServer(page, user, serverUrl, photoDir) {
         if (!snap.found) await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
         await page.waitForTimeout(1500);
     }
-    console.log(`   >> [${sid}] 快照: found=${snap.found} disabled=${snap.disabled} status="${snap.status}"`);
+    console.log(`   >> [${sid}] 快照: found=${snap.found} disabled=${snap.disabled} status="${snap.status}" 到期="${snap.expiryDt}"`);
 
     if (!snap.found) {
         try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
         return { status: 'error', message: '未找到续期按钮(可能页面报错/资源未找到，详见截图)', shot };
     }
 
-    const expiryDt = dtOf(snap.expiry);
-    const expiryLine = expiryDt ? `\n到期: ${expiryDt}` : '';
+    const expiryDt = snap.expiryDt; // 直接用 snap 中的 expiryDt
+    const statusText = snap.status;
     const renewable = !snap.disabled || /지금|가능/.test(snap.status);
+
+    // 从 "6시간 후에 연장할수있어요" 解析下次可续时间
+    const hourMatch = statusText.match(/(\d+)\s*시간\s*후/);
+    const minMatch = statusText.match(/(\d+)\s*분\s*후/);
+    let etaText = '';
+    if (hourMatch) {
+        const h = parseInt(hourMatch[1]);
+        // 推算大约可续期时间
+        const now = new Date();
+        const eta = new Date(now.getTime() + h * 3600000);
+        const pad = n => String(n).padStart(2, '0');
+        etaText = `${h} 小时后 (约 ${eta.getFullYear()}-${pad(eta.getMonth()+1)}-${pad(eta.getDate())} ${pad(eta.getHours())}:${pad(eta.getMinutes())})`;
+    } else if (minMatch) {
+        etaText = `${minMatch[1]} 分钟后`;
+    }
+
+    // 构建通知消息
+    const expiryLine = expiryDt ? `到期: ${expiryDt}` : '';
+    const statusLine = statusText ? `状态: ${statusText}` : '';
 
     if (!renewable) {
         try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-        console.log(`   >> [${sid}] ⏳ 暂不可续期。${snap.status}`);
-        return { status: 'wait', message: `还没到时间${snap.status ? '\n' + snap.status : ''}${expiryLine}`, shot };
+        console.log(`   >> [${sid}] ⏳ 暂不可续期。${statusText}`);
+        const detail = [expiryLine, statusLine, etaText ? `下次可续: ${etaText}` : ''].filter(Boolean).join('\n');
+        return { status: 'wait', message: detail, shot };
     }
 
     console.log(`   >> [${sid}] 点击 연장하기 续期...`);
@@ -524,20 +548,22 @@ async function renewServer(page, user, serverUrl, photoDir) {
         await page.waitForTimeout(2000);
         after = await readRenewBox(page);
         // 续期完成判定：按钮变禁用 / 到期时间往后变了 / 状态变成冷却("후에")
-        done = after.disabled || (dtOf(after.expiry) && dtOf(after.expiry) !== expiryDt) || /후에/.test(after.status);
+        done = after.disabled || (after.expiryDt && after.expiryDt !== expiryDt) || /후에/.test(after.status);
         if (done) { console.log(`   >> [${sid}] 续期已生效 (第 ${c + 1} 轮)`); break; }
     }
 
-    const newExpiry = dtOf(after.expiry) || expiryDt;
-    const newExpiryLine = newExpiry ? `\n到期: ${newExpiry}` : expiryLine;
+    const newExpiry = after.expiryDt || expiryDt;
+    const newExpiryLine = newExpiry ? `到期: ${newExpiry}` : '';
+    const afterStatusLine = after.status ? `状态: ${after.status}` : '';
     const ok = done;
     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
     if (ok) {
         console.log(`   >> [${sid}] ✅ 续期成功。到期: ${newExpiry}`);
-        return { status: 'success', message: `服务器已续期！${newExpiryLine}`, shot };
+        return { status: 'success', message: newExpiryLine, shot };
     }
     console.log(`   >> [${sid}] ⚠️ 已点击续期，结果未知。`);
-    return { status: 'unknown', message: `已点击 연장하기，详见截图${newExpiryLine}`, shot };
+    const detail = [newExpiryLine, afterStatusLine].filter(Boolean).join('\n');
+    return { status: 'unknown', message: detail || '已点击 연장하기，详见截图', shot };
 }
 
 // 从面板首页抓取所有服务器的 URL
@@ -692,14 +718,21 @@ async function discoverServers(page) {
                 try {
                     const r = await withTimeout(renewServer(page, user, serverUrl, photoDir), 120000, `续期 ${serverUrl}`);
                     const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || serverUrl;
-                    const head = { success: '✅ *续期成功*', wait: '⏳ *暂不可续期*', unknown: '⚠️ *续期结果未知*', error: '❌ *续期出错*' }[r.status] || '❓';
-                    await sendTelegramMessage(`${head}\n用户: ${user.username}\n服务器: ${sid}\n${r.message}`, r.shot);
+                    const userLabel = user.username;
+                    // 续期成功消息包含到期时间，用内联格式
+                    const msgMap = {
+                        success: `✅ *续期成功* — ${userLabel}\n服务器: \`${sid}\`\n${r.message}`,
+                        wait:    `⏳ *暂不可续期* — ${userLabel}\n服务器: \`${sid}\`\n${r.message}`,
+                        unknown: `⚠️ *续期结果未知* — ${userLabel}\n服务器: \`${sid}\`\n${r.message}`,
+                        error:   `❌ *续期出错* — ${userLabel}\n服务器: \`${sid}\`\n${r.message}`
+                    };
+                    await sendTelegramMessage(msgMap[r.status] || `❓ *续期*\n用户: ${userLabel}\n服务器: ${sid}\n${r.message}`, r.shot);
                 } catch (e) {
                     console.error(`服务器 ${serverUrl} 续期出错:`, e.message);
                     const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || 'srv';
                     const errShot = path.join(photoDir, `weirdhost_${safeUser}_${sid}_timeout.png`);
                     try { await page.screenshot({ path: errShot, fullPage: true }); } catch (e2) { }
-                    await sendTelegramMessage(`❌ *续期出错*\n用户: ${user.username}\n服务器: ${sid}\n错误: ${e.message}`,
+                    await sendTelegramMessage(`❌ *续期超时*\n用户: ${user.username}\n服务器: \`${sid}\`\n错误: ${e.message}`,
                         fs.existsSync(errShot) ? errShot : null);
                 }
             }
