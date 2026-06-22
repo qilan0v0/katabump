@@ -220,17 +220,33 @@ node renew.js
 
 ---
 
-## 🎮 Searcade 登录保活 (附加)
+## 🎮 Searcade 登录保活 + 服务器保活 (附加)
 
 `searcade.com` 登录走 **userveria.com 的 OAuth**（两步：先邮箱 "Continue with email"，再密码 "Log in"），登录成功后页面显示 `Successfully signed in as ...`。脚本自动完成整套流程并截图通知。无验证码。
 
-- **账号 Secret**：新建 `SEARCADE_USERS_JSON`，格式同其它：
+登录后会自动检查服务器状态：若状态不是 `Online`，则点击 Start 按钮启动服务器，等待启动成功并发送通知。
+
+- **账号 Secret**：新建 `SEARCADE_USERS_JSON`，格式同其它（可在每个用户对象中添加可选的 `serverUrl` 或 `serverUrls` 数组）：
   ```json
   [{"username": "a@b.com", "password": "pwd"}]
   ```
+  **配置服务器保活的方式（任选其一）**：
+  - **选项 A**：在用户 JSON 中添加 `serverUrl` 字段
+    ```json
+    [{"username": "a@b.com", "password": "pwd", "serverUrl": "https://searcade.com/en/admin/servers/7383"}]
+    ```
+  - **选项 B**：在用户 JSON 中添加 `serverUrls` 数组（多台服务器）
+    ```json
+    [{"username": "a@b.com", "password": "pwd", "serverUrls": [
+      "https://searcade.com/en/admin/servers/7383",
+      "https://searcade.com/en/admin/servers/7384"
+    ]}]
+    ```
+  - **选项 C**：设置环境变量 `SEARCADE_SERVER_URLS`（所有用户共用，逗号分隔，需要显式配置 `KV_ADMIN_URL` 免登录时才有用）
+  > 不配置服务器 URL 则不执行保活检查，仅登录保活。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **KV Cookie 缓存**：支持通过 `KV_ADMIN_URL` / `KV_ADMIN_PASS` 缓存 cookie（`searcade_cookie_<用户名>`），避免每次完整登录。
-- **触发**：每周一北京时间 11:00，或手动 "Run workflow" (选 `Searcade Auto Login`)。截图在 `searcade-screenshots` artifact。
+- **触发**：每天定时，或手动 "Run workflow" (选 `Searcade Auto Login`)。截图在 `searcade-screenshots` artifact。
 
 ---
 

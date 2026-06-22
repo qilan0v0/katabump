@@ -381,6 +381,49 @@ async function loginOnce(page, user) {
     const photoDir = path.join(process.cwd(), 'screenshots');
     if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
 
+    // 检查服务器状态并保活
+    async function keepServerAlive(serverUrl) {
+        const sid = (serverUrl.match(/\/servers\/(\d+)/) || [])[1] || 'srv';
+        console.log(`   >> 检查服务器 ${sid} 状态...`);
+        await gotoWithRetry(page, serverUrl);
+        await page.waitForTimeout(3000);
+
+        // 读取状态文字
+        let statusText = '';
+        for (let w = 0; w < 10; w++) {
+            statusText = await page.locator('.status.badge').first().innerText().catch(() => '');
+            if (statusText) break;
+            await page.waitForTimeout(1500);
+        }
+        console.log(`   >> [${sid}] 状态: ${statusText || '未知'}`);
+
+        // 状态不是 Online → 点击 Start
+        if (statusText && !/online/i.test(statusText)) {
+            console.log(`   >> [${sid}] 服务器未运行 (${statusText})，尝试启动...`);
+            const startBtn = page.locator('button[data-state="start"]');
+            if (await startBtn.isVisible().catch(() => false)) {
+                await startBtn.click();
+                await page.waitForTimeout(3000);
+                console.log(`   >> [${sid}] 已点击 Start，等待启动...`);
+                // 等几秒检查状态是否变成 Online
+                for (let w = 0; w < 12; w++) {
+                    await page.waitForTimeout(5000);
+                    const newStatus = await page.locator('.status.badge').first().innerText().catch(() => '');
+                    if (/online/i.test(newStatus)) {
+                        console.log(`   >> [${sid}] ✅ 启动成功，状态: ${newStatus}`);
+                        return { ok: true, action: 'started', status: newStatus };
+                    }
+                    console.log(`   >> [${sid}] 等待启动中... (${newStatus || '无响应'})`);
+                }
+                return { ok: false, action: 'start_timeout', status: statusText };
+            } else {
+                console.log(`   >> [${sid}] 未找到 Start 按钮，跳过`);
+                return { ok: false, action: 'no_start_btn', status: statusText };
+            }
+        }
+        return { ok: true, action: 'already_running', status: statusText || 'Online' };
+    }
+
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
         const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
@@ -393,6 +436,7 @@ async function loginOnce(page, user) {
             // 尝试从 KV 读取已存 cookie
             const cookieKey = 'searcade_cookie_' + user.username.replace(/[^a-z0-9]/gi, '_');
             const saved = await kvGet(cookieKey);
+            let loggedIn = false;
             if (saved) {
                 try {
                     const cks = normalizeCookies(JSON.parse(saved));
@@ -403,10 +447,7 @@ async function loginOnce(page, user) {
                     const body = await page.locator('body').innerText().catch(() => '');
                     if (body.includes('logout') || body.includes('Logout') || body.includes('admin')) {
                         console.log('   >> cookie 有效，跳过登录');
-                        const shotPath2 = path.join(photoDir, 'searcade_' + user.username.replace(/[^a-z0-9]/gi, '_') + '.png');
-                        try { await page.screenshot({ path: shotPath2, fullPage: true }); } catch (e) { }
-                        await sendTelegramMessage('✅ *登录成功 (cookie 缓存)*\n用户: ' + user.username, shotPath2);
-                        continue;
+                        loggedIn = true;
                     } else {
                         console.log('   >> cookie 无效/已过期，重新登录');
                     }
@@ -415,19 +456,65 @@ async function loginOnce(page, user) {
                 }
             }
 
-            const res = await loginOnce(page, user);
+            if (!loggedIn) {
+                const res = await loginOnce(page, user);
+                const shotPath = path.join(photoDir, `searcade_${safeUser}.png`);
+                try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) { }
 
-            const shotPath = path.join(photoDir, `searcade_${safeUser}.png`);
-            try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) { }
+                if (res.ok) {
+                    console.log(`   >> ✅ 登录成功: ${res.info}`);
+                    // 保存 cookie 到 KV
+                    try { const cookies = await context.cookies(); await kvPut(cookieKey, JSON.stringify(cookies)); } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
+                    await sendTelegramMessage(`✅ *登录成功*\n用户: ${user.username}\n${res.info}`, shotPath);
+                    loggedIn = true;
+                } else {
+                    console.log(`   >> ❌ 登录失败: ${res.info}`);
+                    await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: ${res.info}`, shotPath);
+                }
+            }
 
-            if (res.ok) {
-                console.log(`   >> ✅ 登录成功: ${res.info}`);
-                // 保存 cookie 到 KV
-                try { const cookies = await context.cookies(); await kvPut(cookieKey, JSON.stringify(cookies)); } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
-                await sendTelegramMessage(`✅ *登录成功*\n用户: ${user.username}\n${res.info}`, shotPath);
-            } else {
-                console.log(`   >> ❌ 登录失败: ${res.info}`);
-                await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: ${res.info}`, shotPath);
+            // 登录成功后检查并保活服务器
+            if (loggedIn) {
+                // 获取用户的服务器列表：优先 user.serverUrls 数组，回退 user.serverUrl，再回退带 ServerUrls 的 env
+                let serverUrls = user.serverUrls || [];
+                if (serverUrls.length === 0 && user.serverUrl) {
+                    serverUrls = [user.serverUrl];
+                }
+                // 如果用户 JSON 中没有配置 serverUrls，尝试从环境变量 SEARCADE_SERVER_URLS 读取（逗号分隔）
+                if (serverUrls.length === 0 && process.env.SEARCADE_SERVER_URLS) {
+                    serverUrls = process.env.SEARCADE_SERVER_URLS.split(',').map(s => s.trim()).filter(Boolean);
+                }
+
+                if (serverUrls.length > 0) {
+                    console.log(`   >> 开始保活检查 (${serverUrls.length} 个服务器)...`);
+                    const results = [];
+                    for (const su of serverUrls) {
+                        try {
+                            const r = await keepServerAlive(su);
+                            results.push(r);
+                            await page.waitForTimeout(1000);
+                        } catch (e) {
+                            console.error(`   >> 检查服务器 ${su} 出错:`, e.message);
+                            results.push({ ok: false, action: 'error', status: e.message });
+                        }
+                    }
+
+                    // 汇总通知
+                    const successCount = results.filter(r => r.ok).length;
+                    const failCount = results.filter(r => !r.ok).length;
+                    const sid = (su => (su.match(/\/servers\/(\d+)/) || [])[1] || '?')(serverUrls[0]);
+                    if (failCount === 0 && successCount > 0) {
+                        await sendTelegramMessage(`✅ *保活完成*\n用户: ${user.username}\n${successCount} 个服务器正常运行`);
+                    } else if (failCount > 0) {
+                        const details = results.map((r, idx) => {
+                            const sid = (serverUrls[idx].match(/\/servers\/(\d+)/) || [])[1] || '?';
+                            return `  ${sid}: ${r.action === 'already_running' ? '✅ 运行中' : r.action === 'started' ? '✅ 已启动' : '❌ ' + (r.action || r.status)}`;
+                        }).join('\n');
+                        await sendTelegramMessage(`⚠️ *保活结果*\n用户: ${user.username}\n${details}`);
+                    }
+                } else {
+                    console.log('   >> 未配置服务器 URL，跳过保活检查（可在用户 JSON 中添加 serverUrl 或设置 SEARCADE_SERVER_URLS 环境变量）');
+                }
             }
         } catch (err) {
             console.error('处理用户出错:', err.message);
