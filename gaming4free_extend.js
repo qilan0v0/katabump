@@ -286,34 +286,84 @@ const INJECTED_SCRIPT = `
 })();
 `;
 
-// Cloudflare Turnstile CDP 点击绕过
+// Cloudflare Turnstile CDP 点击绕过 + Playwright 直接点击
 async function attemptTurnstileCdp(page) {
-    const frames = page.frames();
-    for (const frame of frames) {
+    // 先确保广告遮罩已移除
+    await page.evaluate(() => {
+        const o = document.getElementById('__g4f_adblock_overlay');
+        if (o) o.remove();
+        // 取消遮罩对 Turnstile 容器的遮挡
+        document.querySelectorAll('[style*="z-index"]').forEach(el => {
+            if (el.id && el.id.includes('overlay')) el.style.display = 'none';
+        });
+    }).catch(() => {});
+
+    // 方案 A: 直接用 Playwright 在 Turnstile iframe 中找复选框
+    for (const frame of page.frames()) {
         const fu = (frame.url() || '');
-        // 只处理 Cloudflare Challenge 相关的 frame，忽略侧边栏等无关 frame
-        if (!/challenges\.cloudflare|turnstile|^https?:\/\/[^\/]*cloudflare/i.test(fu)) continue;
+        if (!/cloudflare|turnstile|challenges/i.test(fu)) continue;
         try {
-            const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
+            const cb = frame.locator('input[type="checkbox"]').first();
+            if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await cb.click({ timeout: 3000, force: true }).catch(() => cb.click({ timeout: 3000 }));
+                console.log('>> ✅ Turnstile 复选框已点击');
+                return true;
+            }
+        } catch (e) {}
+    }
+
+    // 方案 B: 通过 CDP 点击 iframe 内的 Turnstile 复选框
+    for (const frame of page.frames()) {
+        const fu = (frame.url() || '');
+        if (!/cloudflare|turnstile|challenges/i.test(fu)) continue;
+        try {
+            const data = await _race(frame.evaluate(() => window.__turnstile_data), 2000).catch(() => null);
             if (data && data.xRatio > 0.1 && data.xRatio < 0.9) {
-                console.log('>> 在 CF frame 中发现 Turnstile。比例:', data);
-                const iframeElement = await frame.frameElement();
+                const iframeElement = await frame.frameElement().catch(() => null);
                 if (!iframeElement) continue;
-                const box = await iframeElement.boundingBox();
+                const box = await iframeElement.boundingBox().catch(() => null);
                 if (!box) continue;
                 const clickX = box.x + (box.width * data.xRatio);
                 const clickY = box.y + (box.height * data.yRatio);
-                console.log('>> 计算点击坐标: (' + clickX.toFixed(2) + ', ' + clickY.toFixed(2) + ')');
-                const client = await page.context().newCDPSession(page);
+                const client = await page.context().newCDPSession(page).catch(() => null);
+                if (!client) continue;
                 await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
                 await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
                 await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                console.log('>> CDP 点击已发送。');
                 await client.detach();
+                console.log('>> CDP 点击已发送。');
                 return true;
             }
-        } catch (e) { }
+        } catch (e) {}
     }
+
+    // 方案 C: 通过 page.evaluate 直接查找并点击
+    try {
+        const result = await page.evaluate(() => {
+            // 在页面内查找 Turnstile 相关的 iframe
+            const ifrs = document.querySelectorAll('iframe');
+            for (const ifr of ifrs) {
+                const src = ifr.src || '';
+                if (/turnstile|challenges|cloudflare/i.test(src)) {
+                    try {
+                        const doc = ifr.contentDocument || ifr.contentWindow?.document;
+                        if (doc) {
+                            const cb = doc.querySelector('input[type="checkbox"]');
+                            if (cb) { cb.click(); return 'clicked'; }
+                        }
+                    } catch(e) { /* cross-origin */ }
+                    // 即使点不了 checkbox，返回 iframe 存在 = Turnstile 弹窗已打开
+                    return 'iframe_found';
+                }
+            }
+            return '';
+        }).catch(() => '');
+        if (result) {
+            console.log('>> Turnstile 弹窗已检测到: ' + result);
+            if (result === 'clicked') return true;
+        }
+    } catch (e) {}
+
     return false;
 }
 
