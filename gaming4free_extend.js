@@ -323,21 +323,24 @@ async function attemptTurnstileCdp(page) {
                             await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cand.x, y: cand.y, button: 'left', clickCount: 1 });
                             await new Promise(r => setTimeout(r, 80 + Math.random() * 120));
                             await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cand.x, y: cand.y, button: 'left', clickCount: 1 });
-                            await new Promise(r => setTimeout(r, 300));
-                            // 检查 Turnstile 是否已通过（iframe 消失或显示成功状态）
+                            // 等待更长时间验证是否通过（Turnstile 可能需要 1-3 秒处理）
+                            await new Promise(r => setTimeout(r, 1500));
                             const turned = await page.evaluate(() => {
                                 const ifrs = Array.from(document.querySelectorAll('iframe'));
+                                const hasTurnstileIframe = ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
+                                if (!hasTurnstileIframe) return true; // iframe 消失 = 通过
                                 for (const ifr of ifrs) {
-                                    const src = ifr.src || '';
-                                    if (/turnstile|challenges\.cloudflare/i.test(src)) {
-                                        // iframe 仍存在，检查是否有成功标记
+                                    if (/turnstile|challenges\.cloudflare/i.test(ifr.src || '')) {
                                         const txt = ifr.parentElement?.textContent || '';
-                                        if (/success|verified|passed/i.test(txt)) return true;
+                                        // 成功关键词
+                                        if (/success|verified|passed|complete|done|finished/i.test(txt)) return true;
+                                        // 失败关键词（不算通过）
+                                        if (/incorrect|error|failed|try again|unsuccessful|expired|timeout/i.test(txt)) return false;
+                                        // 验证中关键词（不算通过，需要继续等待）
+                                        if (/challenge|checking|verifying|please wait|loading/i.test(txt)) return false;
                                     }
                                 }
-                                // iframe 消失也算通过
-                                const hasTurnstileIframe = ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
-                                return !hasTurnstileIframe;
+                                return false; // 无法确定 = 未通过
                             }).catch(() => false);
                             if (turned) {
                                 await client.detach();
@@ -374,14 +377,36 @@ async function attemptTurnstileCdp(page) {
                             await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
                             await new Promise(r => setTimeout(r, 80 + Math.random() * 120));
                             await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                            // 等待更长时间验证是否通过（Turnstile 可能需要 1-3 秒处理）
+                            await new Promise(r => setTimeout(r, 1500));
+                            const turned = await page.evaluate(() => {
+                                const ifrs = Array.from(document.querySelectorAll('iframe'));
+                                const hasTurnstileIframe = ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
+                                if (!hasTurnstileIframe) return true; // iframe 消失 = 通过
+                                for (const ifr of ifrs) {
+                                    if (/turnstile|challenges\.cloudflare/i.test(ifr.src || '')) {
+                                        const txt = ifr.parentElement?.textContent || '';
+                                        // 成功关键词
+                                        if (/success|verified|passed|complete|done|finished/i.test(txt)) return true;
+                                        // 失败关键词（不算通过）
+                                        if (/incorrect|error|failed|try again|unsuccessful|expired|timeout/i.test(txt)) return false;
+                                        // 验证中关键词（不算通过，需要继续等待）
+                                        if (/challenge|checking|verifying|please wait|loading/i.test(txt)) return false;
+                                    }
+                                }
+                                return false; // 无法确定 = 未通过
+                            }).catch(() => false);
+                            if (turned) {
+                                await client.detach();
+                                clearTimeout(timeout);
+                                console.log('>> CDP 点击 Turnstile (注入坐标) (' + clickX.toFixed(0) + ', ' + clickY.toFixed(0) + ')');
+                                resolve(true);
+                                return;
+                            }
                             await client.detach();
-                            clearTimeout(timeout);
-                            console.log('>> CDP 点击 Turnstile (注入坐标) (' + clickX.toFixed(0) + ', ' + clickY.toFixed(0) + ')');
-                            resolve(true);
-                            return;
                         }
                     } else {
-                        // 注入脚本未返回数据，使用固定候选点
+                        // 注入脚本未返回数据，使用固定候选点（更密集的扫描）
                         const client = await page.context().newCDPSession(page).catch(() => null);
                         if (client) {
                             const candidates = [
@@ -389,23 +414,34 @@ async function attemptTurnstileCdp(page) {
                                 { x: box.x + box.width * 0.25, y: box.y + box.height * 0.45 },
                                 { x: box.x + box.width * 0.15, y: box.y + box.height * 0.35 },
                                 { x: box.x + box.width * 0.25, y: box.y + box.height * 0.35 },
+                                // 新增：更密集的候选点，覆盖复选框可能的位置
+                                { x: box.x + box.width * 0.12, y: box.y + box.height * 0.42 },
+                                { x: box.x + box.width * 0.18, y: box.y + box.height * 0.42 },
+                                { x: box.x + box.width * 0.12, y: box.y + box.height * 0.48 },
+                                { x: box.x + box.width * 0.18, y: box.y + box.height * 0.48 },
                             ];
                             for (const cand of candidates) {
                                 await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cand.x, y: cand.y, button: 'left', clickCount: 1 });
                                 await new Promise(r => setTimeout(r, 80 + Math.random() * 120));
                                 await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cand.x, y: cand.y, button: 'left', clickCount: 1 });
-                                await new Promise(r => setTimeout(r, 300));
+                                // 等待更长时间验证是否通过
+                                await new Promise(r => setTimeout(r, 1500));
                                 const turned = await page.evaluate(() => {
                                     const ifrs = Array.from(document.querySelectorAll('iframe'));
                                     const hasTurnstileIframe = ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
-                                    if (!hasTurnstileIframe) return true;
+                                    if (!hasTurnstileIframe) return true; // iframe 消失 = 通过
                                     for (const ifr of ifrs) {
                                         if (/turnstile|challenges\.cloudflare/i.test(ifr.src || '')) {
                                             const txt = ifr.parentElement?.textContent || '';
-                                            if (/success|verified|passed/i.test(txt)) return true;
+                                            // 成功关键词
+                                            if (/success|verified|passed|complete|done|finished/i.test(txt)) return true;
+                                            // 失败关键词（不算通过）
+                                            if (/incorrect|error|failed|try again|unsuccessful|expired|timeout/i.test(txt)) return false;
+                                            // 验证中关键词（不算通过，需要继续等待）
+                                            if (/challenge|checking|verifying|please wait|loading/i.test(txt)) return false;
                                         }
                                     }
-                                    return false;
+                                    return false; // 无法确定 = 未通过
                                 }).catch(() => false);
                                 if (turned) {
                                     await client.detach();
