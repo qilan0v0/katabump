@@ -593,9 +593,19 @@ async function dismissAdblockPopup(page) {
     }
     // 2. 无论按钮是否可见，总是用 JS 移除遮罩层（防止遮罩层残留拦截点击）
     await page.evaluate(() => {
-        const overlay = document.getElementById('__g4f_adblock_overlay');
-        if (overlay) { overlay.remove(); return true; }
-        return false;
+        const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
+        for (const id of overlayIds) {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        }
+        // 移除非 iframe 的全屏 fixed 遮罩
+        document.querySelectorAll('div').forEach(el => {
+            const cs = window.getComputedStyle(el);
+            if ((cs.position === 'fixed' || cs.position === 'absolute') &&
+                cs.zIndex > 50 && !el.id && !el.querySelector('iframe')) {
+                el.remove();
+            }
+        });
     }).catch(() => false);
 }
 
@@ -676,18 +686,75 @@ async function extendServer(page, serverUrl, photoDir) {
     console.log('   >> 点击 +90 min...');
 
     // 关键：必须用普通点击（非 force）触发 Alpine.js 事件 → Turnstile 弹窗才会出现
-    // 因此一定要先移除广告遮罩，让普通点击能通过
+    // 改进：先用 JS 移除所有可能的遮罩层，再通过 DOM dispatchEvent 点击按钮
     for (let r = 0; r < 3; r++) {
-        await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
-        await page.waitForTimeout(300);
+        // 全局清除所有可能的遮罩层
+        await page.evaluate(() => {
+            // 按 ID 移除
+            const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
+            for (const id of overlayIds) {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            }
+            // 按 class 移除常见的遮罩层
+            const overlayClasses = ['.adblock-overlay', '.overlay', '.modal-backdrop', '.ad-overlay', '.block-overlay'];
+            for (const cls of overlayClasses) {
+                try {
+                    const els = document.querySelectorAll(cls);
+                    els.forEach(el => el.remove());
+                } catch (e) {}
+            }
+            // 移除所有 fixed/absolute 定位且覆盖全屏的 div（遮罩层特征）
+            document.querySelectorAll('div').forEach(el => {
+                const cs = window.getComputedStyle(el);
+                if ((cs.position === 'fixed' || cs.position === 'absolute') &&
+                    el.offsetWidth >= window.innerWidth * 0.8 &&
+                    el.offsetHeight >= window.innerHeight * 0.8 &&
+                    cs.zIndex > 100) {
+                    // 跳过重要元素
+                    if (el.id || el.querySelector('iframe')) return;
+                    el.remove();
+                }
+            });
+            // 恢复 body 滚动
+            document.body.style.overflow = 'auto';
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+
         try {
-            await extendBtn.click({ timeout: 5000 });
+            // 优先通过 Playwright 的 locator.click()（保留事件处理）
+            await extendBtn.click({ timeout: 5000, force: false });
             console.log('   >> 普通点击成功');
             break;
         } catch (e) {
-            console.log('   >> 普通点击被遮挡(第' + (r+1) + '次)，继续清除遮罩...');
+            console.log('   >> 普通点击被遮挡(第' + (r+1) + '次)，改用 DOM dispatchEvent...');
+            // 通过 JS dispatchEvent 点击（保留 Alpine.js 事件）
+            const jsClicked = await page.evaluate(() => {
+                const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
+                if (!btn) return false;
+                // 模拟真正的点击事件
+                const rect = btn.getBoundingClientRect();
+                const evt = new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: rect.left + rect.width / 2,
+                    clientY: rect.top + rect.height / 2
+                });
+                return btn.dispatchEvent(evt);
+            }).catch(() => false);
+            if (jsClicked) console.log('   >> JS dispatchEvent 点击成功');
+            else console.log('   >> JS dispatchEvent 点击失败');
+
             if (r === 2) {
-                await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+                // 最后一次尝试：强制移除所有遮罩后 force click
+                await page.evaluate(() => {
+                    document.querySelectorAll('div').forEach(el => {
+                        const cs = window.getComputedStyle(el);
+                        if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.zIndex > 50) {
+                            if (!el.id && !el.querySelector('iframe, button, input')) el.remove();
+                        }
+                    });
+                }).catch(() => {});
                 try { await extendBtn.click({ force: true, timeout: 5000 }); } catch (e2) {}
             }
         }
@@ -701,7 +768,23 @@ async function extendServer(page, serverUrl, photoDir) {
     // Turnstile 弹窗在普通点击后 1-3 秒出现，CDP 需点击复选框
     console.log('   >> 处理 Turnstile 验证...');
     for (let t = 0; t < 8; t++) {
-        await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+        // 全局清除遮罩
+        await page.evaluate(() => {
+            const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
+            for (const id of overlayIds) {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            }
+            document.querySelectorAll('div').forEach(el => {
+                const cs = window.getComputedStyle(el);
+                if ((cs.position === 'fixed' || cs.position === 'absolute') &&
+                    el.offsetWidth >= window.innerWidth * 0.8 &&
+                    el.offsetHeight >= window.innerHeight * 0.8 &&
+                    cs.zIndex > 100 && !el.id && !el.querySelector('iframe')) {
+                    el.remove();
+                }
+            });
+        }).catch(() => {});
         const clicked = await _race(attemptTurnstileCdp(page), 4000).catch(() => false);
         if (clicked) {
             console.log('   >> ✅ Turnstile 已点击');
@@ -713,7 +796,13 @@ async function extendServer(page, serverUrl, photoDir) {
         await page.waitForTimeout(2000);
     }
 
-    await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+    await page.evaluate(() => {
+        const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
+        for (const id of overlayIds) {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        }
+    }).catch(() => {});
 
     // 解析剩余时间 → 秒数
     function parseTime(str) {
@@ -728,7 +817,14 @@ async function extendServer(page, serverUrl, photoDir) {
     console.log('   >> 等候续时生效...');
     let extendOk = false;
     for (let w = 0; w < 20; w++) {
-        await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+        // 全局清除遮罩
+        await page.evaluate(() => {
+            const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
+            for (const id of overlayIds) {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            }
+        }).catch(() => {});
 
         // 检查按钮是否进入冷却
         const curBtnText = await extendBtn.innerText().catch(() => '');
