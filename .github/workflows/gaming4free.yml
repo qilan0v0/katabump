@@ -28,6 +28,20 @@ jobs:
         npm install
         npx playwright install chromium 2>/dev/null || true
 
+    - name: Download v2ray
+      if: env.HAS_V2RAY == 'true'
+      run: |
+        mkdir -p $HOME/v2ray
+        cd $HOME/v2ray
+        # 下载最新 v2ray-linux-64
+        V2RAY_URL=$(curl -fsSL https://api.github.com/repos/v2fly/v2ray-core/releases/latest \
+          | grep "browser_download_url" | grep 'v2ray-linux-64\.zip"' | cut -d '"' -f 4)
+        echo "下载 v2ray: $V2RAY_URL"
+        curl -fsSL -o v2ray.zip "$V2RAY_URL"
+        unzip -o v2ray.zip
+        chmod +x v2ray
+        ./v2ray version
+
     - name: Start v2ray (本地 HTTP 代理)
       if: env.HAS_V2RAY == 'true'
       env:
