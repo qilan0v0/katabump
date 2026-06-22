@@ -90,7 +90,24 @@ function escapeMd(s) {
 
 chromium.use(stealth);
 
-const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+let CHROME_PATH = process.env.CHROME_PATH;
+if (!CHROME_PATH) {
+    try {
+        const p = chromium.executablePath();
+        if (p && fs.existsSync(p)) {
+            CHROME_PATH = p;
+            console.log('[Chrome] 使用 Playwright Chromium:', p);
+        }
+    } catch (e) {}
+    if (!CHROME_PATH) {
+        const candidates = ['/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium'];
+        for (const c of candidates) {
+            if (fs.existsSync(c)) { CHROME_PATH = c; break; }
+        }
+        CHROME_PATH = CHROME_PATH || '/usr/bin/google-chrome';
+        console.log('[Chrome] 使用系统浏览器:', CHROME_PATH);
+    }
+}
 const DEBUG_PORT = 9222;
 process.env.NO_PROXY = 'localhost,127.0.0.1';
 
