@@ -409,40 +409,96 @@ async function attemptTurnstileCdp(page) {
                         resolve(true);
                         return;
                     } else if (checkResult === 'failed') {
-                        console.log('>> ⚠️ Turnstile 验证失败，需要重试');
+                        console.log('>> ⚠️ Turnstile 验证失败');
                         clearTimeout(timeout);
                         resolve(false);
                         return;
                     } else {
-                        // pending，等待更长时间再检查
-                        await page.waitForTimeout(2000);
-                        const finalCheck = await page.evaluate(() => {
-                            const ifrs = Array.from(document.querySelectorAll('iframe'));
-                            const hasTurnstileIframe = ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
-                            if (!hasTurnstileIframe) return true;
-                            for (const ifr of ifrs) {
-                                if (/turnstile|challenges\.cloudflare/i.test(ifr.src || '')) {
-                                    const txt = (ifr.parentElement?.textContent || '').trim();
-                                    if (/incorrect|error|failed|try again|unsuccessful/i.test(txt)) return false;
-                                }
-                            }
-                            // 检查按钮状态
-                            const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
-                            if (btn) {
-                                const txt = btn.innerText || '';
-                                if (/cd|wait|loading/i.test(txt) && !/90|min/i.test(txt)) return true;
-                            }
-                            return true; // 假设还在验证中，不算失败
-                        }).catch(() => false);
+                        // pending = 不确定是否通过，返回 false 让外层重试
                         clearTimeout(timeout);
-                        resolve(finalCheck);
+                        console.log('>> ⚠️ Turnstile 验证不确定，返回 false 重试');
+                        resolve(false);
                         return;
                     }
                 }
             }
 
-            // 备选方案：如果无法直接定位，使用固定候选点扫描
-            console.log('>> 直接定位失败，使用备选扫描方案...');
+            // 备选方案：通过 page.evaluate 扫描所有 iframe，找到可见的验证弹窗 iframe
+            console.log('>> 直接定位失败，使用页面级 iframe 扫描...');
+            const iframeCandidates = await page.evaluate(() => {
+                const results = [];
+                const ifrs = Array.from(document.querySelectorAll('iframe'));
+                for (const ifr of ifrs) {
+                    const src = ifr.src || '';
+                    if (/turnstile|challenges\.cloudflare/i.test(src) && ifr.offsetWidth > 50 && ifr.offsetHeight > 50) {
+                        const r = ifr.getBoundingClientRect();
+                        results.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+                    }
+                }
+                return results;
+            }).catch(() => []);
+
+            if (iframeCandidates.length > 0) {
+                console.log(`   [调试] 找到 ${iframeCandidates.length} 个可见 Turnstile iframe`);
+                for (const ic of iframeCandidates) {
+                    console.log(`   [调试] iframe: x=${ic.x}, y=${ic.y}, w=${ic.w}, h=${ic.h}`);
+                }
+                // 取第一个可见 iframe，使用更精确的坐标（复选框通常在左上角）
+                const ic = iframeCandidates[0];
+                const client = await page.context().newCDPSession(page).catch(() => null);
+                if (client) {
+                    // 密集候选点：覆盖 10%-30% 宽度范围，35%-55% 高度范围
+                    const xOffsets = [0.10, 0.14, 0.18, 0.22, 0.26, 0.30];
+                    const yOffsets = [0.35, 0.40, 0.45, 0.50, 0.55];
+                    for (const xPct of xOffsets) {
+                        for (const yPct of yOffsets) {
+                            const cx = ic.x + ic.w * xPct;
+                            const cy = ic.y + ic.h * yPct;
+                            await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
+                            await new Promise(r => setTimeout(r, 80 + Math.random() * 120));
+                            await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
+                            await new Promise(r => setTimeout(r, 1500));
+
+                            const checkResult = await page.evaluate(() => {
+                                const ifrs = Array.from(document.querySelectorAll('iframe'));
+                                const hasTurnstileIframe = ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
+                                if (!hasTurnstileIframe) return 'passed';
+                                for (const ifr of ifrs) {
+                                    if (/turnstile|challenges\.cloudflare/i.test(ifr.src || '')) {
+                                        const txt = (ifr.parentElement?.textContent || '').trim();
+                                        if (/incorrect|error|failed|try again|unsuccessful/i.test(txt)) return 'failed';
+                                    }
+                                }
+                                const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
+                                if (btn) {
+                                    const txt = btn.innerText || '';
+                                    if (/cd|wait|loading/i.test(txt) && !/90|min/i.test(txt)) return 'passed';
+                                }
+                                return 'pending';
+                            }).catch(() => 'pending');
+
+                            if (checkResult === 'passed') {
+                                await client.detach();
+                                clearTimeout(timeout);
+                                console.log('>> ✅ CDP 点击 Turnstile 成功 (' + cx.toFixed(0) + ', ' + cy.toFixed(0) + ')');
+                                resolve(true);
+                                return;
+                            } else if (checkResult === 'failed') {
+                                await client.detach();
+                                clearTimeout(timeout);
+                                console.log('>> ⚠️ CDP 点击 Turnstile 失败');
+                                resolve(false);
+                                return;
+                            }
+                            await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+                        }
+                    }
+                    await client.detach();
+                }
+            }
+
+            // 最终备选：通过 Playwright frame API
+            console.log('>> 页面扫描失败，使用 Playwright frame API 扫描...');
             for (const frame of page.frames()) {
                 const fu = (frame.url() || '');
                 if (!/turnstile|challenges/i.test(fu) || fu.includes('favicon')) continue;
