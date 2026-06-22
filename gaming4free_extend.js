@@ -263,79 +263,63 @@ function _race(p, ms) {
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
 }
 
-// 注入脚本：在所有上下文中定位 Turnstile 复选框
+// 注入脚本：hook attachShadow 以捕获动态创建的 Turnstile 复选框坐标
+// 与 action_renew.js 相同方案 — Turnstile iframe 在点击后才动态创建
 const INJECTED_SCRIPT = `
 (function() {
+    if (window.self === window.top) return;
+
+    // 1. 模拟鼠标屏幕坐标
     try {
-        function getRandomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+        function getRandomInt(min, max) {
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+        }
         let screenX = getRandomInt(800, 1200);
         let screenY = getRandomInt(400, 600);
+        
         Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
         Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
     } catch (e) { }
-    // 尝试在所有可能的上下文中查找复选框
-    function findCheckboxInFrame(win) {
-        try {
-            const doc = win.document;
-            if (!doc) return null;
-            // 搜索 checkbox
-            const checkbox = doc.querySelector('input[type="checkbox"], [role="checkbox"]');
-            if (checkbox) {
-                const rect = checkbox.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0 && win.innerWidth > 0 && win.innerHeight > 0) {
-                    const xRatio = (rect.left + rect.width / 2) / win.innerWidth;
-                    const yRatio = (rect.top + rect.height / 2) / win.innerHeight;
-                    return { xRatio, yRatio, rect };
-                }
-            }
-            // 搜索 shadow DOM
-            const allElements = doc.querySelectorAll('*');
-            for (const el of allElements) {
-                if (el.shadowRoot) {
-                    const shadowCheckbox = el.shadowRoot.querySelector('input[type="checkbox"], [role="checkbox"]');
-                    if (shadowCheckbox) {
-                        const rect = shadowCheckbox.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0 && win.innerWidth > 0 && win.innerHeight > 0) {
-                            const xRatio = (rect.left + rect.width / 2) / win.innerWidth;
-                            const yRatio = (rect.top + rect.height / 2) / win.innerHeight;
-                            return { xRatio, yRatio, rect };
+
+    // 2. attachShadow Hook — 拦截 Turnstile 动态创建的 shadow DOM
+    try {
+        const originalAttachShadow = Element.prototype.attachShadow;
+        
+        Element.prototype.attachShadow = function(init) {
+            const shadowRoot = originalAttachShadow.call(this, init);
+            
+            if (shadowRoot) {
+                const checkAndReport = () => {
+                    const checkbox = shadowRoot.querySelector('input[type="checkbox"]');
+                    if (checkbox) {
+                        const rect = checkbox.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
+                            const xRatio = (rect.left + rect.width / 2) / window.innerWidth;
+                            const yRatio = (rect.top + rect.height / 2) / window.innerHeight;
+                            window.__turnstile_data = { xRatio, yRatio };
+                            return true;
                         }
                     }
+                    return false;
+                };
+
+                if (!checkAndReport()) {
+                    const observer = new MutationObserver(() => {
+                        if (checkAndReport()) observer.disconnect();
+                    });
+                    observer.observe(shadowRoot, { childList: true, subtree: true });
                 }
             }
-        } catch (e) {}
-        return null;
-    }
-
-    // 先检查当前窗口
-    const data = findCheckboxInFrame(window);
-    if (data) {
-        window.__turnstile_data = data;
-        return;
-    }
-
-    // 检查所有 iframe
-    const ifrs = document.querySelectorAll('iframe');
-    for (const ifr of ifrs) {
-        try {
-            const iframeWin = ifr.contentWindow;
-            if (iframeWin) {
-                const iframeData = findCheckboxInFrame(iframeWin);
-                if (iframeData) {
-                    // 将 iframe 内的相对坐标转换为页面坐标
-                    const iframeRect = ifr.getBoundingClientRect();
-                    window.__turnstile_click_x = iframeRect.left + iframeData.rect.left + iframeData.rect.width / 2;
-                    window.__turnstile_click_y = iframeRect.top + iframeData.rect.top + iframeData.rect.height / 2;
-                    return;
-                }
-            }
-        } catch (e) {}
+            return shadowRoot;
+        };
+    } catch (e) {
+        console.error('[注入] Hook attachShadow 失败:', e);
     }
 })();
 `;
 
 // Cloudflare Turnstile 点击
-// 优先使用注入脚本的精确定位，匹配 action_renew.js 的成功方案
+// 与 action_renew.js 完全相同：读取注入脚本的 __turnstile_data 进行精确定位
 async function attemptTurnstileCdp(page) {
     return await new Promise(async (resolve) => {
         const timeout = setTimeout(() => resolve(false), 8000);
@@ -349,19 +333,16 @@ async function attemptTurnstileCdp(page) {
                 }
             }).catch(() => {});
 
-            // --- 方案 1：注入脚本精确定位（与 action_renew.js 相同）---
-            for (const frame of page.frames()) {
+            // --- 主方案：读取注入脚本的 __turnstile_data（与 action_renew.js 相同）---
+            const frames = page.frames();
+            for (const frame of frames) {
                 const fu = (frame.url() || '');
                 if (!/turnstile|challenges\.cloudflare/i.test(fu) || fu.includes('favicon')) continue;
                 try {
-                    // 读取注入脚本设置的坐标数据
-                    const data = await _race(
-                        frame.evaluate(() => window.__turnstile_data),
-                        2000
-                    ).catch(() => null);
+                    const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
 
                     if (data && data.xRatio && data.yRatio) {
-                        console.log('>> 注入脚本定位: xRatio=' + data.xRatio.toFixed(3) + ', yRatio=' + data.yRatio.toFixed(3));
+                        console.log('>> 在 frame 中发现 Turnstile。比例:', data);
 
                         const iframeElement = await frame.frameElement().catch(() => null);
                         if (!iframeElement) continue;
@@ -371,131 +352,33 @@ async function attemptTurnstileCdp(page) {
 
                         const clickX = box.x + (box.width * data.xRatio);
                         const clickY = box.y + (box.height * data.yRatio);
-                        console.log(`>> 精确 CDP 点击: (${clickX.toFixed(1)}, ${clickY.toFixed(1)})`);
+                        console.log(`>> 计算点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
 
                         const client = await page.context().newCDPSession(page).catch(() => null);
-                        if (client) {
-                            await client.send('Input.dispatchMouseEvent', {
-                                type: 'mousePressed', x: clickX, y: clickY,
-                                button: 'left', clickCount: 1
-                            });
-                            await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
-                            await client.send('Input.dispatchMouseEvent', {
-                                type: 'mouseReleased', x: clickX, y: clickY,
-                                button: 'left', clickCount: 1
-                            });
-                            await client.detach();
-                            console.log('>> 精确点击已发送');
+                        if (!client) continue;
 
-                            // 验证是否通过
-                            await page.waitForTimeout(3000);
-                            const verified = await page.evaluate(() => {
-                                const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
-                                if (btn && /cd|wait|loading/i.test(btn.innerText || '') && !/90|min/i.test(btn.innerText || '')) return true;
-                                const ifrs = Array.from(document.querySelectorAll('iframe'));
-                                return !ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
-                            }).catch(() => false);
+                        await client.send('Input.dispatchMouseEvent', {
+                            type: 'mousePressed', x: clickX, y: clickY,
+                            button: 'left', clickCount: 1
+                        });
+                        await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                        await client.send('Input.dispatchMouseEvent', {
+                            type: 'mouseReleased', x: clickX, y: clickY,
+                            button: 'left', clickCount: 1
+                        });
 
-                            clearTimeout(timeout);
-                            if (verified) {
-                                console.log('>> ✅ Turnstile 验证通过（精确坐标）');
-                                resolve(true);
-                            } else {
-                                console.log('>> ⚠️ Turnstile 验证未通过（精确坐标），需要重试');
-                                resolve(false);
-                            }
-                            return;
-                        }
+                        console.log('>> CDP 点击已发送。');
+                        await client.detach();
+                        clearTimeout(timeout);
+                        resolve(true);
+                        return;
                     }
                 } catch (e) { /* continue to next frame */ }
             }
 
-            // --- 方案 2：检查 __turnstile_click_x/y（注入脚本在 iframe 内设置的绝对坐标）---
-            const absCoords = await page.evaluate(() => {
-                if (window.__turnstile_click_x && window.__turnstile_click_y) {
-                    return { x: window.__turnstile_click_x, y: window.__turnstile_click_y };
-                }
-                return null;
-            }).catch(() => null);
-
-            if (absCoords && absCoords.x > 0 && absCoords.y > 0) {
-                console.log(`>> 注入脚本绝对坐标: (${absCoords.x.toFixed(1)}, ${absCoords.y.toFixed(1)})`);
-
-                const client = await page.context().newCDPSession(page).catch(() => null);
-                if (client) {
-                    await client.send('Input.dispatchMouseEvent', {
-                        type: 'mousePressed', x: absCoords.x, y: absCoords.y,
-                        button: 'left', clickCount: 1
-                    });
-                    await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
-                    await client.send('Input.dispatchMouseEvent', {
-                        type: 'mouseReleased', x: absCoords.x, y: absCoords.y,
-                        button: 'left', clickCount: 1
-                    });
-                    await client.detach();
-                    console.log('>> 绝对坐标点击已发送');
-
-                    await page.waitForTimeout(3000);
-                    const verified = await page.evaluate(() => {
-                        const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
-                        if (btn && /cd|wait|loading/i.test(btn.innerText || '') && !/90|min/i.test(btn.innerText || '')) return true;
-                        const ifrs = Array.from(document.querySelectorAll('iframe'));
-                        return !ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
-                    }).catch(() => false);
-
-                    clearTimeout(timeout);
-                    if (verified) {
-                        console.log('>> ✅ Turnstile 验证通过（绝对坐标）');
-                        resolve(true);
-                    } else {
-                        console.log('>> ⚠️ Turnstile 验证未通过（绝对坐标），需要重试');
-                        resolve(false);
-                    }
-                    return;
-                }
-            }
-
-            // --- 方案 3：Playwright locator 直接点击复选框（备选）---
-            console.log('>> 注入脚本未返回数据，尝试 Playwright locator...');
-            for (const frame of page.frames()) {
-                const fu = (frame.url() || '');
-                if (!/turnstile|challenges\.cloudflare/i.test(fu) || fu.includes('favicon')) continue;
-                try {
-                    const el = await frame.frameElement().catch(() => null);
-                    if (!el) continue;
-                    const box = await el.boundingBox().catch(() => null);
-                    if (!box || box.width < 50) continue;
-
-                    const checkbox = frame.locator('input[type="checkbox"], [role="checkbox"]').first();
-                    const ckVisible = await checkbox.isVisible({ timeout: 2000 }).catch(() => false);
-                    if (ckVisible) {
-                        await checkbox.click({ force: true, timeout: 3000 });
-                        console.log('>> Playwright locator 点击成功');
-
-                        await page.waitForTimeout(3000);
-                        const verified = await page.evaluate(() => {
-                            const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
-                            if (btn && /cd|wait|loading/i.test(btn.innerText || '') && !/90|min/i.test(btn.innerText || '')) return true;
-                            const ifrs = Array.from(document.querySelectorAll('iframe'));
-                            return !ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
-                        }).catch(() => false);
-
-                        clearTimeout(timeout);
-                        if (verified) {
-                            console.log('>> ✅ Turnstile 验证通过（locator）');
-                            resolve(true);
-                        } else {
-                            console.log('>> ⚠️ Turnstile 验证未通过（locator），需要重试');
-                            resolve(false);
-                        }
-                        return;
-                    }
-                } catch (e) {}
-            }
-
-            // --- 方案 4：CDP 密集扫描（最后手段）---
-            console.log('>> locator 也未找到，使用 CDP 密集扫描...');
-            for (const frame of page.frames()) {
+            // --- 备选方案：CDP 密集扫描（只有注入脚本完全失败时才走这里）---
+            console.log('>> 注入脚本未返回数据，使用 CDP 密集扫描...');
+            for (const frame of frames) {
                 const fu = (frame.url() || '');
                 if (!/turnstile|challenges\.cloudflare/i.test(fu) || fu.includes('favicon')) continue;
                 try {
@@ -521,22 +404,8 @@ async function attemptTurnstileCdp(page) {
                     await client.detach();
                     console.log('>> CDP 密集扫描完成');
 
-                    await page.waitForTimeout(3000);
-                    const verified = await page.evaluate(() => {
-                        const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
-                        if (btn && /cd|wait|loading/i.test(btn.innerText || '') && !/90|min/i.test(btn.innerText || '')) return true;
-                        const ifrs = Array.from(document.querySelectorAll('iframe'));
-                        return !ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
-                    }).catch(() => false);
-
                     clearTimeout(timeout);
-                    if (verified) {
-                        console.log('>> ✅ Turnstile 验证通过（CDP 扫描）');
-                        resolve(true);
-                    } else {
-                        console.log('>> ⚠️ Turnstile 验证未通过（CDP 扫描），需要重试');
-                        resolve(false);
-                    }
+                    resolve(true);
                     return;
                 } catch (e) {}
             }
@@ -753,7 +622,7 @@ async function extendServer(page, serverUrl, photoDir) {
                 }
             });
         }).catch(() => {});
-        const clicked = await _race(attemptTurnstileCdp(page), 4000).catch(() => false);
+        const clicked = await attemptTurnstileCdp(page).catch(() => false);
         if (clicked) {
             console.log('   >> ✅ Turnstile 已点击');
             break;
