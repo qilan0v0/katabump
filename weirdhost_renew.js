@@ -345,6 +345,27 @@ async function attemptTurnstileCdp(page) {
     return false;
 }
 
+// 等待 Cloudflare 全屏验证页完成（"正在验证…" / "Checking your browser…"）
+// 在页面有 CF 全屏验证遮罩时，readyLocator 可能误判（遮罩后的元素 isVisible 为 true），
+// 因此必须先等 CF 特征文字消失。
+async function waitCfChallengeDone(page) {
+    for (let i = 0; i < 30; i++) {
+        const title = await page.title().catch(() => '');
+        const body = await page.locator('body').innerText().catch(() => '');
+        const isCfChallenge = /security|challenge|verify|正在验证|安全检查/i.test(title)
+            || /正在验证|checking your browser|security check|请稍候/i.test(body);
+        if (!isCfChallenge) {
+            if (i > 0) console.log(`   >> Cloudflare 验证完成 (第 ${i + 1} 次检测)`);
+            return true;
+        }
+        if (i === 0) console.log('   >> 检测到 CF 全屏验证，等待通过...');
+        await _race(attemptTurnstileCdp(page), 10000).catch(() => false);
+        await page.waitForTimeout(2000);
+    }
+    console.log('   >> CF 全屏验证等待超时，继续尝试...');
+    return false;
+}
+
 // 通过 Cloudflare 全屏验证：循环点击 Turnstile，直到目标元素 (readyLocator) 出现
 async function passCloudflare(page, readyLocator, label) {
     const ready = async () => await _race(readyLocator().isVisible(), 5000).catch(() => false);
@@ -363,6 +384,11 @@ async function passCloudflare(page, readyLocator, label) {
 async function loginOnce(page, user) {
     await gotoWithRetry(page, ACCOUNT_URL);
     await page.waitForTimeout(3000);
+
+    // 0. 等待 Cloudflare 全屏验证页完成
+    console.log('检测 Cloudflare 安全验证状态...');
+    await waitCfChallengeDone(page);
+    await page.waitForTimeout(1000);
 
     // 1. 过 Cloudflare 全屏验证，直到登录表单 (密码框) 出现
     console.log('过 Cloudflare 验证 + 等待登录表单...');
@@ -615,6 +641,10 @@ async function discoverServers(page) {
             console.log(`打开: ${firstNav}`);
             await gotoWithRetry(page, firstNav);
             await page.waitForTimeout(2000);
+
+            // 等待 CF 全屏验证完成
+            await waitCfChallengeDone(page);
+
             const contentReady = () => page.locator('a[href*="/server/"], button:has-text("연장하기"), button[class*="RenewButton"], input[type="password"]').first();
             await passCloudflare(page, contentReady, '页面');
 
@@ -646,6 +676,7 @@ async function discoverServers(page) {
             if (!targets) {
                 await gotoWithRetry(page, DASHBOARD_URL);
                 await page.waitForTimeout(2000);
+                await waitCfChallengeDone(page);
                 await passCloudflare(page, () => page.locator('a[href*="/server/"], [class*="ServerRow"]').first(), '面板');
                 targets = await discoverServers(page);
                 console.log(`   >> 自动发现 ${targets.length} 个服务器: ${targets.join(', ')}`);
