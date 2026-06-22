@@ -286,83 +286,64 @@ const INJECTED_SCRIPT = `
 })();
 `;
 
-// Cloudflare Turnstile CDP 点击绕过 + Playwright 直接点击
+// Cloudflare Turnstile CDP 点击绕过
+// 在 Turnstile iframe 加载后，用 CDP 鼠标事件点击复选框位置
 async function attemptTurnstileCdp(page) {
     // 先确保广告遮罩已移除
     await page.evaluate(() => {
         const o = document.getElementById('__g4f_adblock_overlay');
         if (o) o.remove();
-        // 取消遮罩对 Turnstile 容器的遮挡
-        document.querySelectorAll('[style*="z-index"]').forEach(el => {
-            if (el.id && el.id.includes('overlay')) el.style.display = 'none';
-        });
     }).catch(() => {});
 
-    // 方案 A: 直接用 Playwright 在 Turnstile iframe 中找复选框
+    // 查找 Turnstile / Cloudflare Challenge iframe
+    // 策略：先通过 Playwright frames API 查找，再通过 DOM evaluate 兜底
+    let iframeBox = null;
+
+    // 方案 A: Playwright frame → frameElement → boundingBox
     for (const frame of page.frames()) {
         const fu = (frame.url() || '');
         if (!/cloudflare|turnstile|challenges/i.test(fu)) continue;
         try {
-            const cb = frame.locator('input[type="checkbox"]').first();
-            if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) {
-                await cb.click({ timeout: 3000, force: true }).catch(() => cb.click({ timeout: 3000 }));
-                console.log('>> ✅ Turnstile 复选框已点击');
-                return true;
+            const el = await frame.frameElement().catch(() => null);
+            if (!el) continue;
+            const box = await el.boundingBox().catch(() => null);
+            if (box && box.width > 0 && box.height > 0) {
+                iframeBox = box;
+                break;
             }
         } catch (e) {}
     }
 
-    // 方案 B: 通过 CDP 点击 iframe 内的 Turnstile 复选框
-    for (const frame of page.frames()) {
-        const fu = (frame.url() || '');
-        if (!/cloudflare|turnstile|challenges/i.test(fu)) continue;
+    // 方案 B: DOM evaluate — 直接获取 iframe 页面坐标
+    if (!iframeBox) {
         try {
-            const data = await _race(frame.evaluate(() => window.__turnstile_data), 2000).catch(() => null);
-            if (data && data.xRatio > 0.1 && data.xRatio < 0.9) {
-                const iframeElement = await frame.frameElement().catch(() => null);
-                if (!iframeElement) continue;
-                const box = await iframeElement.boundingBox().catch(() => null);
-                if (!box) continue;
-                const clickX = box.x + (box.width * data.xRatio);
-                const clickY = box.y + (box.height * data.yRatio);
-                const client = await page.context().newCDPSession(page).catch(() => null);
-                if (!client) continue;
-                await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
-                await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                await client.detach();
-                console.log('>> CDP 点击已发送。');
-                return true;
+            const rect = await page.evaluate(() => {
+                const ifr = Array.from(document.querySelectorAll('iframe')).find(f =>
+                    /turnstile|challenges|cloudflare/i.test(f.src || ''));
+                if (!ifr) return null;
+                const r = ifr.getBoundingClientRect();
+                return { x: r.left, y: r.top, w: r.width, h: r.height };
+            });
+            if (rect && rect.w > 0 && rect.h > 0) {
+                iframeBox = rect;
             }
         } catch (e) {}
     }
 
-    // 方案 C: 通过 page.evaluate 直接查找并点击
-    try {
-        const result = await page.evaluate(() => {
-            // 在页面内查找 Turnstile 相关的 iframe
-            const ifrs = document.querySelectorAll('iframe');
-            for (const ifr of ifrs) {
-                const src = ifr.src || '';
-                if (/turnstile|challenges|cloudflare/i.test(src)) {
-                    try {
-                        const doc = ifr.contentDocument || ifr.contentWindow?.document;
-                        if (doc) {
-                            const cb = doc.querySelector('input[type="checkbox"]');
-                            if (cb) { cb.click(); return 'clicked'; }
-                        }
-                    } catch(e) { /* cross-origin */ }
-                    // 即使点不了 checkbox，返回 iframe 存在 = Turnstile 弹窗已打开
-                    return 'iframe_found';
-                }
-            }
-            return '';
-        }).catch(() => '');
-        if (result) {
-            console.log('>> Turnstile 弹窗已检测到: ' + result);
-            if (result === 'clicked') return true;
+    if (iframeBox) {
+        // Turnstile 复选框在 iframe 左侧约 25% 位置
+        const clickX = iframeBox.x + iframeBox.w * 0.25;
+        const clickY = iframeBox.y + iframeBox.h * 0.5;
+        const client = await page.context().newCDPSession(page).catch(() => null);
+        if (client) {
+            await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+            await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+            await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+            await client.detach();
+            console.log('>> CDP 点击 Turnstile 复选框 (' + clickX.toFixed(0) + ', ' + clickY.toFixed(0) + ')');
+            return true;
         }
-    } catch (e) {}
+    }
 
     return false;
 }
@@ -459,25 +440,31 @@ async function extendServer(page, serverUrl, photoDir) {
 
     // 点击续时
     console.log('   >> 点击 +90 min...');
-    // 先确保广告遮罩已移除
-    await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
-    await page.waitForTimeout(500);
 
-    try {
-        await extendBtn.click({ timeout: 10000 });
-    } catch (e) {
-        console.log('   >> 普通点击失败(' + e.message + ')，尝试 force 点击...');
+    // 关键：必须用普通点击（非 force）触发 Alpine.js 事件 → Turnstile 弹窗才会出现
+    // 因此一定要先移除广告遮罩，让普通点击能通过
+    for (let r = 0; r < 3; r++) {
         await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
-        await page.waitForTimeout(500);
-        try { await extendBtn.click({ force: true, timeout: 5000 }); }
-        catch (e2) { console.log('   >> force 点击也失败:', e2.message); }
+        await page.waitForTimeout(300);
+        try {
+            await extendBtn.click({ timeout: 5000 });
+            console.log('   >> 普通点击成功');
+            break;
+        } catch (e) {
+            console.log('   >> 普通点击被遮挡(第' + (r+1) + '次)，继续清除遮罩...');
+            if (r === 2) {
+                // 最后一次尝试 force 兜底
+                await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+                try { await extendBtn.click({ force: true, timeout: 5000 }); } catch (e2) {}
+            }
+        }
     }
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
 
-    // 再次移除广告遮罩（可能重新出现）
+    // 再次移除广告遮罩
     await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
 
-    // 解析剩余时间 → 秒数，用于后续比较
+    // 解析剩余时间 → 秒数
     function parseTime(str) {
         if (!str) return 0;
         const m = str.match(/(\d{2}):(\d{2}):(\d{2})/);
@@ -486,7 +473,8 @@ async function extendServer(page, serverUrl, photoDir) {
     }
     const oldSeconds = parseTime(remainingTime);
 
-    // 等候续时生效（Turnstile 可能自动验证，不需要手动点击）
+    // 等候续时生效（最多 ~50 秒）
+    // Turnstile 可能在 new IP 上弹出人工验证，需要用 CDP 点击通过
     console.log('   >> 等候续时生效...');
     let extendOk = false;
     for (let w = 0; w < 25; w++) {
@@ -507,7 +495,7 @@ async function extendServer(page, serverUrl, photoDir) {
             extendOk = true;
             break;
         }
-        // 有 Turnstile 就点一下（非阻塞），没有就继续等
+        // 尝试用 CDP 点 Turnstile 复选框（如果有弹窗的话）
         await _race(attemptTurnstileCdp(page), 5000).catch(() => false);
         await page.waitForTimeout(2000);
     }
