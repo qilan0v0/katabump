@@ -306,7 +306,7 @@ function _race(p, ms) {
 
         if (!cookieStr) {
             console.error('未找到 cookie（KV 和 G4F_COOKIE_JSON 都没有）。请先在浏览器登录后导出 cookie 上传到 KV Admin 面板 (key: ' + escapeMd('gaming4free_cookie_g4f_user') + ')');
-            await sendTelegramMessage('❌ *Gaming4Free 签到失败*\n\n未找到 cookie\n请先在浏览器登录后导出 cookie 上传到 KV Admin\n→ 面板新增 → Gaming4Free → 标识: g4f_user → 粘贴 cookie JSON → 保存');
+            await sendTelegramMessage('❌ *Gaming4Free 签到失败*\n\n未找到 cookie\n请先在浏览器登录后导出 cookie 上传到 KV Admin\n→ 面板新增 → Gaming4Free → 标识: ' + escapeMd('g4f_user') + ' → 粘贴 cookie JSON → 保存');
             process.exit(1);
         }
 
@@ -349,7 +349,7 @@ function _race(p, ms) {
             console.log('   >> 已重定向到首页，今日已签到过');
             try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) {}
             await sendTelegramMessage(
-                `✅ *Gaming4Free 今日已签到*\n用户: g4f_user\n无需重复签到`,
+                '✅ *Gaming4Free 今日已签到*\n用户: ' + escapeMd('g4f_user') + '\n无需重复签到',
                 shotPath
             );
             process.exit(0);
@@ -449,7 +449,7 @@ function _race(p, ms) {
             const detail = [escapeMd(dayText), escapeMd(rewardText), escapeMd(streakInfo), balanceText ? '余额: ' + balanceText : ''].filter(Boolean).join(' | ');
             await sendTelegramMessage(
                 `✅ *Gaming4Free 签到成功*\n` +
-                `用户: g4f_user\n` +
+                '用户: ' + escapeMd('g4f_user') + '\n' +
                 (detail ? `\n${detail}` : '') +
                 `\n\n签到时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
                 shotPath
@@ -467,7 +467,7 @@ function _race(p, ms) {
                 console.log('   >> ⚠️ 今日已签到（未显示签到按钮）');
                 await sendTelegramMessage(
                     `✅ *Gaming4Free 今日已签到*\n` +
-                    `用户: g4f_user\n` +
+                    '用户: ' + escapeMd('g4f_user') + '\n' +
                     `无需重复签到${detail ? '\n' + detail : ''}\n` +
                     `\n签到时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
                     shotPath
@@ -484,7 +484,7 @@ function _race(p, ms) {
                 };
                 await sendTelegramMessage(
                     `⚠️ *Gaming4Free 签到结果未知*\n` +
-                    `用户: g4f_user\n` +
+                    '用户: ' + escapeMd('g4f_user') + '\n' +
                     `URL: ${escapeMd(pageInfo.url)}\n` +
                     `页面状态: ${pageInfo.hasBalance ? '已登录' : '未登录'} | ${pageInfo.hasCreateServer ? '创建页可见' : '页面异常'}\n` +
                     `提示: 未找到签到按钮，可能页面已变更请手动检查\n` +
@@ -498,7 +498,7 @@ function _race(p, ms) {
         try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) {}
         await sendTelegramMessage(
             `❌ *Gaming4Free 签到异常*\n` +
-            `用户: g4f_user\n` +
+            '用户: ' + escapeMd('g4f_user') + '\n' +
             `URL: ${page.url()}\n` +
             `错误: ${err.message}\n` +
             `时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
