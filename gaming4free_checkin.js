@@ -322,50 +322,28 @@ function _race(p, ms) {
         console.log('   >> 当前 URL:', page.url());
 
         // 4. 查找签到弹窗并点击
-        // 弹窗可能包含: "Daily Reward", "Check-in", "签到", "Claim", 按钮等
+        // 页面结构: lsm-card 弹窗中有 ⚡ Claim Daily Reward 按钮 (class: lsm-claim-btn)
         let claimed = false;
 
-        // 尝试策略 A: 查找弹窗中的签到/领取按钮
-        const claimKeywords = /claim|check.?in|daily|reward|签到|领取|收集|每日/i;
-        for (let w = 0; w < 15; w++) {
-            // 看页面上是否有弹窗
-            const modalVisible = await page.locator('[role="dialog"], .modal, .modal-content, [class*="modal"], [class*="dialog"], [class*="overlay"]')
-                .first().isVisible().catch(() => false);
-
-            if (modalVisible) {
-                console.log('   >> 检测到弹窗，查找签到按钮...');
-                // 在弹窗中找按钮
-                const claimBtn = page.locator('[role="dialog"] button:has-text(' + JSON.stringify(claimKeywords.source.slice(1, -1)).replace(/\\/g,'') + '), ' +
-                    '.modal button:has-text(' + JSON.stringify(claimKeywords.source.slice(1, -1)) + '), ' +
-                    'button:has-text(' + JSON.stringify(claimKeywords.source.slice(1, -1)) + ')').first();
-                if (await claimBtn.isVisible().catch(() => false)) {
-                    await claimBtn.click();
-                    console.log('   >> ✅ 已点击签到按钮');
-                    await page.waitForTimeout(3000);
-                    claimed = true;
-                    break;
-                }
+        for (let w = 0; w < 20; w++) {
+            // 检查弹窗是否可见 (lsm-card 或 lsm-claim-btn)
+            const claimBtn = page.locator('.lsm-claim-btn, button:has-text("Claim Daily Rewar"), button:has-text("⚡")').first();
+            if (await claimBtn.isVisible().catch(() => false)) {
+                const btnText = await claimBtn.innerText().catch(() => '');
+                console.log(`   >> 找到签到按钮: "${btnText}"`);
+                await claimBtn.click();
+                console.log('   >> ✅ 已点击签到按钮');
+                await page.waitForTimeout(5000);
+                claimed = true;
+                break;
             }
 
-            // 尝试策略 B: 查找页面上任何包含 claim/reward/daily 文字的可见按钮
-            const anyClaimBtn = page.locator([
-                'button:has-text("Claim")',
-                'button:has-text("claim")',
-                'button:has-text("Check-in")',
-                'button:has-text("Daily")',
-                'button:has-text("Reward")',
-                'button:has-text("领取")',
-                'button:has-text("签到")',
-                'a:has-text("Claim")',
-                'a:has-text("claim")',
-                'a:has-text("领取")',
-            ].join(', ')).first();
-
-            if (await anyClaimBtn.isVisible().catch(() => false)) {
-                const text = await anyClaimBtn.innerText().catch(() => '');
-                console.log(`   >> 找到签到按钮: "${text}"`);
-                await anyClaimBtn.click();
-                await page.waitForTimeout(3000);
+            // 也检查普通按钮文本
+            const anyClaim = page.locator('button:has-text("Claim")').first();
+            if (await anyClaim.isVisible().catch(() => false)) {
+                await anyClaim.click();
+                console.log('   >> ✅ 已点击 Claim 按钮');
+                await page.waitForTimeout(5000);
                 claimed = true;
                 break;
             }
@@ -382,9 +360,9 @@ function _race(p, ms) {
         } else {
             // 没找到签到按钮，可能是已经签过到了，或者页面结构变了
             const bodyText = await page.locator('body').innerText().catch(() => '');
-            const alreadyClaimed = /already|claimed|collected|已签到|已领取|today/i.test(bodyText);
+            const alreadyClaimed = /already|claimed|collected|已签到|已领取|today|Day \d+|Welcome/i.test(bodyText) && !/Claim Daily/i.test(bodyText);
             if (alreadyClaimed) {
-                console.log('   >> ⚠️ 可能已经签过到了（今日已领取）');
+                console.log('   >> ⚠️ 今日可能已签到（未显示签到按钮）');
                 await sendTelegramMessage('✅ *每日签到*\nGaming4Free 今日已签到（无需重复签到）', shotPath);
             } else {
                 console.log('   >> ⚠️ 未找到签到按钮，可能页面结构已变更');

@@ -11,3 +11,4 @@ kv-admin/.wrangler/
 .reasonix/
 reasonix.toml
 tmp/
+*.png
