@@ -292,7 +292,7 @@ function _race(p, ms) {
 
         if (!cookieStr) {
             console.error('未找到 cookie（KV 和 G4F_COOKIE_JSON 都没有）。请先在浏览器登录后导出 cookie 上传到 KV Admin 面板 (key: gaming4free_cookie_g4f_user)');
-            await sendTelegramMessage('❌ *签到失败*\n未找到 gaming4free cookie，请手动导出并上传到 KV Admin');
+            await sendTelegramMessage('❌ *Gaming4Free 签到失败*\n\n未找到 cookie\n请先在浏览器登录后导出 cookie 上传到 KV Admin\n→ 面板新增 → Gaming4Free → 标识: g4f_user → 粘贴 cookie JSON → 保存');
             process.exit(1);
         }
 
@@ -300,9 +300,13 @@ function _race(p, ms) {
             const cks = normalizeCookies(JSON.parse(cookieStr));
             await context.addCookies(cks);
             console.log('   >> 已注入 cookie (' + cks.length + ' 条)');
+            // 检查 cookie 中关键会话字段
+            const hasSession = cookieStr.includes('pelican_session');
+            const hasRemember = cookieStr.includes('remember_web');
+            console.log(`   >> cookie 有效期检查: session=${hasSession ? '✓' : '✗'} remember=${hasRemember ? '✓' : '✗'}`);
         } catch (e) {
             console.error('cookie 解析失败:', e.message);
-            await sendTelegramMessage('❌ *签到失败*\ncookie 解析失败: ' + e.message);
+            await sendTelegramMessage('❌ *Gaming4Free 签到失败*\ncookie 解析失败: ' + e.message + '\n请重新导出并上传 cookie');
             process.exit(1);
         }
 
@@ -315,15 +319,61 @@ function _race(p, ms) {
         if (page.url().includes('/login')) {
             console.log('   >> cookie 已过期，被重定向到登录页');
             await page.screenshot({ path: shotPath, fullPage: true }).catch(() => {});
-            await sendTelegramMessage('❌ *签到失败*\ncookie 已过期，请重新导出并上传到 KV Admin', shotPath);
+            await sendTelegramMessage('❌ *Gaming4Free 签到失败*\ncookie 已过期\n请重新在浏览器登录后导出 cookie\n→ 打开 KV 管理面板 → 找到 gaming4free_cookie_g4f_user → 编辑 → 粘贴新 cookie → 保存', shotPath);
             process.exit(1);
         }
 
         console.log('   >> 当前 URL:', page.url());
 
-        // 4. 查找签到弹窗并点击
+        // 读取页面整体状态（余额、弹窗等）
+        const pageState = await page.evaluate(() => {
+            const body = document.body ? document.body.innerText : '';
+            const balanceMatch = body.match(/\$?([0-9]+\.[0-9]+)\s*credits?/i);
+            const balance = balanceMatch ? balanceMatch[0] : '';
+            return { balance };
+        }).catch(() => ({}));
+
+        // 4. 查找签到弹窗，提取签到信息
         // 页面结构: lsm-card 弹窗中有 ⚡ Claim Daily Reward 按钮 (class: lsm-claim-btn)
         let claimed = false;
+        let dayText = '';
+        let rewardText = '';
+        let streakInfo = '';
+
+        // 先提取弹窗中的信息（不管有没有签到按钮都先读）
+        const modalInfo = await page.evaluate(() => {
+            const info = { day: '', reward: '', streak: '' };
+            // 读取签到天数
+            const welcomeEl = document.querySelector('.lsm-header-text');
+            if (welcomeEl) {
+                const text = welcomeEl.textContent || '';
+                const dayMatch = text.match(/Day\s*(\d+)/i);
+                if (dayMatch) info.day = dayMatch[0];
+                // 剩余描述文字
+                info.streak = text.replace(/Day\s*\d+/i, '').trim();
+            }
+            // 读取奖励金额
+            const rewardEl = document.querySelector('.lsm-reward-lbl');
+            const rewardSubEl = document.querySelector('.lsm-reward-text');
+            if (rewardSubEl) {
+                info.reward = rewardSubEl.textContent.trim();
+            } else if (rewardEl) {
+                info.reward = rewardEl.textContent.trim();
+            }
+            // 读取里程碑进度
+            const body = document.body ? document.body.innerText : '';
+            const bonusMatch = body.match(/(\d+) more days to ([\s\S]*?)(?:\n|$)/i);
+            if (bonusMatch) {
+                info.streak = (info.streak ? info.streak + ' | ' : '') + bonusMatch[1] + ' days to ' + bonusMatch[2].trim();
+            }
+            return info;
+        }).catch(() => ({}));
+
+        dayText = modalInfo.day || '';
+        rewardText = modalInfo.reward || '';
+        streakInfo = modalInfo.streak || '';
+
+        console.log(`   >> 签到面板: ${dayText} | ${rewardText}${streakInfo ? ' | ' + streakInfo : ''}`);
 
         for (let w = 0; w < 20; w++) {
             // 检查弹窗是否可见 (lsm-card 或 lsm-claim-btn)
@@ -356,23 +406,72 @@ function _race(p, ms) {
 
         if (claimed) {
             console.log('   >> ✅ 签到成功');
-            await sendTelegramMessage('✅ *每日签到成功*\nGaming4Free 签到已完成', shotPath);
+            // 签到后读取余额
+            let balanceText = '';
+            for (let w = 0; w < 5; w++) {
+                const postBody = await page.locator('body').innerText().catch(() => '');
+                const balMatch = postBody.match(/\$?([0-9]+\.[0-9]+)\s*credits?/i);
+                if (balMatch) { balanceText = balMatch[0]; break; }
+                await page.waitForTimeout(1000);
+            }
+            const detail = [dayText, rewardText, streakInfo, balanceText ? '余额: ' + balanceText : ''].filter(Boolean).join(' | ');
+            await sendTelegramMessage(
+                `✅ *Gaming4Free 签到成功*\n` +
+                `用户: g4f_user\n` +
+                (detail ? `\n${detail}` : '') +
+                `\n\n签到时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+                shotPath
+            );
         } else {
             // 没找到签到按钮，可能是已经签过到了，或者页面结构变了
             const bodyText = await page.locator('body').innerText().catch(() => '');
             const alreadyClaimed = /already|claimed|collected|已签到|已领取|today|Day \d+|Welcome/i.test(bodyText) && !/Claim Daily/i.test(bodyText);
             if (alreadyClaimed) {
-                console.log('   >> ⚠️ 今日可能已签到（未显示签到按钮）');
-                await sendTelegramMessage('✅ *每日签到*\nGaming4Free 今日已签到（无需重复签到）', shotPath);
+                // 读取当前余额
+                let balanceText = '';
+                const balMatch = bodyText.match(/\$?([0-9]+\.[0-9]+)\s*credits?/i);
+                if (balMatch) balanceText = balMatch[0];
+                const detail = [dayText, rewardText, streakInfo, balanceText ? '余额: ' + balanceText : ''].filter(Boolean).join(' | ');
+                console.log('   >> ⚠️ 今日已签到（未显示签到按钮）');
+                await sendTelegramMessage(
+                    `✅ *Gaming4Free 今日已签到*\n` +
+                    `用户: g4f_user\n` +
+                    `无需重复签到${detail ? '\n' + detail : ''}\n` +
+                    `\n签到时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+                    shotPath
+                );
             } else {
                 console.log('   >> ⚠️ 未找到签到按钮，可能页面结构已变更');
-                await sendTelegramMessage('⚠️ *签到结果未知*\n未找到签到按钮，请手动检查\nURL: ' + CLAIM_URL, shotPath);
+                // 尝试读取页面关键信息辅助排查
+                const bodyText = await page.locator('body').innerText().catch(() => '');
+                const pageInfo = {
+                    url: page.url(),
+                    hasBalance: bodyText.includes('BALANCE') || bodyText.includes('$'),
+                    hasCreateServer: bodyText.includes('Create Free Server') || bodyText.includes('CHOOSE YOUR GAME'),
+                    bodyLength: bodyText.length,
+                };
+                await sendTelegramMessage(
+                    `⚠️ *Gaming4Free 签到结果未知*\n` +
+                    `用户: g4f_user\n` +
+                    `URL: ${pageInfo.url}\n` +
+                    `页面状态: ${pageInfo.hasBalance ? '已登录' : '未登录'} | ${pageInfo.hasCreateServer ? '创建页可见' : '页面异常'}\n` +
+                    `提示: 未找到签到按钮，可能页面已变更请手动检查\n` +
+                    `时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+                    shotPath
+                );
             }
         }
     } catch (err) {
         console.error('签到出错:', err.message);
         try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) {}
-        await sendTelegramMessage('❌ *签到出错*\n错误: ' + err.message, shotPath);
+        await sendTelegramMessage(
+            `❌ *Gaming4Free 签到异常*\n` +
+            `用户: g4f_user\n` +
+            `URL: ${page.url()}\n` +
+            `错误: ${err.message}\n` +
+            `时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+            shotPath
+        );
     }
 
     console.log('完成。');
