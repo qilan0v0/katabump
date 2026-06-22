@@ -379,7 +379,7 @@ async function attemptTurnstileCdp(page) {
                     // 等待验证处理
                     await new Promise(r => setTimeout(r, 2000));
 
-                    // 检查是否通过：iframe 消失或按钮进入冷却
+                    // 检查是否通过：iframe 消失 或 按钮进入冷却
                     const checkResult = await page.evaluate(() => {
                         const ifrs = Array.from(document.querySelectorAll('iframe'));
                         const hasTurnstileIframe = ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
@@ -390,6 +390,13 @@ async function attemptTurnstileCdp(page) {
                                 const txt = (ifr.parentElement?.textContent || '').trim();
                                 if (/incorrect|error|failed|try again|unsuccessful/i.test(txt)) return 'failed';
                             }
+                        }
+                        // iframe 还在且无错误，检查按钮状态
+                        const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
+                        if (btn) {
+                            const txt = btn.innerText || '';
+                            // 按钮进入冷却 = 验证通过
+                            if (/cd|wait|loading/i.test(txt) && !/90|min/i.test(txt)) return 'passed';
                         }
                         return 'pending'; // 还在验证中
                     }).catch(() => 'pending');
@@ -419,6 +426,12 @@ async function attemptTurnstileCdp(page) {
                                     if (/incorrect|error|failed|try again|unsuccessful/i.test(txt)) return false;
                                 }
                             }
+                            // 检查按钮状态
+                            const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
+                            if (btn) {
+                                const txt = btn.innerText || '';
+                                if (/cd|wait|loading/i.test(txt) && !/90|min/i.test(txt)) return true;
+                            }
                             return true; // 假设还在验证中，不算失败
                         }).catch(() => false);
                         clearTimeout(timeout);
@@ -438,6 +451,9 @@ async function attemptTurnstileCdp(page) {
                     if (!el) continue;
                     const box = await el.boundingBox().catch(() => null);
                     if (!box || box.width < 50) continue;
+
+                    // 调试：打印 iframe 信息
+                    console.log(`   [调试] iframe URL: ${fu}, box: x=${box.x}, y=${box.y}, w=${box.width}, h=${box.height}`);
 
                     // 更密集的候选点扫描
                     const candidates = [
@@ -460,15 +476,24 @@ async function attemptTurnstileCdp(page) {
                         await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cand.x, y: cand.y, button: 'left', clickCount: 1 });
                         await new Promise(r => setTimeout(r, 2000));
 
+                        // 验证：检查 iframe 状态 + 按钮状态 + 时间变化
                         const checkResult = await page.evaluate(() => {
                             const ifrs = Array.from(document.querySelectorAll('iframe'));
                             const hasTurnstileIframe = ifrs.some(f => /turnstile|challenges\.cloudflare/i.test(f.src || ''));
-                            if (!hasTurnstileIframe) return 'passed';
+                            if (!hasTurnstileIframe) return 'passed'; // iframe 消失 = 通过
+                            // iframe 还在，检查是否有错误提示
                             for (const ifr of ifrs) {
                                 if (/turnstile|challenges\.cloudflare/i.test(ifr.src || '')) {
                                     const txt = (ifr.parentElement?.textContent || '').trim();
                                     if (/incorrect|error|failed|try again|unsuccessful/i.test(txt)) return 'failed';
                                 }
+                            }
+                            // iframe 还在且无错误，检查按钮状态
+                            const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
+                            if (btn) {
+                                const txt = btn.innerText || '';
+                                // 按钮进入冷却 = 验证通过
+                                if (/cd|wait|loading/i.test(txt) && !/90|min/i.test(txt)) return 'passed';
                             }
                             return 'pending';
                         }).catch(() => 'pending');
