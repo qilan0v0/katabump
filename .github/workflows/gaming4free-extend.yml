@@ -64,8 +64,8 @@ jobs:
 
     - name: Run Extend Script
       env:
-        # 服务器管理 URL，逗号分隔
-        G4F_SERVER_URLS: ${{ secrets.G4F_SERVER_URLS }}
+        # 用户配置 G4F_USERS_JSON = [{"username":"...","serverUrl":"..."}]
+        G4F_USERS_JSON: ${{ secrets.G4F_USERS_JSON }}
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}

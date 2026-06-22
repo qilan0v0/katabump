@@ -65,7 +65,8 @@ jobs:
 
     - name: Run Check-in Script
       env:
-        # KV Admin Worker：读取登录 cookie
+        # 用户配置 G4F_USERS_JSON = [{"username":"...","serverUrl":"..."}]
+        G4F_USERS_JSON: ${{ secrets.G4F_USERS_JSON }}
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}

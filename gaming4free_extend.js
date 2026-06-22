@@ -14,8 +14,22 @@ const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const TG_THREAD_ID = process.env.TG_THREAD_ID;
 const PROJECT = process.env.PROJECT_NAME || 'G4F';
 
-// 服务器管理地址，从环境变量或 secret 读取，逗号分隔
-const SERVER_URLS = (process.env.G4F_SERVER_URLS || 'https://control.gaming4free.net/server/982a3aff/console').split(',').map(s => s.trim()).filter(Boolean);
+// 读取用户配置 G4F_USERS_JSON = [{"username":"...","serverUrl":"..."}]
+let G4F_USERS = [];
+try {
+    const raw = process.env.G4F_USERS_JSON;
+    if (raw) {
+        G4F_USERS = JSON.parse(raw);
+        if (!Array.isArray(G4F_USERS)) G4F_USERS = [];
+    }
+} catch (e) {
+    console.warn('[配置] G4F_USERS_JSON 解析失败:', e.message);
+}
+if (G4F_USERS.length === 0) {
+    console.error('未在 G4F_USERS_JSON 中找到用户配置');
+    process.exit(1);
+}
+console.log('共 ' + G4F_USERS.length + ' 个用户');
 
 async function sendTelegramMessage(message, imagePath = null) {
     if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
@@ -477,11 +491,11 @@ async function extendServer(page, serverUrl, photoDir) {
 }
 
 (async () => {
-    if (SERVER_URLS.length === 0) {
-        console.error('未配置服务器地址 (G4F_SERVER_URLS)');
+    if (G4F_USERS.length === 0) {
+        console.error('未配置用户 (G4F_USERS_JSON)');
         process.exit(1);
     }
-    console.log(`目标服务器: ${SERVER_URLS.join(', ')}`);
+    console.log('共 ' + G4F_USERS.length + ' 个用户');
 
     if (PROXY_CONFIG) {
         const ok = await checkProxy();
@@ -494,11 +508,11 @@ async function extendServer(page, serverUrl, photoDir) {
     let browser;
     for (let k = 0; k < 5; k++) {
         try {
-            browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
+            browser = await chromium.connectOverCDP('http://localhost:' + DEBUG_PORT);
             console.log('连接成功！');
             break;
         } catch (e) {
-            console.log(`连接尝试 ${k + 1} 失败。2秒后重试...`);
+            console.log('连接尝试 ' + (k + 1) + ' 失败。2秒后重试...');
             await new Promise(r => setTimeout(r, 2000));
         }
     }
@@ -521,28 +535,36 @@ async function extendServer(page, serverUrl, photoDir) {
     const photoDir = path.join(process.cwd(), 'screenshots');
     if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
 
-    // 加载 cookie
-    const cookieKey = 'gaming4free_cookie_g4f_user';
-    const cookieStr = await kvGet(cookieKey);
-    if (cookieStr) {
-        try {
-            const cks = normalizeCookies(JSON.parse(cookieStr));
-            await context.addCookies(cks);
-            console.log('   >> 已注入 cookie (' + cks.length + ' 条)');
-        } catch (e) {
-            console.warn('cookie 解析失败:', e.message);
-        }
-    }
-
-    // 逐个服务器续时
+    // 逐个用户续时
     const results = [];
-    for (const serverUrl of SERVER_URLS) {
+    for (const user of G4F_USERS) {
+        const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
+        const serverUrl = user.serverUrl;
+        if (!serverUrl) {
+            console.log('用户 ' + safeUser + ' 未配置 serverUrl，跳过');
+            continue;
+        }
+
+        // 加载该用户的 cookie
+        const cookieKey = 'gaming4free_cookie_' + safeUser;
+        const cookieStr = await kvGet(cookieKey);
+        if (cookieStr) {
+            try {
+                const cks = normalizeCookies(JSON.parse(cookieStr));
+                try { await context.clearCookies(); } catch (e) {}
+                await context.addCookies(cks);
+                console.log('   >> [' + safeUser + '] 已注入 cookie (' + cks.length + ' 条)');
+            } catch (e) {
+                console.warn('   >> [' + safeUser + '] cookie 解析失败:', e.message);
+            }
+        }
+
         try {
-            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 90000, `续时 ${serverUrl}`);
-            results.push({ serverUrl, ...r });
+            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 90000, '续时 ' + safeUser);
+            results.push({ serverUrl, user: safeUser, ...r });
         } catch (e) {
-            console.error(`服务器 ${serverUrl} 出错:`, e.message);
-            results.push({ serverUrl, status: 'error', shot: '' });
+            console.error('用户 ' + safeUser + ' 出错:', e.message);
+            results.push({ serverUrl, user: safeUser, status: 'error', shot: '' });
         }
         await page.waitForTimeout(1000);
     }
@@ -553,11 +575,10 @@ async function extendServer(page, serverUrl, photoDir) {
     const full = results.filter(r => r.status === 'full');
 
     if (full.length > 0) {
-        // 满格/已达上限，只发一条汇总通知，不发截图
         const fullList = full.map(r => {
             const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
             const cap = r.capInfo ? r.capInfo.cap : '48h cap';
-            return '  `' + sid + '`: ' + escapeMd(cap) + ' 已满';
+            return '  ' + escapeMd(r.user) + ' / `' + sid + '`: ' + escapeMd(cap) + ' 已满';
         }).join('\n');
         const stillGoing = extended.length > 0 ? '\n' + extended.length + ' 个已续时' : '';
         const cooling = cooldown.length > 0 ? '\n' + cooldown.length + ' 个冷却中' : '';
@@ -567,15 +588,14 @@ async function extendServer(page, serverUrl, photoDir) {
     if (extended.length > 0) {
         for (const r of extended) {
             const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
-            const msg = '✅ *续时成功*\n服务器: `' + sid + '`\n剩余: ' + escapeMd(r.remaining || '?') + '\n时间: ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+            const msg = '✅ *续时成功*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n剩余: ' + escapeMd(r.remaining || '?') + '\n时间: ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
             await sendTelegramMessage(msg, r.shot);
         }
     }
     if (cooldown.length > 0 && extended.length === 0 && full.length === 0) {
-        // 全部冷却中，只发一条汇总
         const waitingList = cooldown.map(r => {
             const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
-            return '  `' + sid + '`: 剩余 ' + escapeMd(r.remaining || '?');
+            return '  ' + escapeMd(r.user) + ' / `' + sid + '`: 剩余 ' + escapeMd(r.remaining || '?');
         }).join('\n');
         await sendTelegramMessage('⏳ *续时冷却中*\n暂无可用续时\n\n当前剩余:\n' + waitingList);
     }
