@@ -383,19 +383,48 @@ async function extendServer(page, serverUrl, photoDir) {
         try { await extendBtn.click({ force: true, timeout: 5000 }); }
         catch (e2) { console.log('   >> force 点击也失败:', e2.message); }
     }
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
+
+    // 关掉可能出现的广告遮罩层（会挡住续时弹窗）
+    await page.evaluate(() => {
+        const overlay = document.getElementById('__g4f_adblock_overlay');
+        if (overlay) overlay.remove();
+    }).catch(() => {});
+
+    // 解析剩余时间 → 秒数，用于后续比较
+    function parseTime(str) {
+        if (!str) return 0;
+        const m = str.match(/(\d{2}):(\d{2}):(\d{2})/);
+        if (!m) return 0;
+        return parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
+    }
+    const oldSeconds = parseTime(remainingTime);
 
     // 点击后续时按钮下方会弹出 Cloudflare Turnstile 验证，需要 CDP 点击通过
     console.log('   >> 处理 CF Turnstile 验证...');
     let turnstileDone = false;
-    for (let w = 0; w < 20; w++) {
-        // 边点 Turnstile 边检查按钮是否已进入冷却（说明续时成功）
+    for (let w = 0; w < 25; w++) {
+        // 方案 A：按钮文字变冷却
         const curBtnText = await extendBtn.innerText().catch(() => '');
-        if (/cd|wait/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
-            console.log('   >> 按钮已进入冷却，续时成功');
+        if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
+            console.log('   >> 按钮进入冷却，续时成功');
             turnstileDone = true;
             break;
         }
+        // 方案 B：剩余时间增加（比按钮文字更可靠）
+        const curTime = await page.locator('.time span, [class*="time"] span').first().innerText().catch(() => '');
+        const curSeconds = parseTime(curTime);
+        if (curSeconds > oldSeconds + 30) {
+            console.log('   >> 剩余时间已增加，续时成功 (' + remainingTime + ' → ' + curTime + ')');
+            turnstileDone = true;
+            break;
+        }
+        // 移除广告遮罩（可能挡住弹窗）
+        await page.evaluate(() => {
+            const overlay = document.getElementById('__g4f_adblock_overlay');
+            if (overlay) overlay.remove();
+        }).catch(() => {});
+        // 点 Turnstile 复选框
         await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
         await page.waitForTimeout(1500);
     }
@@ -410,7 +439,7 @@ async function extendServer(page, serverUrl, photoDir) {
         if (newRemaining && /\d{2}:\d{2}:\d{2}/.test(newRemaining)) break;
         await page.waitForTimeout(1000);
     }
-    console.log(`   >> 续时后剩余: ${newRemaining || '未知'}`);
+    console.log('   >> 续时后剩余: ' + (newRemaining || '未知'));
 
     return { status: 'extended', remaining: newRemaining || remainingTime, oldRemaining: remainingTime, shot };
 }
@@ -477,7 +506,7 @@ async function extendServer(page, serverUrl, photoDir) {
     const results = [];
     for (const serverUrl of SERVER_URLS) {
         try {
-            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 60000, `续时 ${serverUrl}`);
+            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 90000, `续时 ${serverUrl}`);
             results.push({ serverUrl, ...r });
         } catch (e) {
             console.error(`服务器 ${serverUrl} 出错:`, e.message);
