@@ -186,6 +186,14 @@ async function checkProxy() {
     }
 }
 
+// 转义 Telegram Markdown 特殊字符：这些字符在 parse_mode=Markdown 时会被解析
+function escapeMd(s) {
+    if (typeof s !== 'string') return s || '';
+    // 需要转义的字符: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    // 在 parse_mode=Markdown (非 MarkdownV2) 下，实际只转义 _ * ` [
+    return s.replace(/_/g, '\\_').replace(/\*/g, '\\*').replace(/`/g, '\\`').replace(/\[/g, '\\[');
+}
+
 function checkPort(port) {
     return new Promise((resolve) => {
         const req = http.get(`http://localhost:${port}/json/version`, () => resolve(true));
@@ -420,7 +428,7 @@ function _race(p, ms) {
                 if (balMatch) { balanceText = balMatch[0]; break; }
                 await page.waitForTimeout(1000);
             }
-            const detail = [dayText, rewardText, streakInfo, balanceText ? '余额: ' + balanceText : ''].filter(Boolean).join(' | ');
+            const detail = [escapeMd(dayText), escapeMd(rewardText), escapeMd(streakInfo), balanceText ? '余额: ' + balanceText : ''].filter(Boolean).join(' | ');
             await sendTelegramMessage(
                 `✅ *Gaming4Free 签到成功*\n` +
                 `用户: g4f_user\n` +
@@ -437,7 +445,7 @@ function _race(p, ms) {
                 let balanceText = '';
                 const balMatch = bodyText.match(/\$?([0-9]+\.[0-9]+)\s*credits?/i);
                 if (balMatch) balanceText = balMatch[0];
-                const detail = [dayText, rewardText, streakInfo, balanceText ? '余额: ' + balanceText : ''].filter(Boolean).join(' | ');
+                const detail = [escapeMd(dayText), escapeMd(rewardText), escapeMd(streakInfo), balanceText ? '余额: ' + balanceText : ''].filter(Boolean).join(' | ');
                 console.log('   >> ⚠️ 今日已签到（未显示签到按钮）');
                 await sendTelegramMessage(
                     `✅ *Gaming4Free 今日已签到*\n` +
@@ -459,7 +467,7 @@ function _race(p, ms) {
                 await sendTelegramMessage(
                     `⚠️ *Gaming4Free 签到结果未知*\n` +
                     `用户: g4f_user\n` +
-                    `URL: ${pageInfo.url}\n` +
+                    `URL: ${escapeMd(pageInfo.url)}\n` +
                     `页面状态: ${pageInfo.hasBalance ? '已登录' : '未登录'} | ${pageInfo.hasCreateServer ? '创建页可见' : '页面异常'}\n` +
                     `提示: 未找到签到按钮，可能页面已变更请手动检查\n` +
                     `时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
