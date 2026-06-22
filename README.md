@@ -16,7 +16,7 @@
 - **自动重试 + 快速失败**: 内置重试机制，连续多次验证失败会提前放弃，避免空转浪费 CI 时间。
 - **多用户支持**: 支持配置多个账号批量续期。
 - **Telegram 通知**: 续期成功 / 失败 / 跳过时推送消息（含截图），支持超级群话题(Topic)。
-- **KV Cookie 缓存（Worker API）**：通过部署的 KV Admin Worker（`/api/get`、`/api/set`）统一存取登录 cookie，避免重复登录。仅需 `KV_ADMIN_URL` + `KV_ADMIN_PASS` 两个 Secret。支持所有项目（Katabump / ACLClouds / FreeMCHost / Zampto / Weirdhost / Lunes / Searcade）。
+- **KV Cookie 缓存（Worker API）**：通过部署的 KV Admin Worker（`/api/get`、`/api/set`）统一存取登录 cookie，避免重复登录。仅需 `KV_ADMIN_URL` + `KV_ADMIN_PASS` 两个 Secret。支持所有项目（Katabump / ACLClouds / FreeMCHost / Zampto / Weirdhost / Lunes / Searcade / Vortexa / Gaming4Free）。
 - **代理支持**: 支持普通 HTTP 代理，也支持云端自动安装 v2ray 用节点作为代理。
 - **云端/本地**: 既可以在本地电脑跑，也可以利用 GitHub Actions 每天定时自动跑。
 
@@ -63,7 +63,7 @@
       - `KV_ADMIN_URL`: 部署成功的 Worker 地址，例如 `https://kv-cookie-admin.xxxx.workers.dev`
       - `KV_ADMIN_PASS`: 设置管理员密码（部署时自动从你的 `CF_API_TOKEN` 生成，或你自己记住的密码）
    
-   > 所有 8 个项目（Katabump / ACLClouds / FreeMCHost / Zampto / Weirdhost / Lunes / Searcade / Vortexa）都共用同一套 `KV_ADMIN_URL` / `KV_ADMIN_PASS`。不配置则每次完整登录，功能不受影响。
+   > 所有 9 个项目（Katabump / ACLClouds / FreeMCHost / Zampto / Weirdhost / Lunes / Searcade / Vortexa / Gaming4Free）都共用同一套 `KV_ADMIN_URL` / `KV_ADMIN_PASS`。不配置则每次完整登录，功能不受影响。
 
 7. **(可选) Telegram 消息推送**:
    如果你希望在续期成功、失败或跳过时收到 Telegram 通知（包含截图），请配置以下 Secret：
@@ -183,6 +183,8 @@ node renew.js
 * `.github/workflows/weirdhost.yml`: Weirdhost 续期定时任务（每天北京时间凌晨 1 点）。
 * `vortexa_renew.js`: Vortexa (`vortexa.cloud`) VM 启动保活脚本（支持 KV cookie 缓存）。
 * `.github/workflows/vortexa.yml`: Vortexa 保活定时任务（每天北京时间凌晨 4 点）。
+* `gaming4free_checkin.js`: Gaming4Free (`control.gaming4free.net`) 每日签到脚本（仅支持 cookie 登录，需手动导出 cookie 上传到 KV）。
+* `.github/workflows/gaming4free.yml`: Gaming4Free 每日签到定时任务（每天北京时间 09:00）。
 * `kv-admin/worker.js`: KV Cookie 管理面板（Cloudflare Worker），提供 `/api/get`、`/api/set`、`/api/list`、`/api/delete` 接口，用于所有脚本统一存取 cookie。
 * `kv-admin/wrangler.toml`: Worker 部署配置，绑定 KV 命名空间。
 * `.github/workflows/deploy-kv-admin.yml`: KV Admin Worker 部署 workflow（手动触发）。
@@ -275,6 +277,43 @@ node renew.js
 - **KV Cookie 缓存（可选）**：配置 `KV_ADMIN_URL` / `KV_ADMIN_PASS` 两个 Secret 后启用 cookie 缓存——先注入 Worker 里的 cookie 尝试免登录，失效才重新登录并把新 cookie 存回 Worker（所有项目共用同一套 KV 配置，cookie key 为 `zampto_cookie_<用户名>`）。详见上方 KV Admin Worker 部署说明。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间凌晨 3 点，或手动 "Run workflow" (选 `Zampto Auto Renew`)。截图在 `zampto-screenshots` artifact。
+
+---
+
+## 🎮 Gaming4Free 每日签到 (附加)
+
+`control.gaming4free.net` 仅支持 Google / Discord OAuth 登录，**无法在 GitHub Actions 中自动化登录**。采用 **KV Cookie 缓存**方案：首次手动登录后导出 cookie 上传到 KV Admin Worker，之后脚本每日自动签到。
+
+### 首次配置
+
+1. **在本地浏览器登录** `https://control.gaming4free.net`（用 Google 或 Discord）
+2. **导出 Cookie**：用 Cookie-Editor 等扩展导出 `control.gaming4free.net` 的 cookie JSON
+3. **上传到 KV Admin 面板**：打开 KV Cookie 管理后台 → **新增** → 选择 `Gaming4Free` → 填写标识 `g4f_user` → 粘贴 cookie JSON → **保存**
+
+   > 或者用命令行上传：
+   > ```bash
+   > curl -X POST "$KV_ADMIN_URL/api/set" \
+   >   -H "X-Admin-Pass: $KV_ADMIN_PASS" \
+   >   -H "Content-Type: application/json" \
+   >   -d '{"key":"gaming4free_cookie_g4f_user","value":'\'$(cat cookies.json)\''}'
+   > ```
+
+4. **手动触发一次** Actions 中的 `Gaming4Free Daily Check-in` 验证签到是否成功
+
+### 后续
+
+- 脚本每天自动打开 `https://control.gaming4free.net/create-free-server`，查找签到弹窗并点击签到按钮
+- 签到成功/失败会发 Telegram 通知（含截图）
+- **cookie 过期时**，脚本会发送 TG 通知提醒你重新导出 cookie 并上传
+
+### 需要配置的 Secret
+
+| Secret | 说明 |
+|--------|------|
+| `KV_ADMIN_URL` | KV Admin Worker 地址 |
+| `KV_ADMIN_PASS` | 管理员密码 |
+| `V2RAY_VMESS` | （可选）v2ray 节点 |
+| `TG_BOT_TOKEN` / `TG_CHAT_ID` | Telegram 通知 |
 
 ---
 

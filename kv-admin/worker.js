@@ -9,6 +9,7 @@ const PROJECT_PREFIXES = [
   { label: 'Vortexa', prefix: 'vortexa_cookie_' },
   { label: 'Weirdhost', prefix: 'weirdhost_cookie_' },
   { label: 'FreeMCHost', prefix: 'freemchost_cookie_' },
+  { label: 'Gaming4Free', prefix: 'gaming4free_cookie_' },
 ];
 
 function extractEmail(key) {
@@ -87,6 +88,7 @@ const HTML = '<!DOCTYPE html>' +
 '.proj-vortexa{background:#3fb95022;color:#3fb950}' +
 '.proj-weirdhost{background:#f0883e22;color:#f0883e}' +
 '.proj-freemchost{background:#f778ba22;color:#f778ba}' +
+'.proj-gaming4free{background:#ffd70022;color:#ffd700}' +
 '.proj-unknown{background:#30363d44;color:#8b949e}' +
 '.email-cell{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
 '.num-badge{display:inline-block;min-width:22px;text-align:center;padding:1px 6px;border-radius:8px;font-size:11px;background:#30363d;color:#e6edf3}' +
@@ -256,7 +258,7 @@ const HTML = '<!DOCTYPE html>' +
 '  document.getElementById("countLabel").textContent=f.length+" 条记录";' +
 '  if(f.length===0){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">无记录</div>";return}' +
 '  var pbc=function(proj){' +
-'    var m={Katabump:"proj-katabump",Zampto:"proj-zampto",Vortexa:"proj-vortexa",Weirdhost:"proj-weirdhost",FreeMCHost:"proj-freemchost"};' +
+'    var m={Katabump:"proj-katabump",Zampto:"proj-zampto",Vortexa:"proj-vortexa",Weirdhost:"proj-weirdhost",FreeMCHost:"proj-freemchost",Gaming4Free:"proj-gaming4free"};' +
 '    return m[proj]||"proj-unknown"' +
 '  };' +
 '  var h="<table><thead><tr><th>键名</th><th>项目</th><th>邮箱</th><th>Cookie</th><th>最早过期</th><th>更新时间</th><th>操作</th></tr></thead><tbody>";' +
@@ -297,7 +299,7 @@ const HTML = '<!DOCTYPE html>' +
 '  if(r.ok){toast("已删除： "+key);await loadData()}else toast("删除失败","err")' +
 '}' +
 'function doRefresh(){loadData();toast("已刷新")}' +
-'var PROJECTS=[{label:"Katabump",prefix:"katabump_cookie_"},{label:"Zampto",prefix:"zampto_cookie_"},{label:"Vortexa",prefix:"vortexa_cookie_"},{label:"Weirdhost",prefix:"weirdhost_cookie_"},{label:"FreeMCHost",prefix:"freemchost_cookie_"}];' +
+'var PROJECTS=[{label:"Katabump",prefix:"katabump_cookie_"},{label:"Zampto",prefix:"zampto_cookie_"},{label:"Vortexa",prefix:"vortexa_cookie_"},{label:"Weirdhost",prefix:"weirdhost_cookie_"},{label:"FreeMCHost",prefix:"freemchost_cookie_"},{label:"Gaming4Free",prefix:"gaming4free_cookie_"}];' +
 'function showCKEditor(key,rawVal){' +
 '  var isNew=!key;var proj="";var suf="";var ckText="[]";' +
 '  if(key){for(var i=0;i<PROJECTS.length;i++){if(key.startsWith(PROJECTS[i].prefix)){proj=PROJECTS[i].label;suf=key.slice(PROJECTS[i].prefix.length);break}}}' +
