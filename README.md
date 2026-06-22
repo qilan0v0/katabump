@@ -184,7 +184,9 @@ node renew.js
 * `vortexa_renew.js`: Vortexa (`vortexa.cloud`) VM 启动保活脚本（支持 KV cookie 缓存）。
 * `.github/workflows/vortexa.yml`: Vortexa 保活定时任务（每天北京时间凌晨 4 点）。
 * `gaming4free_checkin.js`: Gaming4Free (`control.gaming4free.net`) 每日签到脚本（仅支持 cookie 登录，需手动导出 cookie 上传到 KV）。
+* `gaming4free_extend.js`: Gaming4Free 服务器续时脚本（每 5 分钟自动点 +90 min 延长运行时间）。
 * `.github/workflows/gaming4free.yml`: Gaming4Free 每日签到定时任务（每天北京时间 09:00）。
+* `.github/workflows/gaming4free-extend.yml`: Gaming4Free 服务器自动续时（每 5 分钟运行一次）。
 * `kv-admin/worker.js`: KV Cookie 管理面板（Cloudflare Worker），提供 `/api/get`、`/api/set`、`/api/list`、`/api/delete` 接口，用于所有脚本统一存取 cookie。
 * `kv-admin/wrangler.toml`: Worker 部署配置，绑定 KV 命名空间。
 * `.github/workflows/deploy-kv-admin.yml`: KV Admin Worker 部署 workflow（手动触发）。
@@ -314,6 +316,23 @@ node renew.js
 | `KV_ADMIN_PASS` | 管理员密码 |
 | `V2RAY_VMESS` | （可选）v2ray 节点 |
 | `TG_BOT_TOKEN` / `TG_CHAT_ID` | Telegram 通知 |
+
+---
+
+## 🎮 Gaming4Free 服务器自动续时 (附加)
+
+服务器免费额度 48 小时上限，脚本每 5 分钟自动点击 `+ 90 min` 按钮延长运行时间，避免到期停止。
+
+- **配置**: 在 GitHub Secrets 中添加 `G4F_SERVER_URLS`，值为服务器管理 URL（逗号分隔多台）：
+  ```
+  https://control.gaming4free.net/server/982a3aff/console,https://control.gaming4free.net/server/xxxx/console
+  ```
+- **cookie**: 与签到共用 `gaming4free_cookie_g4f_user`（需先在签到流程中配置好）
+- **冷却**: `+ 90 min` 按钮点击后有冷却时间（约 5 分钟），脚本在冷却期间不会重复点击，仅跳过
+- **通知**:
+  - ✅ 续时成功 → 显示剩余时间 + 截图
+  - ⏳ 冷却中 → 跳过，不发通知（全部冷却中才汇总提醒）
+- **触发**: 每 5 分钟自动运行，也可在 Actions 手动触发 `Gaming4Free Server Extend`
 
 ---
 

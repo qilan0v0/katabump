@@ -329,6 +329,12 @@ function _race(p, ms) {
         await gotoWithRetry(page, CLAIM_URL);
         await page.waitForTimeout(5000);
 
+        // 关广告弹窗
+        await page.evaluate(() => {
+            const overlay = document.getElementById('__g4f_adblock_overlay');
+            if (overlay) overlay.remove();
+        }).catch(() => {});
+
         // 3. 检查是否已登录（页面是否跳回登录页）
         if (page.url().includes('/login')) {
             console.log('   >> cookie 已过期，被重定向到登录页');
