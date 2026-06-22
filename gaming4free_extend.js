@@ -277,13 +277,12 @@ async function attemptTurnstileCdp(page) {
     const frames = page.frames();
     for (const frame of frames) {
         const fu = (frame.url() || '');
-        if (fu && !/cloudflare|turnstile|challenges|hcaptcha|^about:|^$/i.test(fu)) {
-            if (frame !== page.mainFrame()) continue;
-        }
+        // 只处理 Cloudflare Challenge 相关的 frame，忽略侧边栏等无关 frame
+        if (!/challenges\.cloudflare|turnstile|^https?:\/\/[^\/]*cloudflare/i.test(fu)) continue;
         try {
             const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
-            if (data) {
-                console.log('>> 在 frame 中发现 Turnstile。比例:', data);
+            if (data && data.xRatio > 0.1 && data.xRatio < 0.9) {
+                console.log('>> 在 CF frame 中发现 Turnstile。比例:', data);
                 const iframeElement = await frame.frameElement();
                 if (!iframeElement) continue;
                 const box = await iframeElement.boundingBox();
@@ -409,6 +408,9 @@ async function extendServer(page, serverUrl, photoDir) {
     await page.evaluate(() => {
         const overlay = document.getElementById('__g4f_adblock_overlay');
         if (overlay) overlay.remove();
+        // 也移除可能遮挡点击的 CF 验证弹窗遮罩
+        const cfModal = document.querySelector('div[class*="cf-turnstile"], iframe[src*="challenges"]');
+        if (cfModal) cfModal.style.pointerEvents = 'auto';
     }).catch(() => {});
 
     // 解析剩余时间 → 秒数，用于后续比较
@@ -423,7 +425,8 @@ async function extendServer(page, serverUrl, photoDir) {
     // 点击后续时按钮下方会弹出 Cloudflare Turnstile 验证，需要 CDP 点击通过
     console.log('   >> 处理 CF Turnstile 验证...');
     let turnstileDone = false;
-    for (let w = 0; w < 25; w++) {
+    let turnstileRetries = 0;
+    for (let w = 0; w < 35; w++) {
         // 方案 A：按钮文字变冷却
         const curBtnText = await extendBtn.innerText().catch(() => '');
         if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
@@ -431,7 +434,7 @@ async function extendServer(page, serverUrl, photoDir) {
             turnstileDone = true;
             break;
         }
-        // 方案 B：剩余时间增加（比按钮文字更可靠）
+        // 方案 B：剩余时间增加
         const curTime = await page.locator('.time span, [class*="time"] span').first().innerText().catch(() => '');
         const curSeconds = parseTime(curTime);
         if (curSeconds > oldSeconds + 30) {
@@ -439,13 +442,22 @@ async function extendServer(page, serverUrl, photoDir) {
             turnstileDone = true;
             break;
         }
-        // 移除广告遮罩（可能挡住弹窗）
+        // 移除广告遮罩
         await page.evaluate(() => {
             const overlay = document.getElementById('__g4f_adblock_overlay');
             if (overlay) overlay.remove();
         }).catch(() => {});
-        // 点 Turnstile 复选框
-        await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
+        // 尝试 CDP 点 Turnstile
+        const clicked = await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
+        if (!clicked) {
+            turnstileRetries++;
+            // 如果连续 5 轮都没找到 Turnstile，重试点击 +90 min 按钮
+            if (turnstileRetries >= 5 && turnstileRetries % 5 === 0) {
+                console.log('   >> Turnstile 检测超时，尝试重新点击 +90 min...');
+                try { await extendBtn.click({ force: true, timeout: 5000 }); } catch (e) {}
+                await page.waitForTimeout(3000);
+            }
+        }
         await page.waitForTimeout(1500);
     }
 
