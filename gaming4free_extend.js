@@ -414,7 +414,6 @@ async function extendServer(page, serverUrl, photoDir) {
     };
     if (PROXY_STR) {
         launchOpts.proxy = PROXY_STR;
-        launchOpts.geoip = true;
         console.log('[CloakBrowser] 使用代理:', PROXY_STR);
     }
     const browser = await launch(launchOpts);
