@@ -17,13 +17,20 @@ const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const TG_THREAD_ID = process.env.TG_THREAD_ID; // 可选：超级群话题(Topic)的 message_thread_id
 const PROJECT = process.env.PROJECT_NAME || 'FreeMCHost';
+const PROXY_STATUS = process.env.PROXY_STATUS || '';
+
+function buildMsg(title) {
+    let msg = `📌 *${PROJECT}*\n${title}`;
+    if (PROXY_STATUS) msg += `\n━━━━━━━━━━━━━━\n${PROXY_STATUS}`;
+    return msg;
+}
 
 async function sendTelegramMessage(message, imagePath = null) {
     if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
         console.warn('[Telegram] 未配置 TG_BOT_TOKEN / TG_CHAT_ID，跳过推送。');
         return;
     }
-    const text = `📌 *${PROJECT}*\n${message}`;
+    const text = buildMsg(message);
     const tgErr = (e) => (e.response && e.response.data && e.response.data.description)
         ? `${e.response.data.error_code} ${e.response.data.description}`
         : e.message;
@@ -298,8 +305,14 @@ async function loginOnce(page, user) {
 
     if (PROXY_CONFIG) {
         const ok = await checkProxy();
-        if (!ok) { console.error('[代理] 代理无效，终止运行。'); process.exit(1); }
+        if (!ok) {
+            console.error('[代理] 代理无效，降级直连。');
+            PROXY_CONFIG = null;
+            process.env.HTTP_PROXY = '';
+        }
     }
+
+    console.log(`[代理状态] ${PROXY_STATUS || '未配置代理，直连'}`);
 
     await launchChrome();
 
