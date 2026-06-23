@@ -616,27 +616,58 @@ async function extendServer(page, serverUrl, photoDir) {
     // 点击续时
     console.log('   >> 点击 +90 min...');
 
-    // === 诊断：监听网络请求 + 控制台 + 页面错误 ===
+    // === 诊断：监听网络请求 + 响应 + 控制台 + 页面错误 ===
     const reqLog = [];
+    const respLog = [];
     const consoleLog = [];
     const onReq = (req) => {
         const u = req.url();
         const m = req.method();
-        if (m !== 'GET' && /control\.gaming4free|\/server\/|renew|extend|claim|free/i.test(u)) {
+        if (m !== 'GET' && /gaming4free|\/server\/|renew|extend|claim|turnstile|challenge/i.test(u)) {
             reqLog.push(m + ' ' + u);
         }
+    };
+    const onResp = async (resp) => {
+        try {
+            const req = resp.request();
+            if (req.method() === 'GET') return;
+            const u = resp.url();
+            if (!/gaming4free|\/server\/|renew|extend|claim/i.test(u)) return;
+            let body = '';
+            try { body = (await resp.text()).slice(0, 250); } catch (e) {}
+            respLog.push(resp.status() + ' ' + u + ' | ' + body);
+        } catch (e) {}
     };
     const onConsole = (msg) => {
         const type = msg.type();
         if (type === 'error' || type === 'warning') {
             const t = msg.text();
-            if (t && !/favicon|google-analytics|gtag|tracking/i.test(t)) consoleLog.push(type + ': ' + t.slice(0, 200));
+            if (t && !/favicon|google-analytics|gtag|tracking|adsbygoogle|criteo|doubleclick/i.test(t)) consoleLog.push(type + ': ' + t.slice(0, 200));
         }
     };
     const onPageError = (err) => { consoleLog.push('pageerror: ' + (err.message || String(err)).slice(0, 200)); };
     page.on('request', onReq);
+    page.on('response', onResp);
     page.on('console', onConsole);
     page.on('pageerror', onPageError);
+
+    // 点击前打印按钮 + Alpine 状态
+    const preClickInfo = await page.evaluate(() => {
+        const btn = document.querySelector('button.rt-btn-free:not(.disabled)');
+        if (!btn) return { error: 'no-button' };
+        const attrs = {};
+        for (const a of btn.attributes) attrs[a.name] = String(a.value).slice(0, 150);
+        return {
+            hasAlpine: !!window.Alpine,
+            alpineVersion: window.Alpine && window.Alpine.version,
+            btnHasXStack: !!btn._x_dataStack,
+            btnHasUnderscoreX: !!btn.__x,
+            attrs: attrs,
+            disabled: btn.disabled,
+            text: (btn.innerText || '').trim().slice(0, 60)
+        };
+    }).catch(e => ({ error: 'eval-failed:' + (e && e.message) }));
+    console.log('   >> [诊断] 点击前按钮状态: ' + JSON.stringify(preClickInfo).slice(0, 600));
 
     // 关键：必须用普通点击（非 force）触发 Alpine.js 事件 → Turnstile 弹窗才会出现
     // 改进：先用 JS 移除所有可能的遮罩层，再通过 DOM dispatchEvent 点击按钮
