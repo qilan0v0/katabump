@@ -239,7 +239,7 @@ async function launchChrome() {
 async function gotoWithRetry(page, url, retries = 3) {
     for (let i = 1; i <= retries; i++) {
         try {
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
             return;
         } catch (e) {
             console.warn(`[导航] 打开 ${url} 失败 (第 ${i}/${retries} 次): ${e.message}`);
@@ -252,6 +252,21 @@ async function gotoWithRetry(page, url, retries = 3) {
 // 给任意 promise 套超时
 function _race(p, ms) {
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
+}
+
+// 导航到目标页，若页面状态异常则重建页面后重试一次
+async function navigateWithPageFallback(context, page, url) {
+    try {
+        await gotoWithRetry(page, url);
+        return page;
+    } catch (e) {
+        console.warn(`[导航] 导航失败，正在重建页面后重试: ${e.message}`);
+        try { await page.close(); } catch (e2) {}
+        const newPage = await context.newPage();
+        newPage.setDefaultTimeout(60000);
+        await gotoWithRetry(newPage, url);
+        return newPage;
+    }
 }
 
 (async () => {
@@ -307,11 +322,6 @@ function _race(p, ms) {
     }
     console.log('共 ' + g4fUsers.length + ' 个用户');
 
-    // 预热: 先加载一次首页，让浏览器缓存资源，后续用户导航更快（解决首次加载慢的问题）
-    console.log('预热首页...');
-    await gotoWithRetry(page, CLAIM_URL).catch(() => {});
-    await page.waitForTimeout(2000);
-
     for (let ui = 0; ui < g4fUsers.length; ui++) {
         const user = g4fUsers[ui];
         const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
@@ -356,7 +366,7 @@ function _race(p, ms) {
         console.log('打开首页: ' + CLAIM_URL);
         // 先清广告遮罩再导航
         await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
-        await gotoWithRetry(page, CLAIM_URL);
+        page = await navigateWithPageFallback(context, page, CLAIM_URL);
         // 等待页面渲染完成 — 检测到签到面板、登录重定向或页面内容即继续
         try {
             await page.waitForFunction(() => {
