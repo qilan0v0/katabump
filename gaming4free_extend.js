@@ -271,7 +271,7 @@ async function extendServer(page, serverUrl, photoDir) {
     if (!btnVisible) {
         console.log('   >> +90 min 按钮不可见（可能是冷却中或无按钮）');
         try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-        return { status: 'cooldown', remaining: remainingTime, shot };
+        return { status: 'cooldown', remaining: remainingTime, capInfo, shot };
     }
 
     const btnText = await extendBtn.innerText().catch(() => '');
@@ -280,7 +280,7 @@ async function extendServer(page, serverUrl, photoDir) {
     if (/cd|wait/i.test(btnText) && !/90|min/i.test(btnText)) {
         console.log(`   >> 冷却中: ${btnText}`);
         try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-        return { status: 'cooldown', remaining: remainingTime, shot };
+        return { status: 'cooldown', remaining: remainingTime, capInfo, shot };
     }
 
     // 点击续时
@@ -400,7 +400,7 @@ async function extendServer(page, serverUrl, photoDir) {
     }
     console.log('   >> 续时后剩余: ' + (newRemaining || '未知'));
 
-    return { status: 'extended', remaining: newRemaining || remainingTime, oldRemaining: remainingTime, shot };
+    return { status: 'extended', remaining: newRemaining || remainingTime, oldRemaining: remainingTime, capInfo, shot };
 }
 
 // === 通过 CDP 点击 Turnstile 复选框（穿透 Shadow DOM / 跨域 iframe） ===
@@ -491,42 +491,28 @@ async function attemptTurnstileCdp(page) {
         try {
             const r = await withTimeout(extendServer(page, serverUrl, photoDir), 90000, '续时 ' + safeUser);
             results.push({ serverUrl, user: safeUser, ...r });
+
+            // 立即 TG 推送（每个服务器完成即发）
+            const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
+            const prog = r.capInfo ? `${r.capInfo.on}/${r.capInfo.total}` : '';
+            const capStr = r.capInfo && r.capInfo.cap ? r.capInfo.cap : '48h cap';
+
+            if (r.status === 'extended') {
+                const msg = '✅ *续时成功*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?') + '\n时间: ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+                await sendTelegramMessage(msg, r.shot);
+            } else if (r.status === 'full') {
+                const msg = '✅ *续时已达上限*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?');
+                await sendTelegramMessage(msg, r.shot);
+            } else if (r.status === 'cooldown') {
+                const msg = '⏳ *续时冷却中*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?');
+                await sendTelegramMessage(msg, r.shot);
+            }
+
         } catch (e) {
             console.error('用户 ' + safeUser + ' 出错:', e.message);
             results.push({ serverUrl, user: safeUser, status: 'error', shot: '' });
         }
         await page.waitForTimeout(1000);
-    }
-
-    // 汇总通知
-    const extended = results.filter(r => r.status === 'extended');
-    const cooldown = results.filter(r => r.status === 'cooldown');
-    const full = results.filter(r => r.status === 'full');
-
-    if (full.length > 0) {
-        const fullList = full.map(r => {
-            const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
-            const cap = r.capInfo ? r.capInfo.cap : '48h cap';
-            return '  ' + escapeMd(r.user) + ' / `' + sid + '`: ' + escapeMd(cap) + ' 已满';
-        }).join('\n');
-        const stillGoing = extended.length > 0 ? '\n' + extended.length + ' 个已续时' : '';
-        const cooling = cooldown.length > 0 ? '\n' + cooldown.length + ' 个冷却中' : '';
-        await sendTelegramMessage('✅ *续时已达上限*\n' + fullList + stillGoing + cooling);
-    }
-
-    if (extended.length > 0) {
-        for (const r of extended) {
-            const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
-            const msg = '✅ *续时成功*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n剩余: ' + escapeMd(r.remaining || '?') + '\n时间: ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-            await sendTelegramMessage(msg, r.shot);
-        }
-    }
-    if (cooldown.length > 0 && extended.length === 0 && full.length === 0) {
-        const waitingList = cooldown.map(r => {
-            const sid = (r.serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
-            return '  ' + escapeMd(r.user) + ' / `' + sid + '`: 剩余 ' + escapeMd(r.remaining || '?');
-        }).join('\n');
-        await sendTelegramMessage('⏳ *续时冷却中*\n暂无可用续时\n\n当前剩余:\n' + waitingList);
     }
 
     console.log('\n完成。');
