@@ -1,7 +1,40 @@
 // Gaming4Free (control.gaming4free.net) 服务器续时脚本 —— 每 5 分钟点 +90 min
 // 流程: 加载 KV cookie → 打开 serverUrl → 关广告弹窗 → 点 +90 min → 发通知
 // Cookie 获取: 与 gaming4free_checkin.js 共用
-// 使用 CloakBrowser (https://github.com/CloakHQ/cloakbrowser) 绕过 Turnstile 验证
+
+// === CDP Turnstile Bypass: 劫持 attachShadow 捕获 checkbox 坐标 ===
+const INJECTED_SCRIPT = `
+(function() {
+    if (window.self === window.top) return;
+    try {
+        const orig = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function(init) {
+            const sr = orig.call(this, init);
+            if (sr) {
+                const check = () => {
+                    const cb = sr.querySelector('input[type="checkbox"]');
+                    if (cb) {
+                        const r = cb.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
+                            window.__turnstile_data = {
+                                xRatio: (r.left + r.width / 2) / window.innerWidth,
+                                yRatio: (r.top + r.height / 2) / window.innerHeight
+                            };
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                if (!check()) {
+                    const mo = new MutationObserver(() => { if (check()) mo.disconnect(); });
+                    mo.observe(sr, { childList: true, subtree: true });
+                }
+            }
+            return sr;
+        };
+    } catch(e) {}
+})();
+`;
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -296,10 +329,13 @@ async function extendServer(page, serverUrl, photoDir) {
     // 清除遮罩
     await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
 
-    // Turnstile 由 CloakBrowser 自动处理，等待几秒让验证完成
-    console.log('   >> 等待 Turnstile 自动验证...');
+    // Turnstile 验证：点击 +90 min 后 CF 弹窗出现，用 CDP 点击复选框
+    console.log('   >> 等待 Turnstile 弹窗加载...');
+    await page.waitForTimeout(4000); // 先等弹窗出现
+
     let turnstileResolved = false;
-    for (let t = 0; t < 10; t++) {
+    for (let t = 0; t < 25; t++) {
+        // 清除遮罩
         await page.evaluate(() => {
             const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
             for (const id of overlayIds) {
@@ -308,29 +344,49 @@ async function extendServer(page, serverUrl, photoDir) {
             }
         }).catch(() => {});
 
-        // 1. 通过 frameLocator 跨域访问 Turnstile iframe 内部并点击复选框
-        const turnstileFrame = page.frameLocator('iframe[src*="challenges"], iframe[src*="turnstile"]').first();
-        const tsCheckbox = turnstileFrame.locator('[role="checkbox"], input[type="checkbox"]').first();
-        if (await tsCheckbox.isVisible({ timeout: 1500 }).catch(() => false)) {
-            try { await tsCheckbox.click({ timeout: 2000 }); } catch (e) {}
-            console.log('   >> 点击 Turnstile 复选框');
-            await page.waitForTimeout(2000);
+        // 1. CDP 点击 Turnstile 复选框
+        const cdpOk = await attemptTurnstileCdp(page);
+        if (cdpOk) {
+            console.log('   >> ✅ CDP 已点击 Turnstile 复选框');
+            await page.waitForTimeout(3000);
+            // 等 Cloudflare 校验完成（再等几秒让 token 生成）
+            for (let w = 0; w < 10; w++) {
+                const curBtnText = await extendBtn.innerText().catch(() => '');
+                if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
+                    console.log('   >> ✅ Turnstile 验证通过，按钮进入冷却');
+                    turnstileResolved = true;
+                    break;
+                }
+                // 检查 iframe 是否消失
+                const hasIframe = await page.evaluate(() =>
+                    Array.from(document.querySelectorAll('iframe')).some(f =>
+                        /turnstile|challenges\.cloudflare/i.test(f.src || '') && f.offsetWidth > 30)
+                ).catch(() => true);
+                if (!hasIframe) {
+                    console.log('   >> ✅ Turnstile iframe 已消失');
+                    turnstileResolved = true;
+                    break;
+                }
+                await page.waitForTimeout(2000);
+            }
+            if (turnstileResolved) break;
         }
 
-        // 2. 检查按钮是否进入冷却（= Turnstile 通过）
+        // 2. 检查按钮是否已进入冷却（可能自动通过了）
         const curBtnText = await extendBtn.innerText().catch(() => '');
         if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
-            console.log('   >> ✅ Turnstile 验证通过，按钮进入冷却');
+            console.log('   >> ✅ Turnstile 验证通过（按钮冷却）');
             turnstileResolved = true;
             break;
         }
 
         // 3. 检查 iframe 是否消失
-        const hasIframe = await page.evaluate(() => {
-            return Array.from(document.querySelectorAll('iframe')).some(f => /turnstile|challenges\.cloudflare/i.test(f.src || '') && f.offsetWidth > 30);
-        }).catch(() => true);
+        const hasIframe = await page.evaluate(() =>
+            Array.from(document.querySelectorAll('iframe')).some(f =>
+                /turnstile|challenges\.cloudflare/i.test(f.src || '') && f.offsetWidth > 30)
+        ).catch(() => true);
         if (!hasIframe) {
-            console.log('   >> ✅ Turnstile iframe 已消失，验证通过');
+            console.log('   >> ✅ Turnstile iframe 已消失');
             turnstileResolved = true;
             break;
         }
@@ -398,6 +454,33 @@ async function extendServer(page, serverUrl, photoDir) {
     return { status: 'extended', remaining: newRemaining || remainingTime, oldRemaining: remainingTime, shot };
 }
 
+// === 通过 CDP 点击 Turnstile 复选框（穿透 Shadow DOM / 跨域 iframe） ===
+async function attemptTurnstileCdp(page) {
+    const frames = page.frames();
+    for (const frame of frames) {
+        try {
+            const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
+            if (data) {
+                console.log('   >> 在 Frame 中找到 Turnstile:', data);
+                const iframeEl = await frame.frameElement();
+                if (!iframeEl) continue;
+                const box = await iframeEl.boundingBox();
+                if (!box) continue;
+                const cx = box.x + box.width * data.xRatio;
+                const cy = box.y + box.height * data.yRatio;
+                console.log(`   >> CDP 坐标: (${cx.toFixed(1)}, ${cy.toFixed(1)})`);
+                const client = await page.context().newCDPSession(page);
+                await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
+                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
+                await client.detach();
+                return true;
+            }
+        } catch (_) {}
+    }
+    return false;
+}
+
 (async () => {
     const { launch } = await import('cloakbrowser');
     console.log('[CloakBrowser] 模块加载成功');
@@ -422,6 +505,7 @@ async function extendServer(page, serverUrl, photoDir) {
 
     const page = await browser.newPage();
     page.setDefaultTimeout(60000);
+    await page.addInitScript(INJECTED_SCRIPT).catch(() => {});
     const context = page.context();
 
     const photoDir = path.join(process.cwd(), 'screenshots');
