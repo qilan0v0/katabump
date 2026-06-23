@@ -6,7 +6,6 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
-const { launch } = require('cloakbrowser');
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
@@ -399,6 +398,8 @@ async function extendServer(page, serverUrl, photoDir) {
 }
 
 (async () => {
+    const { launch } = await import('cloakbrowser');
+    console.log('[CloakBrowser] 模块加载成功');
     if (G4F_USERS.length === 0) {
         console.error('未配置用户 (G4F_USERS_JSON)');
         process.exit(1);
