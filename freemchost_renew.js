@@ -204,7 +204,7 @@ async function launchChrome() {
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-gpu',
-        '--window-size=1280,720',
+        '--window-size=1440,900',
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
@@ -393,15 +393,35 @@ async function loginOnce(page, user) {
             await gotoWithRetry(page, user.serverUrl);
             await page.waitForTimeout(3000);
 
-            const renewBtn = page.getByRole('button', { name: /renew now|renew/i })
-                .or(page.locator('button:has-text("Renew now"), button:has-text("Renew")'))
+            // 新面板: Renew now 按钮在 Manage 标签页内，需要先点击 Manage 标签
+            // 侧边栏资源面板会遮挡标签栏，需用 force:true 或先调大视口
+            console.log('   >> 点击 Manage 标签...');
+            try {
+                const manageTab = page.getByRole('tab', { name: /manage/i });
+                await manageTab.waitFor({ state: 'visible', timeout: 10000 });
+                await manageTab.click({ force: true });
+                await page.waitForTimeout(2000);
+                console.log('   >> Manage 标签已激活');
+            } catch (e) {
+                console.warn('   >> Manage 标签点击异常:', e.message);
+                // 降级方案：通过 evaluate 强制激活
+                await page.evaluate(() => {
+                    const tab = document.querySelector('button[role="tab"][id*="manage"]');
+                    if (tab) tab.click();
+                });
+                await page.waitForTimeout(2000);
+            }
+
+            const renewBtn = page.getByRole('button', { name: /renew now/i })
+                .or(page.locator('button:has-text("Renew now")'))
                 .first();
             const shot = path.join(photoDir, `freemchost_${safeUser}_renew.png`);
             try {
                 await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
             } catch (e) {
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e2) { }
-                await sendTelegramMessage(`⚠️ *未找到续期按钮*\n用户: ${user.username}\n详见截图`, shot);
+                const expiry = await page.locator('timer').first().innerText().catch(() => '');
+                await sendTelegramMessage(`⚠️ *未找到续期按钮*\n用户: ${user.username}\n到期: ${expiry || '?'}\n详见截图`, shot);
                 console.log('用户处理完成');
                 continue;
             }
@@ -409,21 +429,39 @@ async function loginOnce(page, user) {
             const disabled = await renewBtn.isDisabled().catch(() => false);
             if (disabled) {
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+                const expiry = await page.locator('timer').first().innerText().catch(() => '');
                 console.log('   >> ⏳ 暂不可续期 (按钮禁用)。');
-                await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n原因: 续期按钮禁用 (可能未到时间)`, shot);
+                await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n到期: ${expiry || '?'}\n原因: 续期按钮禁用 (可能未到时间)`, shot);
             } else {
+                // 获取续期前的到期时间
+                const beforeExpiry = await page.locator('timer').first().innerText().catch(() => '');
+                console.log(`   >> 续期前到期: ${beforeExpiry}`);
+
                 console.log('   >> 点击 Renew now 续期...');
                 try { await renewBtn.click({ timeout: 8000 }); } catch (e) { await renewBtn.click({ force: true }); }
-                await page.waitForTimeout(4000);
+                await page.waitForTimeout(5000);
+
+                // 获取续期后的到期时间
+                const afterExpiry = await page.locator('timer').first().innerText().catch(() => '');
+                console.log(`   >> 续期后到期: ${afterExpiry}`);
+
+                // 检测续期结果：检查 toast 通知、页面文本或计时器变化
                 const after = await page.locator('body').innerText().catch(() => '');
-                const ok = /success|renewed|extended/i.test(after);
+                const toastText = await page.locator('[data-sonner-toast]').first().innerText().catch(() => '');
+                const ok = /success|renewed|extended|renewed successfully|renewal successful/i.test(after + ' ' + toastText);
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
                 if (ok) {
                     console.log('   >> ✅ 续期成功。');
-                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n服务器已续期！`, shot);
+                    await sendTelegramMessage(
+                        `✅ *续期成功*\n用户: ${user.username}\n`
+                        + `到期: ${beforeExpiry || '?'} → ${afterExpiry || '?'}`, shot);
                 } else {
-                    console.log('   >> ⚠️ 已点击续期，结果未知。');
-                    await sendTelegramMessage(`⚠️ *续期结果未知*\n用户: ${user.username}\n已点击 Renew now，详见截图`, shot);
+                    console.log('   >> ⚠️ 已点击续期，结果未知 (页面文本无明确成功标记)。');
+                    await sendTelegramMessage(
+                        `⚠️ *续期结果未知*\n用户: ${user.username}\n`
+                        + `续期前到期: ${beforeExpiry || '?'}\n`
+                        + `续期后到期: ${afterExpiry || '?'}\n`
+                        + `已点击 Renew now，详见截图`, shot);
                 }
             }
         } catch (err) {
