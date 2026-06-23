@@ -329,23 +329,22 @@ async function extendServer(page, serverUrl, photoDir) {
     // 清除遮罩
     await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
 
-    // Turnstile 验证：点击 +90 min 后 CF 弹窗出现，用 CDP 点击复选框
-    console.log('   >> 等待 Turnstile 弹窗出现...');
-    await page.waitForTimeout(2000);
+    // === Turnstile 验证 + 续时生效 合并循环 ===
+    // 点击 +90 min 后 CF 弹窗出现，需 CDP 点击复选框完成验证，然后等按钮进入冷却（续时生效）
+    console.log('   >> 等待 Turnstile 验证 + 续时生效...');
 
-    // 主动等 iframe 出现（最多 12 秒）
-    try {
-        await page.waitForSelector('iframe[src*="challenges"], iframe[src*="turnstile"]', { timeout: 12000 });
-        console.log('   >> Turnstile iframe 已出现');
-    } catch (e) {
-        console.log('   >> Turnstile iframe 未出现（可能已自动通过或未触发）');
+    // 解析剩余时间 → 秒数（用于后续判断时间是否增加）
+    function parseTime(str) {
+        if (!str) return 0;
+        const m = str.match(/(\d{2}):(\d{2}):(\d{2})/);
+        if (!m) return 0;
+        return parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
     }
+    const oldSeconds = parseTime(remainingTime);
 
-    let turnstileResolved = false;
-    let cdpAlreadyClicked = false;
-    let turnstileFailed = false;
+    let extendOk = false;
 
-    for (let t = 0; t < 20; t++) {
+    for (let t = 0; t < 40; t++) {
         // 清除遮罩
         await page.evaluate(() => {
             const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
@@ -355,103 +354,39 @@ async function extendServer(page, serverUrl, photoDir) {
             }
         }).catch(() => {});
 
-        // 1. 先检查按钮状态
-        const curBtnText = await extendBtn.innerText().catch(() => '');
-        const btnCooling = /cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText);
-
-        if (btnCooling) {
-            console.log('   >> ✅ Turnstile 验证通过（按钮进入冷却）');
-            turnstileResolved = true;
-            break;
-        }
-
-        // 2. CDP 点击复选框（仅在尚未成功点击过时尝试）
-        if (!cdpAlreadyClicked) {
-            const cdpOk = await attemptTurnstileCdp(page);
-            if (cdpOk) {
-                cdpAlreadyClicked = true;
-                console.log('   >> ✅ CDP 已点击 Turnstile 复选框，等候验证...');
-                await page.waitForTimeout(2000);
-                continue; // 马上再检查按钮状态
-            }
-        }
-
-        // 3. 如果已点击过 CDP，等几秒看是否生效
-        if (cdpAlreadyClicked) {
-            await page.waitForTimeout(2000);
-            // 下一轮会检查按钮冷却状态
-            continue;
-        }
-
-        // 4. 检查 iframe 是否还在（未点击时 iframe 消失 = 弹窗超时）
-        const hasIframe = await page.evaluate(() =>
-            Array.from(document.querySelectorAll('iframe')).some(f =>
-                /turnstile|challenges\.cloudflare/i.test(f.src || '') && f.offsetWidth > 30)
-        ).catch(() => true);
-        if (!hasIframe) {
-            if (t >= 2) {
-                // iframe 在几轮内都找不到 → Turnstile 已超时消失
-                console.log('   >> ⚠️ Turnstile 弹窗已超时消失，未完成验证');
-                turnstileFailed = true;
-                break;
-            }
-            // 刚开始几轮可能还没加载完，再等等
-            await page.waitForTimeout(1500);
-            continue;
-        }
-
-        await page.waitForTimeout(2000);
-    }
-
-    if (turnstileFailed) {
-        console.log('   >> ⚠️ Turnstile 超时未通过，续时可能未生效');
-    } else if (!turnstileResolved) {
-        console.log('   >> ⚠️ Turnstile 在超时内未解决');
-    }
-
-    await page.evaluate(() => {
-        const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
-        for (const id of overlayIds) {
-            const el = document.getElementById(id);
-            if (el) el.remove();
-        }
-    }).catch(() => {});
-
-    // 解析剩余时间 → 秒数
-    function parseTime(str) {
-        if (!str) return 0;
-        const m = str.match(/(\d{2}):(\d{2}):(\d{2})/);
-        if (!m) return 0;
-        return parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
-    }
-    const oldSeconds = parseTime(remainingTime);
-
-    // 等候续时生效（最多 ~40 秒）
-    console.log('   >> 等候续时生效...');
-    let extendOk = false;
-    for (let w = 0; w < 20; w++) {
-        await page.evaluate(() => {
-            const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
-            for (const id of overlayIds) {
-                const el = document.getElementById(id);
-                if (el) el.remove();
-            }
-        }).catch(() => {});
-
+        // 1. 检查按钮是否已冷却（= Turnstile 通过 + 续时生效）
         const curBtnText = await extendBtn.innerText().catch(() => '');
         if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
-            console.log('   >> 按钮进入冷却，续时成功');
+            console.log('   >> ✅ Turnstile 验证通过，按钮已冷却，续时成功');
             extendOk = true;
             break;
         }
-        const curTime = await page.locator('.time span, [class*="time"] span').first().innerText().catch(() => '');
-        const curSeconds = parseTime(curTime);
+
+        // 2. 检查剩余时间是否增加（Turnstile 可能已通过但按钮文字未更新）
+        const curTimeText = await page.locator('.time span, [class*="time"] span').first().innerText().catch(() => '');
+        const curSeconds = parseTime(curTimeText);
         if (curSeconds > oldSeconds + 30) {
-            console.log('   >> 剩余时间已增加，续时成功 (' + remainingTime + ' → ' + curTime + ')');
+            console.log('   >> ✅ 剩余时间已增加，续时成功 (' + remainingTime + ' → ' + curTimeText + ')');
             extendOk = true;
             break;
         }
+
+        // 3. CDP 点击 Turnstile 复选框（每轮至多试一次）
+        const cdpOk = await attemptTurnstileCdp(page);
+        if (cdpOk) {
+            console.log('   >> ✅ CDP 已点击 Turnstile 复选框，等 Cloudflare 验证...');
+            // 点击后等久一点让 CF 处理
+            await page.waitForTimeout(5000);
+            continue;
+        }
+
         await page.waitForTimeout(2000);
+    }
+
+    if (extendOk) {
+        console.log('   >> ✅ 续时已生效');
+    } else {
+        console.log('   >> ⚠️ 续时在超时内未确认生效');
     }
 
     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
@@ -484,8 +419,13 @@ async function attemptTurnstileCdp(page) {
                 const cy = box.y + box.height * data.yRatio;
                 console.log(`   >> CDP 坐标: (${cx.toFixed(1)}, ${cy.toFixed(1)})`);
                 const client = await page.context().newCDPSession(page);
+                // 1. 先移动鼠标到复选框上（Cloudflare 需要 mouseover 前置事件）
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy });
+                await new Promise(r => setTimeout(r, 100 + Math.random() * 150));
+                // 2. mousePressed
                 await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
-                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                await new Promise(r => setTimeout(r, 80 + Math.random() * 120));
+                // 3. mouseReleased
                 await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
                 await client.detach();
                 return true;
