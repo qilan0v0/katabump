@@ -364,7 +364,7 @@ const INJECTED_SCRIPT = `
 // 读取注入脚本的 __turnstile_data 进行精确定位 + 点击后验证
 async function attemptTurnstileCdp(page) {
     return await new Promise(async (resolve) => {
-        const timeout = setTimeout(() => resolve(false), 8000);
+        const timeout = setTimeout(() => resolve(false), 12000);
         try {
             // 先清除所有遮罩
             await page.evaluate(() => {
@@ -375,19 +375,37 @@ async function attemptTurnstileCdp(page) {
                 }
             }).catch(() => {});
 
-            // --- 方案1：读取注入脚本的 __turnstile_data ---
+            // --- 方案1：遍历 Playwright frames（放宽匹配） ---
             const frames = page.frames();
             let turnstileBox = null;
             let preciseCoords = null;
+            let candidateCount = 0;
             for (const frame of frames) {
                 const fu = (frame.url() || '');
-                if (!/turnstile|challenges\.cloudflare/i.test(fu) || fu.includes('favicon')) continue;
+                if (fu.includes('favicon')) continue;
+                // 放宽匹配：URL 含 turnstile 或为空/about:blank（Turnstile iframe 初始可能未稳定）
+                const isTurnstile = /turnstile|challenges\.cloudflare/i.test(fu);
+                const isBlank = !fu || fu === 'about:blank';
+                if (!isTurnstile && !isBlank) continue;
                 try {
-                    const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
                     const iframeElement = await frame.frameElement().catch(() => null);
                     if (!iframeElement) continue;
                     const box = await iframeElement.boundingBox().catch(() => null);
-                    if (!box || box.width < 50) continue;
+                    if (!box || box.width < 50 || box.height < 30) continue;
+
+                    // about:blank frame 二次校验：父 iframe 标签是否含 turnstile 标识
+                    if (isBlank && !isTurnstile) {
+                        const looksLikeTurnstile = await iframeElement.evaluate((el) => {
+                            const src = (el.getAttribute('src') || '').toLowerCase();
+                            const cls = (el.className || '').toLowerCase();
+                            const id = (el.id || '').toLowerCase();
+                            return /turnstile|challenges|cloudflare|cf-/.test(src + cls + id);
+                        }).catch(() => false);
+                        if (!looksLikeTurnstile) continue;
+                    }
+
+                    candidateCount++;
+                    const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
                     turnstileBox = box;
 
                     if (data && data.xRatio && data.yRatio) {
@@ -401,7 +419,31 @@ async function attemptTurnstileCdp(page) {
                 } catch (e) { }
             }
 
+            // --- 方案2：兜底，直接从 DOM 找 Turnstile iframe ---
             if (!turnstileBox) {
+                const domBox = await page.evaluate(() => {
+                    const ifrs = Array.from(document.querySelectorAll('iframe'));
+                    for (const f of ifrs) {
+                        const src = (f.src || '').toLowerCase();
+                        const id = (f.id || '').toLowerCase();
+                        const cls = (f.className || '').toLowerCase();
+                        if (/turnstile|challenges\.cloudflare|cf-chl|cf-turnstile/.test(src + ' ' + id + ' ' + cls)) {
+                            const r = f.getBoundingClientRect();
+                            if (r.width >= 50 && r.height >= 30) {
+                                return { x: r.left, y: r.top, width: r.width, height: r.height };
+                            }
+                        }
+                    }
+                    return null;
+                }).catch(() => null);
+                if (domBox) {
+                    console.log('>> 通过 DOM 找到 Turnstile iframe (frame tree 未注册)');
+                    turnstileBox = domBox;
+                }
+            }
+
+            if (!turnstileBox) {
+                console.log('>> 未发现 Turnstile iframe (candidates: ' + candidateCount + ')');
                 clearTimeout(timeout);
                 resolve(false);
                 return;
@@ -653,10 +695,11 @@ async function extendServer(page, serverUrl, photoDir) {
     // 再次移除广告遮罩
     await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
 
-    // 全力解决 Turnstile 验证（最多 ~20 秒）
-    // Turnstile 弹窗在普通点击后 1-3 秒出现，CDP 需点击复选框
+    // 全力解决 Turnstile 验证（最多 ~30 秒）
+    // Turnstile 弹窗在普通点击后 1-5 秒出现，CDP 需点击复选框
     console.log('   >> 处理 Turnstile 验证...');
-    for (let t = 0; t < 8; t++) {
+    let turnstileResolved = false;
+    for (let t = 0; t < 12; t++) {
         // 全局清除遮罩
         await page.evaluate(() => {
             const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
@@ -674,16 +717,50 @@ async function extendServer(page, serverUrl, photoDir) {
                 }
             });
         }).catch(() => {});
+
+        // 先检查 Turnstile iframe 是否已出现在 DOM 中
+        const iframePresent = await page.evaluate(() => {
+            const ifrs = Array.from(document.querySelectorAll('iframe'));
+            return ifrs.some(f => {
+                const s = ((f.src || '') + ' ' + (f.id || '') + ' ' + (f.className || '')).toLowerCase();
+                if (!/turnstile|challenges\.cloudflare|cf-chl|cf-turnstile/.test(s)) return false;
+                const r = f.getBoundingClientRect();
+                return r.width >= 50 && r.height >= 30;
+            });
+        }).catch(() => false);
+
+        if (!iframePresent) {
+            // 前两轮给 iframe 多一点时间出现
+            if (t < 2) {
+                await page.waitForTimeout(2500);
+                continue;
+            }
+            // 检查按钮是否已自动进入冷却（Turnstile 自动通过/无需验证）
+            const btnText = await extendBtn.innerText().catch(() => '');
+            if (/cd|wait|loading/i.test(btnText) && !/90|min/i.test(btnText)) {
+                console.log('   >> 按钮已进入冷却，无需 Turnstile');
+                turnstileResolved = true;
+                break;
+            }
+            await page.waitForTimeout(2000);
+            continue;
+        }
+
         const clicked = await attemptTurnstileCdp(page).catch(() => false);
         if (clicked) {
             console.log('   >> ✅ Turnstile 已点击');
+            turnstileResolved = true;
             break;
         }
         // 检查按钮是否自动进入冷却（Turnstile 自动通过的情况）
         const btnText = await extendBtn.innerText().catch(() => '');
-        if (/cd|wait|loading/i.test(btnText) && !/90|min/i.test(btnText)) break;
+        if (/cd|wait|loading/i.test(btnText) && !/90|min/i.test(btnText)) {
+            turnstileResolved = true;
+            break;
+        }
         await page.waitForTimeout(2000);
     }
+    if (!turnstileResolved) console.log('   >> ⚠️ Turnstile 未在超时内解决');
 
     await page.evaluate(() => {
         const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
