@@ -53,8 +53,6 @@ jobs:
         nohup $HOME/v2ray/v2ray run -config $HOME/v2ray/config.json > $HOME/v2ray/v2ray.log 2>&1 &
         for i in $(seq 1 15); do
           if curl -fsS -x http://127.0.0.1:10809 -m 10 https://api.ipify.org > /tmp/proxy_ip 2>/dev/null; then
-            echo "proxy_ok=true" >> $GITHUB_ENV
-            echo "proxy_ip=$(cat /tmp/proxy_ip)" >> $GITHUB_ENV
             echo "代理就绪，出口 IP: $(cat /tmp/proxy_ip)"
             break
           fi
@@ -62,9 +60,9 @@ jobs:
           sleep 2
         done
         if [ ! -s /tmp/proxy_ip ]; then
-          echo "proxy_ok=false" >> $GITHUB_ENV
-          echo "v2ray 启动失败，降级直连。日志如下:"
+          echo "v2ray 启动失败，日志如下:"
           cat $HOME/v2ray/v2ray.log
+          exit 1
         fi
 
     - name: Run FreeMCHost Renew Script
@@ -76,8 +74,7 @@ jobs:
         # KV Admin Worker：缓存登录 cookie，免每次登录
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
-        HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && env.proxy_ok == 'true' && 'http://127.0.0.1:10809' || '' }}
-        PROXY_STATUS: ${{ env.HAS_V2RAY == 'true' && env.proxy_ok == 'true' && '代理: 已就绪' || env.HAS_V2RAY == 'true' && '代理: 已失效 (降级直连)' || '' }}
+        HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
