@@ -330,11 +330,22 @@ async function extendServer(page, serverUrl, photoDir) {
     await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
 
     // Turnstile 验证：点击 +90 min 后 CF 弹窗出现，用 CDP 点击复选框
-    console.log('   >> 等待 Turnstile 弹窗加载...');
-    await page.waitForTimeout(4000); // 先等弹窗出现
+    console.log('   >> 等待 Turnstile 弹窗出现...');
+    await page.waitForTimeout(2000);
+
+    // 主动等 iframe 出现（最多 12 秒）
+    try {
+        await page.waitForSelector('iframe[src*="challenges"], iframe[src*="turnstile"]', { timeout: 12000 });
+        console.log('   >> Turnstile iframe 已出现');
+    } catch (e) {
+        console.log('   >> Turnstile iframe 未出现（可能已自动通过或未触发）');
+    }
 
     let turnstileResolved = false;
-    for (let t = 0; t < 25; t++) {
+    let cdpAlreadyClicked = false;
+    let turnstileFailed = false;
+
+    for (let t = 0; t < 20; t++) {
         // 清除遮罩
         await page.evaluate(() => {
             const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
@@ -344,56 +355,59 @@ async function extendServer(page, serverUrl, photoDir) {
             }
         }).catch(() => {});
 
-        // 1. CDP 点击 Turnstile 复选框
-        const cdpOk = await attemptTurnstileCdp(page);
-        if (cdpOk) {
-            console.log('   >> ✅ CDP 已点击 Turnstile 复选框');
-            await page.waitForTimeout(3000);
-            // 等 Cloudflare 校验完成（再等几秒让 token 生成）
-            for (let w = 0; w < 10; w++) {
-                const curBtnText = await extendBtn.innerText().catch(() => '');
-                if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
-                    console.log('   >> ✅ Turnstile 验证通过，按钮进入冷却');
-                    turnstileResolved = true;
-                    break;
-                }
-                // 检查 iframe 是否消失
-                const hasIframe = await page.evaluate(() =>
-                    Array.from(document.querySelectorAll('iframe')).some(f =>
-                        /turnstile|challenges\.cloudflare/i.test(f.src || '') && f.offsetWidth > 30)
-                ).catch(() => true);
-                if (!hasIframe) {
-                    console.log('   >> ✅ Turnstile iframe 已消失');
-                    turnstileResolved = true;
-                    break;
-                }
-                await page.waitForTimeout(2000);
-            }
-            if (turnstileResolved) break;
-        }
-
-        // 2. 检查按钮是否已进入冷却（可能自动通过了）
+        // 1. 先检查按钮状态
         const curBtnText = await extendBtn.innerText().catch(() => '');
-        if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
-            console.log('   >> ✅ Turnstile 验证通过（按钮冷却）');
+        const btnCooling = /cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText);
+
+        if (btnCooling) {
+            console.log('   >> ✅ Turnstile 验证通过（按钮进入冷却）');
             turnstileResolved = true;
             break;
         }
 
-        // 3. 检查 iframe 是否消失
+        // 2. CDP 点击复选框（仅在尚未成功点击过时尝试）
+        if (!cdpAlreadyClicked) {
+            const cdpOk = await attemptTurnstileCdp(page);
+            if (cdpOk) {
+                cdpAlreadyClicked = true;
+                console.log('   >> ✅ CDP 已点击 Turnstile 复选框，等候验证...');
+                await page.waitForTimeout(2000);
+                continue; // 马上再检查按钮状态
+            }
+        }
+
+        // 3. 如果已点击过 CDP，等几秒看是否生效
+        if (cdpAlreadyClicked) {
+            await page.waitForTimeout(2000);
+            // 下一轮会检查按钮冷却状态
+            continue;
+        }
+
+        // 4. 检查 iframe 是否还在（未点击时 iframe 消失 = 弹窗超时）
         const hasIframe = await page.evaluate(() =>
             Array.from(document.querySelectorAll('iframe')).some(f =>
                 /turnstile|challenges\.cloudflare/i.test(f.src || '') && f.offsetWidth > 30)
         ).catch(() => true);
         if (!hasIframe) {
-            console.log('   >> ✅ Turnstile iframe 已消失');
-            turnstileResolved = true;
-            break;
+            if (t >= 2) {
+                // iframe 在几轮内都找不到 → Turnstile 已超时消失
+                console.log('   >> ⚠️ Turnstile 弹窗已超时消失，未完成验证');
+                turnstileFailed = true;
+                break;
+            }
+            // 刚开始几轮可能还没加载完，再等等
+            await page.waitForTimeout(1500);
+            continue;
         }
 
         await page.waitForTimeout(2000);
     }
-    if (!turnstileResolved) console.log('   >> ⚠️ Turnstile 未在超时内解决');
+
+    if (turnstileFailed) {
+        console.log('   >> ⚠️ Turnstile 超时未通过，续时可能未生效');
+    } else if (!turnstileResolved) {
+        console.log('   >> ⚠️ Turnstile 在超时内未解决');
+    }
 
     await page.evaluate(() => {
         const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
