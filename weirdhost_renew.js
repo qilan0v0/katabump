@@ -333,8 +333,13 @@ async function attemptTurnstileCdp(page) {
                 const clickY = box.y + (box.height * data.yRatio);
                 console.log(`>> 计算点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
                 const client = await page.context().newCDPSession(page);
+                // 1. 先移动鼠标到复选框上（Cloudflare 需要 mouseover 前置事件）
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: clickX, y: clickY });
+                await new Promise(r => setTimeout(r, 100 + Math.random() * 150));
+                // 2. mousePressed
                 await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                await new Promise(r => setTimeout(r, 80 + Math.random() * 120));
+                // 3. mouseReleased
                 await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
                 console.log('>> CDP 点击已发送。');
                 await client.detach();
@@ -539,25 +544,35 @@ async function renewServer(page, user, serverUrl, photoDir) {
     catch (e) { console.log('   >> 点击续期失败:', e.message); }
     await page.waitForTimeout(2000);
 
-    // 点击后续期框下方会内联弹出 Cloudflare Turnstile("Verifying...")，需等它加载并验证通过，续期才生效。
-    // 持续轮询(最多 ~40 秒)：边尝试点 Turnstile 复选框，边检测续期是否完成。
+    // === Turnstile 验证 + 续期生效 合并循环 ===
+    // 点击后续期框下方会内联弹出 Cloudflare Turnstile，需 CDP 点击复选框完成验证，然后等续期生效
+    console.log(`   >> [${sid}] 等待 Turnstile 验证 + 续期生效...`);
+
     let after = snap;
     let done = false;
-    for (let c = 0; c < 20; c++) {
-        await _race(attemptTurnstileCdp(page), 8000).catch(() => false); // 有复选框就点，没有则空过
-        await page.waitForTimeout(2000);
+    const expiryDtOld = expiryDt;
+    for (let c = 0; c < 40; c++) {
         after = await readRenewBox(page);
         // 续期完成判定：按钮变禁用 / 到期时间往后变了 / 状态变成冷却("후에")
-        done = after.disabled || (after.expiryDt && after.expiryDt !== expiryDt) || /후에/.test(after.status);
-        if (done) { console.log(`   >> [${sid}] 续期已生效 (第 ${c + 1} 轮)`); break; }
+        done = after.disabled || (after.expiryDt && after.expiryDt !== expiryDtOld) || /후에/.test(after.status);
+        if (done) { console.log(`   >> [${sid}] ✅ 续期已生效 (第 ${c + 1} 轮)`); break; }
+
+        // CDP 点击 Turnstile 复选框（每轮都尝试，点击后 checkbox 可能消失再出现）
+        const cdpOk = await _race(attemptTurnstileCdp(page), 8000).catch(() => false);
+        if (cdpOk) {
+            console.log(`   >> [${sid}] ✅ CDP 已点击 Turnstile 复选框，等 Cloudflare 验证...`);
+            // 点击后等久一点让 CF 处理，但不要 continue（让后续轮次继续检测状态或重试）
+            await page.waitForTimeout(4000);
+        } else {
+            await page.waitForTimeout(2000);
+        }
     }
 
     const newExpiry = after.expiryDt || expiryDt;
     const newExpiryLine = newExpiry ? `到期: ${newExpiry}` : '';
     const afterStatusLine = after.status ? `状态: ${after.status}` : '';
-    const ok = done;
     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-    if (ok) {
+    if (done) {
         console.log(`   >> [${sid}] ✅ 续期成功。到期: ${newExpiry}`);
         return { status: 'success', message: newExpiryLine, shot };
     }
