@@ -616,6 +616,28 @@ async function extendServer(page, serverUrl, photoDir) {
     // 点击续时
     console.log('   >> 点击 +90 min...');
 
+    // === 诊断：监听网络请求 + 控制台 + 页面错误 ===
+    const reqLog = [];
+    const consoleLog = [];
+    const onReq = (req) => {
+        const u = req.url();
+        const m = req.method();
+        if (m !== 'GET' && /control\.gaming4free|\/server\/|renew|extend|claim|free/i.test(u)) {
+            reqLog.push(m + ' ' + u);
+        }
+    };
+    const onConsole = (msg) => {
+        const type = msg.type();
+        if (type === 'error' || type === 'warning') {
+            const t = msg.text();
+            if (t && !/favicon|google-analytics|gtag|tracking/i.test(t)) consoleLog.push(type + ': ' + t.slice(0, 200));
+        }
+    };
+    const onPageError = (err) => { consoleLog.push('pageerror: ' + (err.message || String(err)).slice(0, 200)); };
+    page.on('request', onReq);
+    page.on('console', onConsole);
+    page.on('pageerror', onPageError);
+
     // 关键：必须用普通点击（非 force）触发 Alpine.js 事件 → Turnstile 弹窗才会出现
     // 改进：先用 JS 移除所有可能的遮罩层，再通过 DOM dispatchEvent 点击按钮
     for (let r = 0; r < 3; r++) {
