@@ -419,9 +419,9 @@ async function extendServer(page, serverUrl, photoDir) {
     const browser = await launch(launchOpts);
     console.log('[CloakBrowser] 启动成功');
 
-    const context = browser.contexts()[0];
-    let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
+    const page = await browser.newPage();
     page.setDefaultTimeout(60000);
+    const context = page.context();
 
     const photoDir = path.join(process.cwd(), 'screenshots');
     if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
@@ -441,7 +441,7 @@ async function extendServer(page, serverUrl, photoDir) {
         if (cookieStr) {
             try {
                 const cks = normalizeCookies(JSON.parse(cookieStr));
-                try { await context.clearCookies(); } catch (e) {}
+                await context.clearCookies().catch(() => {});
                 await context.addCookies(cks);
                 console.log('   >> [' + safeUser + '] 已注入 cookie (' + cks.length + ' 条)');
             } catch (e) {
