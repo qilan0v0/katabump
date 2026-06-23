@@ -718,24 +718,47 @@ async function extendServer(page, serverUrl, photoDir) {
             });
         }).catch(() => {});
 
-        // 先检查 Turnstile iframe 是否已出现在 DOM 中
-        const iframePresent = await page.evaluate(() => {
+        // 先检查 Turnstile iframe / 容器 是否已出现（放宽匹配 + 诊断 + 重点击）
+        const probe = await page.evaluate(() => {
+            const result = { hasIframe: false, hasContainer: false, iframes: [], containers: [] };
             const ifrs = Array.from(document.querySelectorAll('iframe'));
-            return ifrs.some(f => {
-                const s = ((f.src || '') + ' ' + (f.id || '') + ' ' + (f.className || '')).toLowerCase();
-                if (!/turnstile|challenges\.cloudflare|cf-chl|cf-turnstile/.test(s)) return false;
+            for (const f of ifrs) {
+                const src = (f.src || '').toLowerCase();
+                const id = (f.id || '').toLowerCase();
+                const cls = (f.className || '').toLowerCase();
+                const name = (f.getAttribute('name') || '').toLowerCase();
+                const title = (f.getAttribute('title') || '').toLowerCase();
+                const combined = src + ' ' + id + ' ' + cls + ' ' + name + ' ' + title;
                 const r = f.getBoundingClientRect();
-                return r.width >= 50 && r.height >= 30;
-            });
-        }).catch(() => false);
+                const matches = /turnstile|challenges\.cloudflare|cf-chl|cf-turnstile|cf-chl-widget/.test(combined);
+                if (matches && r.width >= 30 && r.height >= 20) result.hasIframe = true;
+                result.iframes.push({ src: f.src || '', id: f.id || '', cls: f.className || '', name: f.getAttribute('name') || '', title: f.getAttribute('title') || '', w: Math.round(r.width), h: Math.round(r.height), matches });
+            }
+            const containers = Array.from(document.querySelectorAll('.cf-turnstile, [data-sitekey], div[id*="turnstile" i], div[class*="turnstile" i]'));
+            for (const c of containers) {
+                const r = c.getBoundingClientRect();
+                if (r.width >= 30 && r.height >= 20) result.hasContainer = true;
+                result.containers.push({ tag: c.tagName, id: c.id, cls: c.className, sitekey: c.getAttribute('data-sitekey') || '', w: Math.round(r.width), h: Math.round(r.height) });
+            }
+            return result;
+        }).catch(() => ({ hasIframe: false, hasContainer: false, iframes: [], containers: [] }));
+
+        const iframePresent = probe.hasIframe || probe.hasContainer;
 
         if (!iframePresent) {
-            // 前两轮给 iframe 多一点时间出现
             if (t < 2) {
                 await page.waitForTimeout(2500);
                 continue;
             }
-            // 检查按钮是否已自动进入冷却（Turnstile 自动通过/无需验证）
+            if (t === 2) {
+                console.log('   >> 诊断: iframe 数=' + probe.iframes.length + ' container 数=' + probe.containers.length);
+                for (const f of probe.iframes) console.log('      iframe: ' + JSON.stringify(f).slice(0, 240));
+                for (const c of probe.containers) console.log('      container: ' + JSON.stringify(c).slice(0, 240));
+                console.log('   >> 未检测到 Turnstile，重新点击 +90 min 按钮...');
+                await extendBtn.click({ force: true, timeout: 3000 }).catch(() => {});
+                await page.waitForTimeout(2500);
+                continue;
+            }
             const btnText = await extendBtn.innerText().catch(() => '');
             if (/cd|wait|loading/i.test(btnText) && !/90|min/i.test(btnText)) {
                 console.log('   >> 按钮已进入冷却，无需 Turnstile');
