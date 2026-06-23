@@ -308,10 +308,11 @@ async function extendServer(page, serverUrl, photoDir) {
             }
         }).catch(() => {});
 
-        // 1. 等待 Turnstile 复选框出现并点击它（CloakBrowser 确保点击有效）
-        const turnstileCheckbox = page.locator('iframe[src*="turnstile"], iframe[src*="challenges"]').first().locator('input[type="checkbox"], [role="checkbox"]').first();
-        if (await turnstileCheckbox.isVisible({ timeout: 1500 }).catch(() => false)) {
-            try { await turnstileCheckbox.click({ timeout: 2000 }); } catch (e) {}
+        // 1. 通过 frameLocator 跨域访问 Turnstile iframe 内部并点击复选框
+        const turnstileFrame = page.frameLocator('iframe[src*="challenges"], iframe[src*="turnstile"]').first();
+        const tsCheckbox = turnstileFrame.locator('[role="checkbox"], input[type="checkbox"]').first();
+        if (await tsCheckbox.isVisible({ timeout: 1500 }).catch(() => false)) {
+            try { await tsCheckbox.click({ timeout: 2000 }); } catch (e) {}
             console.log('   >> 点击 Turnstile 复选框');
             await page.waitForTimeout(2000);
         }
