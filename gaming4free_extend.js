@@ -371,16 +371,15 @@ async function extendServer(page, serverUrl, photoDir) {
             break;
         }
 
-        // 3. CDP 点击 Turnstile 复选框（每轮至多试一次）
+        // 3. CDP 点击 Turnstile 复选框
         const cdpOk = await attemptTurnstileCdp(page);
         if (cdpOk) {
             console.log('   >> ✅ CDP 已点击 Turnstile 复选框，等 Cloudflare 验证...');
-            // 点击后等久一点让 CF 处理
-            await page.waitForTimeout(5000);
-            continue;
+            // 点击后等久一点让 CF 处理，但不要 continue（让后续轮次继续检测状态或重试）
+            await page.waitForTimeout(4000);
+        } else {
+            await page.waitForTimeout(2000);
         }
-
-        await page.waitForTimeout(2000);
     }
 
     if (extendOk) {
