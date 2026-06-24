@@ -1,7 +1,7 @@
 // 69云 (ewirjijiji11.337979.xyz) 每日签到 —— 默认使用 API，失败则浏览器模拟
 // 流程: API: POST /auth/login → 获取 cookie → POST /uuid/user/checkin
 //       失败: Playwright 浏览器: 打开登录页 → 填邮箱/密码 → 点登录 → 点每日签到
-// 账号来源: Secret 69YUN_USERS_JSON = [{"username":"xxx@qq.com","password":"xxx"}]
+// 账号来源: Secret YUN69_USERS_JSON = [{"username":"xxx@qq.com","password":"xxx"}]
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const axios = require('axios');
@@ -701,21 +701,21 @@ async function browserCheckin(user) {
 (async () => {
     let users = [];
     try {
-        if (process.env['69YUN_USERS_JSON']) {
-            const parsed = JSON.parse(process.env['69YUN_USERS_JSON']);
+        if (process.env['YUN69_USERS_JSON']) {
+            const parsed = JSON.parse(process.env['YUN69_USERS_JSON']);
             users = Array.isArray(parsed) ? parsed : (parsed.users || []);
         }
     } catch (e) {
-        console.error('解析 69YUN_USERS_JSON 环境变量错误:', e);
+        console.error('解析 YUN69_USERS_JSON 环境变量错误:', e);
     }
 
     // 也支持直接通过环境变量传入单个账号
-    if (users.length === 0 && process.env['69YUN_USER'] && process.env['69YUN_PASS']) {
-        users = [{ username: process.env['69YUN_USER'], password: process.env['69YUN_PASS'] }];
+    if (users.length === 0 && process.env['YUN69_USER'] && process.env['YUN69_PASS']) {
+        users = [{ username: process.env['YUN69_USER'], password: process.env['YUN69_PASS'] }];
     }
 
     if (users.length === 0) {
-        console.log('未在 69YUN_USERS_JSON 或 69YUN_USER/69YUN_PASS 中找到用户');
+        console.log('未在 YUN69_USERS_JSON 或 YUN69_USER/YUN69_PASS 中找到用户');
         process.exit(1);
     }
 
