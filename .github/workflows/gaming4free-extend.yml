@@ -1,9 +1,6 @@
 name: Gaming4Free Server Extend
 
 on:
-  schedule:
-    # 每 5 分钟运行一次 (+90 min)
-    - cron: '*/5 * * * *'
   workflow_dispatch: # 手动触发
   repository_dispatch: # 支持通过 API 触发
 
