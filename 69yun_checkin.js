@@ -597,10 +597,12 @@ async function browserCheckin(user) {
             const loginBtn = page.locator('button:has-text("登录")').first();
             // 同时监听页面跳转
             const navPromise = page.waitForURL('**/uuid/user', { timeout: 20000 }).catch(() => {});
+            // 优先正常点击，失败则 force 点击（可能有弹窗遮挡）
             try {
-                await loginBtn.click();
+                await loginBtn.click({ timeout: 5000 });
             } catch (e) {
-                await page.locator('button[type="submit"]').first().click().catch(() => {});
+                console.log('   >> 正常点击失败，尝试 force 点击:', e.message.slice(0, 80));
+                await loginBtn.click({ force: true, timeout: 5000 }).catch(() => {});
             }
 
             // 等待登录完成（跳转到用户中心即成功）
