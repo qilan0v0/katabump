@@ -67,12 +67,12 @@ jobs:
     - name: Run Check-in Script
       env:
         # 69YUN_USERS_JSON = [{"username":"xxx@qq.com","password":"xxx"}, ...]
-        69YUN_USERS_JSON: ${{ secrets.69YUN_USERS_JSON }}
-        69YUN_USER: ${{ secrets.69YUN_USER }}
-        69YUN_PASS: ${{ secrets.69YUN_PASS }}
+        69YUN_USERS_JSON: ${{ secrets['69YUN_USERS_JSON'] }}
+        69YUN_USER: ${{ secrets['69YUN_USER'] }}
+        69YUN_PASS: ${{ secrets['69YUN_PASS'] }}
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
-        HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
+        HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets['HTTP_PROXY'] }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
