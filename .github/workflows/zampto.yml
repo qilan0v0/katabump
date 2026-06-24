@@ -41,12 +41,23 @@ jobs:
         chmod +x v2ray
         ./v2ray version
 
+    - name: Install hysteria2
+      run: |
+        mkdir -p $HOME/hysteria2
+        cd $HOME/hysteria2
+        HY2_URL=$(curl -fsSL https://api.github.com/repos/apernet/hysteria/releases/latest \
+          | grep "browser_download_url" | grep 'hysteria-linux-amd64"' | cut -d '"' -f 4 | head -1)
+        echo "下载 hysteria2: $HY2_URL"
+        curl -fsSL -o hysteria "$HY2_URL"
+        chmod +x hysteria
+        ./hysteria version
+
     - name: Run Zampto Renew Script
       env:
         PROJECT_NAME: Zampto
         # Secret ZAMPTO_USERS_JSON 格式:
-        # [{"username":"xxx","password":"xxx","serverUrl":"https://...","proxy":"vmess://..."}]
-        # 每个用户可通过 proxy 字段指定自己的代理节点，脚本自动启停
+        # [{"username":"xxx","password":"xxx","serverUrl":"https://...","proxy":"vmess://...","h2":"hysteria2://..."}]
+        # 每个用户可通过 proxy 字段指定自己的 vmess/vless 代理节点, 或通过 h2 字段指定 hysteria2 节点 (h2 优先级更高)
         ZAMPTO_USERS_JSON: ${{ secrets.ZAMPTO_USERS_JSON }}
         # KV Admin Worker：缓存登录 cookie，免每次登录
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
@@ -54,6 +65,7 @@ jobs:
         # 全局回退代理（用户未配置 vmess 时使用）
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         V2RAY_BIN: ${{ format('{0}/v2ray/v2ray', env.HOME) }}
+        HYSTERIA2_BIN: ${{ format('{0}/hysteria2/hysteria', env.HOME) }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}

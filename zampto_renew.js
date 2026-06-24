@@ -2,10 +2,12 @@
 // 流程: 打开登录页 → 输邮箱点继续 → 输密码点登录 → 登录成功
 //       → 打开配置的 serverUrl → 点续期按钮
 // 账号来源: Secret ZAMPTO_USERS_JSON =
-//   [{"username":"a@b.com","password":"pwd","serverUrl":"https://...","proxy":"vmess://..."}]
+//   [{"username":"a@b.com","password":"pwd","serverUrl":"https://...","proxy":"vmess://...","h2":"hysteria2://..."}]
 //   proxy 字段可选: 每个用户可带自己的 vmess:// / vless:// 分享链接, 脚本会为其
 //   启动独立的本地 v2ray 实例并让该用户的浏览器走它; 不带 proxy 的用户回退到
 //   全局 HTTP_PROXY (workflow 用 V2RAY_VMESS 启动的 127.0.0.1:10809)。
+//   h2 字段可选: 每个用户可带自己的 hysteria2:// 分享链接, 脚本会为其启动独立的
+//   本地 hysteria2 实例并让该用户的浏览器走它; h2 优先级高于 proxy。
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const axios = require('axios');
@@ -15,6 +17,7 @@ const { spawn, exec } = require('child_process');
 const http = require('http');
 const net = require('net');
 const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
+const { buildConfig: buildH2Config } = require('./.github/scripts/gen-hysteria2-config');
 
 const LOGIN_URL = 'https://auth.zampto.net/sign-in';
 
@@ -51,10 +54,14 @@ const INJECTED_SCRIPT = `
 // --- Per-user v2ray 进程管理 ---
 // 每个不同的 proxy 分享链接 → 一个独立 v2ray 实例, 本地 HTTP 端口从 10810 起递增。
 const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
+const HYSTERIA2_BIN = process.env.HYSTERIA2_BIN || `${process.env.HOME}/hysteria2/hysteria`;
 const PER_USER_PROXY_BASE_PORT = 10810;
 const v2rayProcs = [];        // 已启动的 { proc, port, link } 列表, 退出时统一清理
 const v2rayByLink = new Map(); // link → 本地 http 代理 url (复用同一链接的实例)
 let nextProxyPort = PER_USER_PROXY_BASE_PORT;
+
+const hysteria2Procs = [];        // 已启动的 { proc, port, link } 列表
+const hysteria2ByLink = new Map(); // link → 本地 socks5 代理 url (复用同一链接的实例)
 
 function waitProxyReady(port, tries = 15) {
     return new Promise((resolve) => {
@@ -110,10 +117,53 @@ async function startV2rayForLink(link) {
     return url;
 }
 
+// 为某个 hysteria2 分享链接启动本地客户端, 返回本地 socks5 代理 url。
+// hysteria2 原生支持通过 SOCKS5 出站，返回 socks5://127.0.0.1:port。
+async function startHysteria2ForLink(link) {
+    if (hysteria2ByLink.has(link)) return hysteria2ByLink.get(link);
+    if (!fs.existsSync(HYSTERIA2_BIN)) {
+        console.error(`[hysteria2] 未找到 hysteria2 二进制 (${HYSTERIA2_BIN})，无法为用户启动专属代理。`);
+        return null;
+    }
+    const port = nextProxyPort++;
+    let cfgPath;
+    try {
+        const cfg = buildH2Config(link, port);
+        cfgPath = path.join(process.cwd(), `hysteria2-user-${port}.json`);
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+    } catch (e) {
+        console.error(`[hysteria2] 解析用户 h2 链接失败: ${e.message}`);
+        return null;
+    }
+    console.log(`[hysteria2] 为用户代理启动实例 (SOCKS5 端口 ${port})...`);
+    const proc = spawn(HYSTERIA2_BIN, ['-c', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
+    hysteria2Procs.push({ proc, port, link });
+    // 等待 SOCKS5 端口就绪
+    const ready = await waitProxyReady(port);
+    if (!ready) {
+        console.error(`[hysteria2] SOCKS5 端口 ${port} 未就绪。stderr 末尾:\n${stderr.slice(-400)}`);
+        return null;
+    }
+    const url = `socks5://127.0.0.1:${port}`;
+    hysteria2ByLink.set(link, url);
+    console.log(`[hysteria2] 用户代理就绪: ${url}`);
+    return url;
+}
+
 function stopAllV2ray() {
     for (const { proc, port } of v2rayProcs) {
         try { process.kill(-proc.pid); } catch (e) { try { proc.kill(); } catch (e2) { } }
         try { fs.unlinkSync(path.join(process.cwd(), `v2ray-user-${port}.json`)); } catch (e) { }
+    }
+}
+
+function stopAllHysteria2() {
+    for (const { proc, port } of hysteria2Procs) {
+        try { process.kill(-proc.pid); } catch (e) { try { proc.kill(); } catch (e2) { } }
+        try { fs.unlinkSync(path.join(process.cwd(), `hysteria2-user-${port}.json`)); } catch (e) { }
     }
 }
 
@@ -597,11 +647,26 @@ async function loginOnce(page, user) {
 }
 
 // 解析每个用户应使用的代理:
+//   h2 = hysteria2://...               → 为其启动 per-user hysteria2 (本地 socks5), 优先级最高
 //   proxy = http(s)://... 或 socks5:// → 直接用该代理，不启 v2ray
 //   proxy = vmess:// / vless://       → 为其启动 per-user v2ray (本地 http url)
-//   不带 proxy                        → 回退到全局 HTTP_PROXY
+//   不带 proxy 也不带 h2               → 回退到全局 HTTP_PROXY
 // 返回 { config, label } (config 为 null 表示直连)
 async function resolveUserProxy(user) {
+    // h2 (hysteria2) 优先级最高
+    if (user.h2 && typeof user.h2 === 'string' && user.h2.trim()) {
+        const link = user.h2.trim();
+        if (link.startsWith('hysteria2://')) {
+            const localUrl = await startHysteria2ForLink(link);
+            if (localUrl) {
+                const cfg = parseProxyUrl(localUrl);
+                return { config: cfg, label: `专属 hysteria2 (${localUrl})` };
+            }
+            console.warn(`   >> 用户 h2 代理启动失败，回退到 proxy/全局代理。`);
+        } else {
+            console.warn(`   >> h2 字段不是 hysteria2:// 链接，忽略。`);
+        }
+    }
     if (user.proxy && typeof user.proxy === 'string' && user.proxy.trim()) {
         const link = user.proxy.trim();
         // http(s):// 或 socks5:// → 直接解析，不走 v2ray
@@ -859,6 +924,7 @@ async function processUser(context, page, user, photoDir) {
         await browser.close();
     }
 
+    stopAllHysteria2();
     stopAllV2ray();
     for (const r of socksRelays) r.close();
     console.log('完成。');
