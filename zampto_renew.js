@@ -557,7 +557,9 @@ async function launchChrome(proxyConfig) {
 function getUsers() {
     try {
         if (process.env.ZAMPTO_USERS_JSON) {
-            const parsed = JSON.parse(process.env.ZAMPTO_USERS_JSON);
+            // 清除字符串中的控制字符（如换行），GitHub Secrets 粘贴多行时容易带入
+            const raw = process.env.ZAMPTO_USERS_JSON.replace(/[\x00-\x1f]/g, '');
+            const parsed = JSON.parse(raw);
             return Array.isArray(parsed) ? parsed : (parsed.users || []);
         }
     } catch (e) {

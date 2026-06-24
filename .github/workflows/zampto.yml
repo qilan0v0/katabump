@@ -64,8 +64,6 @@ jobs:
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         # 全局回退代理（用户未配置 vmess 时使用）
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
-        V2RAY_BIN: ${{ format('{0}/v2ray/v2ray', env.HOME) }}
-        HYSTERIA2_BIN: ${{ format('{0}/hysteria2/hysteria', env.HOME) }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
