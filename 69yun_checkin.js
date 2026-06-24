@@ -142,11 +142,12 @@ async function apiCheckin(user) {
             });
             const data = checkinResp.data;
             console.log(`[API] 缓存 cookie 签到响应:`, JSON.stringify(data));
-            if (data && data.ret === 1) {
+            if (data && (data.ret === 1 || (data.ret === 0 && data.msg && data.msg.includes('已经签到')))) {
                 const ti = data.trafficInfo || {};
                 console.log(`[API] ✅ 使用缓存 cookie 签到成功`);
                 return {
                     success: true, msg: data.msg, reward: data.traffic || '', cached: true,
+                    already: data.ret === 0,
                     unUsedTraffic: ti.unUsedTraffic || '',
                     todayUsedTraffic: ti.todayUsedTraffic || '',
                     lastUsedTraffic: ti.lastUsedTraffic || '',
@@ -238,12 +239,13 @@ async function apiCheckin(user) {
     const data = checkinResp.data;
     console.log(`[API] 签到结果:`, JSON.stringify(data));
 
-    if (data && data.ret === 1) {
-        // 保存 cookie 到 KV
+    if (data && (data.ret === 1 || (data.ret === 0 && data.msg && data.msg.includes('已经签到')))) {
+        // 保存 cookie 到 KV（即使已签到也保存，下次直接用CK查状态）
         await kvPut(cookieKey, cookieString);
         const ti = data.trafficInfo || {};
         return {
             success: true,
+            already: data.ret === 0,
             msg: data.msg,
             reward: data.traffic || '',
             unUsedTraffic: ti.unUsedTraffic || '',
@@ -593,15 +595,19 @@ async function browserCheckin(user) {
             // 点击登录
             console.log('点击登录按钮...');
             const loginBtn = page.locator('button:has-text("登录")').first();
+            // 同时监听页面跳转
+            const navPromise = page.waitForURL('**/uuid/user', { timeout: 20000 }).catch(() => {});
             try {
                 await loginBtn.click();
             } catch (e) {
-                await page.locator('button[type="submit"]').first().click();
+                await page.locator('button[type="submit"]').first().click().catch(() => {});
             }
 
-            // 等待登录完成
-            for (let s = 0; s < 20; s++) {
-                await page.waitForTimeout(1000);
+            // 等待登录完成（跳转到用户中心即成功）
+            await navPromise;
+
+            for (let s = 0; s < 15; s++) {
+                await page.waitForTimeout(1500);
                 if (!page.url().includes('/auth/login')) { loggedIn = true; break; }
                 const errVisible = await page.getByText(/invalid|incorrect|wrong|failed|error/i)
                     .first().isVisible().catch(() => false);
@@ -728,12 +734,13 @@ async function browserCheckin(user) {
         try {
             const result = await apiCheckin(user);
             const mode = result.cached ? ' (缓存CK)' : '';
+            const alreadyTag = result.already ? ' (已签到)' : '';
             const trafficLine = result.unUsedTraffic
                 ? `\n剩余流量: ${result.unUsedTraffic} | 今日已用: ${result.todayUsedTraffic || '0B'}`
                 : result.reward ? `\n获得流量: ${result.reward}` : '';
-            console.log(`✅ API 签到成功${mode}: ${result.msg}`);
+            console.log(`✅ API 签到成功${mode}${alreadyTag}: ${result.msg}`);
             await sendTelegramMessage(
-                `✅ *69云签到成功 (API${mode})*\n用户: ${user.username}${trafficLine}\n${result.msg}`
+                `✅ *69云签到 (API${mode}${alreadyTag})*\n用户: ${user.username}${trafficLine}`
             );
             apiSuccess = true;
         } catch (apiErr) {
