@@ -8,10 +8,22 @@
     },
     "dependencies": {
         "axios": "^1.13.4",
-        "playwright": "^1.40.0",
+        "cloakbrowser": "^0.4.0",
+        "playwright": "^1.49.0",
         "playwright-core": "^1.40.0",
         "playwright-extra": "^4.3.0",
-        "puppeteer-extra-plugin-stealth": "^2.11.0",
-        "cloakbrowser": "^0.4.0"
-    }
+        "puppeteer-extra-plugin-stealth": "^2.11.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/qilan0v0/katabump.git"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "type": "commonjs",
+    "bugs": {
+        "url": "https://github.com/qilan0v0/katabump/issues"
+    },
+    "homepage": "https://github.com/qilan0v0/katabump#readme"
 }
