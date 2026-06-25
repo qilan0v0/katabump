@@ -4,19 +4,24 @@
  *
  * 自动登录 EpicHost.pl 面板并续期免费服务器（每次续期 +4 小时，每 4 小时可续一次）
  *
+ * 依赖: system Chrome/Chromium (Ubuntu: sudo apt install google-chrome-stable)
+ *        npm install playwright
+ *
  * 账号来源: Secret EPICHOST_USERS_JSON =
  *   [{"username":"ql@282820.xyz","password":"qilan123A.","serverUrl":"https://panel.epichost.pl/server/66d97cd5"}]
  *
- * 依赖: npm install playwright
  * 运行: node renew_epichost.js
  */
 
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
 const { exec } = require("child_process");
 
 const PANEL_URL = "https://panel.epichost.pl";
+const CHROME_PATH = process.env.CHROME_PATH || "/usr/bin/google-chrome";
+const DEBUG_PORT = 9222;
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
@@ -76,33 +81,51 @@ async function resolveFullUuid(page, shortUuid) {
 
 // ===================== 浏览器工具 =====================
 
-async function findChromium() {
-  const candidates = [
-    path.join(process.env.LOCALAPPDATA || process.env.HOME || ".", "ms-playwright"),
-    path.join(process.env.HOME || ".", ".cache", "ms-playwright"),
-    path.join(process.env.HOME || ".", "Library", "Caches", "ms-playwright"),
-  ];
-  if (process.env.USERPROFILE)
-    candidates.push(path.join(process.env.USERPROFILE, "AppData", "Local", "ms-playwright"));
+const http = require("http");
 
-  for (const base of candidates) {
-    try {
-      const entries = fs.readdirSync(base);
-      const chromeDirs = entries
-        .filter((e) => e.startsWith("chromium") && !e.includes("headless_shell") && !e.startsWith("mcp-"))
-        .sort().reverse();
-      for (const dir of chromeDirs) {
-        for (const exe of [
-          path.join(base, dir, "chrome-win64/chrome.exe"),
-          path.join(base, dir, "chrome-linux/chrome"),
-          path.join(base, dir, "chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
-        ]) {
-          if (fs.existsSync(exe)) return exe;
-        }
-      }
-    } catch { /* ignore */ }
+function checkPort(port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/json/version`, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => resolve(true));
+    });
+    req.on("error", () => resolve(false));
+    req.setTimeout(2000, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function launchChrome() {
+  console.log(`  启动 Chrome (${CHROME_PATH})...`);
+  if (await checkPort(DEBUG_PORT)) {
+    console.log("  Chrome 已在运行");
+    return;
   }
-  return undefined;
+  const args = [
+    `--remote-debugging-port=${DEBUG_PORT}`,
+    "--remote-debugging-address=127.0.0.1",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-gpu",
+    "--window-size=1280,720",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--user-data-dir=/tmp/chrome_user_data_epichost",
+  ];
+  const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: ["ignore", "ignore", "pipe"] });
+  chrome.unref();
+  for (let i = 0; i < 40; i++) {
+    if (await checkPort(DEBUG_PORT)) {
+      console.log("  Chrome 已就绪");
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error("Chrome 启动失败");
 }
 
 async function gotoWithRetry(page, url, retries = 3) {
@@ -439,11 +462,9 @@ async function sendTelegramPhoto(text, imagePath) {
   const startTime = new Date();
   console.log(`\n[${startTime.toISOString()}] 🚀 EpicHost 续期脚本 — ${users.length} 个用户`);
 
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: await findChromium(),
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  await launchChrome();
+
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${DEBUG_PORT}`);
 
   const photoDir = path.join(__dirname, "screenshots");
   fs.mkdirSync(photoDir, { recursive: true });
