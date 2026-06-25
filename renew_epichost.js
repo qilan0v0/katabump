@@ -20,11 +20,11 @@
  */
 
 const { chromium } = require("playwright");
+const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 const { spawn, exec } = require("child_process");
 const http = require("http");
-const https = require("https");
 
 const PANEL_URL = "https://panel.epichost.pl";
 const CHROME_PATH = process.env.CHROME_PATH || "/usr/bin/google-chrome";
@@ -47,16 +47,20 @@ process.env.NO_PROXY = "localhost,127.0.0.1";
 async function kvGet(key) {
   if (!KV_ENABLED) return null;
   try {
-    const url = new URL(KV_ADMIN_URL);
-    url.searchParams.set("key", key);
-    const resp = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${KV_ADMIN_PASS}` },
+    const r = await axios.post(KV_ADMIN_URL + "/api/get", { key }, {
+      headers: { "X-Admin-Pass": KV_ADMIN_PASS, "Content-Type": "application/json" },
+      timeout: 15000,
+      proxy: false,
     });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data.value || null;
+    if (r.data.ok && r.data.value != null) {
+      console.log("[KV] 读取成功，长度:", String(r.data.value).length);
+      return typeof r.data.value === "string" ? r.data.value : JSON.stringify(r.data.value);
+    }
+    console.log("[KV] 暂无已存 cookie");
+    return null;
   } catch (e) {
-    console.warn(`[KV] 读取失败: ${e.message}`);
+    if (e.response && e.response.status === 404) { console.log("[KV] 暂无已存 cookie"); return null; }
+    console.warn("[KV] 读取失败:", e.message);
     return null;
   }
 }
@@ -64,17 +68,15 @@ async function kvGet(key) {
 async function kvSet(key, value) {
   if (!KV_ENABLED) return false;
   try {
-    const resp = await fetch(KV_ADMIN_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${KV_ADMIN_PASS}`,
-      },
-      body: JSON.stringify({ key, value }),
+    await axios.post(KV_ADMIN_URL + "/api/set", { key, value: String(value) }, {
+      headers: { "X-Admin-Pass": KV_ADMIN_PASS, "Content-Type": "application/json" },
+      timeout: 15000,
+      proxy: false,
     });
-    return resp.ok;
+    console.log("[KV] cookie 已保存");
+    return true;
   } catch (e) {
-    console.warn(`[KV] 写入失败: ${e.message}`);
+    console.warn("[KV] 写入失败:", e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message);
     return false;
   }
 }
@@ -458,16 +460,16 @@ async function sendTelegramPhoto(text, imagePath) {
 
         console.log("  正在输入凭据...");
         try {
-          const emailInput = page.getByRole("textbox", { name: /nazwa|email|user/i });
-          await emailInput.waitFor({ state: "visible", timeout: 5000 });
+          const emailInput = page.locator('input[name="username"]');
+          await emailInput.waitFor({ state: "visible", timeout: 10000 });
           await emailInput.fill(email);
 
-          const pwdInput = page.getByRole("textbox", { name: /hasło|password/i });
+          const pwdInput = page.locator('input[name="password"]');
           await pwdInput.fill(password);
           await page.waitForTimeout(500);
 
           // 尝试点击登录按钮
-          await page.getByRole("button", { name: /logowanie|log in|sign in/i }).first().click();
+          await page.locator('button[type="submit"]').first().click();
           await page.waitForTimeout(5000);
 
           // 验证是否登录成功
