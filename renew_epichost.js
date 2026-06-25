@@ -16,12 +16,9 @@
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
 const { exec } = require("child_process");
 
 const PANEL_URL = "https://panel.epichost.pl";
-const CHROME_PATH = process.env.CHROME_PATH || "/usr/bin/google-chrome";
-const DEBUG_PORT = 9222;
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
@@ -80,54 +77,6 @@ async function resolveFullUuid(page, shortUuid) {
 }
 
 // ===================== 浏览器工具 =====================
-
-const http = require("http");
-
-function checkPort(port) {
-  return new Promise((resolve) => {
-    const req = http.get(`http://localhost:${port}/json/version`, (res) => {
-      let data = "";
-      res.on("data", (c) => (data += c));
-      res.on("end", () => resolve(res.statusCode === 200));
-    });
-    req.on("error", () => resolve(false));
-    req.setTimeout(3000, () => {
-      req.destroy();
-      resolve(false);
-    });
-  });
-}
-
-async function launchChrome() {
-  console.log(`  启动 Chrome (${CHROME_PATH})...`);
-  if (await checkPort(DEBUG_PORT)) {
-    console.log("  Chrome 已在运行");
-    return;
-  }
-  const args = [
-    `--remote-debugging-port=${DEBUG_PORT}`,
-    "--remote-debugging-address=127.0.0.1",
-    "--remote-allow-origins=*",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-gpu",
-    "--window-size=1280,720",
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--user-data-dir=/tmp/chrome_user_data_epichost",
-  ];
-  const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: ["ignore", "ignore", "pipe"] });
-  chrome.unref();
-  for (let i = 0; i < 40; i++) {
-    if (await checkPort(DEBUG_PORT)) {
-      console.log("  Chrome 已就绪");
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  throw new Error("Chrome 启动失败");
-}
 
 async function gotoWithRetry(page, url, retries = 3) {
   for (let i = 1; i <= retries; i++) {
@@ -463,24 +412,10 @@ async function sendTelegramPhoto(text, imagePath) {
   const startTime = new Date();
   console.log(`\n[${startTime.toISOString()}] 🚀 EpicHost 续期脚本 — ${users.length} 个用户`);
 
-  await launchChrome();
-
-  // 连接 Chrome DevTools（带重试，同其他脚本模式）
-  let browser;
-  for (let k = 0; k < 5; k++) {
-    try {
-      browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
-      console.log("  连接 Chrome 成功！");
-      break;
-    } catch (e) {
-      console.log(`  连接尝试 ${k + 1}/5 失败: ${e.message.slice(0, 80)}... 2秒后重试`);
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-  }
-  if (!browser) {
-    console.error("❌ 连接 Chrome 失败，退出");
-    process.exit(1);
-  }
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+  });
 
   const photoDir = path.join(__dirname, "screenshots");
   fs.mkdirSync(photoDir, { recursive: true });

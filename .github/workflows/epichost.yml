@@ -29,7 +29,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y xvfb
         npm install
-        npx playwright install-deps chrome
+        npx playwright install-deps chromium
+        npx playwright install chromium
 
     - name: Install v2ray
       if: env.HAS_V2RAY == 'true'
