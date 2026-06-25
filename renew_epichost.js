@@ -85,13 +85,13 @@ const http = require("http");
 
 function checkPort(port) {
   return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/json/version`, (res) => {
+    const req = http.get(`http://localhost:${port}/json/version`, (res) => {
       let data = "";
       res.on("data", (c) => (data += c));
-      res.on("end", () => resolve(true));
+      res.on("end", () => resolve(res.statusCode === 200));
     });
     req.on("error", () => resolve(false));
-    req.setTimeout(2000, () => {
+    req.setTimeout(3000, () => {
       req.destroy();
       resolve(false);
     });
@@ -107,6 +107,7 @@ async function launchChrome() {
   const args = [
     `--remote-debugging-port=${DEBUG_PORT}`,
     "--remote-debugging-address=127.0.0.1",
+    "--remote-allow-origins=*",
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-gpu",
@@ -464,7 +465,22 @@ async function sendTelegramPhoto(text, imagePath) {
 
   await launchChrome();
 
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${DEBUG_PORT}`);
+  // 连接 Chrome DevTools（带重试，同其他脚本模式）
+  let browser;
+  for (let k = 0; k < 5; k++) {
+    try {
+      browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
+      console.log("  连接 Chrome 成功！");
+      break;
+    } catch (e) {
+      console.log(`  连接尝试 ${k + 1}/5 失败: ${e.message.slice(0, 80)}... 2秒后重试`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  if (!browser) {
+    console.error("❌ 连接 Chrome 失败，退出");
+    process.exit(1);
+  }
 
   const photoDir = path.join(__dirname, "screenshots");
   fs.mkdirSync(photoDir, { recursive: true });
