@@ -83,6 +83,24 @@ async function kvSet(key, value) {
 
 // ===================== 获取用户配置 =====================
 
+function normalizeCookies(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map((c) => {
+      const out = { name: c.name, value: String(c.value != null ? c.value : "") };
+      if (c.domain) out.domain = c.domain;
+      out.path = c.path || "/";
+      const exp = typeof c.expires === "number" ? c.expires : c.expirationDate;
+      if (typeof exp === "number" && exp > 0) out.expires = Math.floor(exp);
+      out.httpOnly = !!c.httpOnly;
+      out.secure = !!c.secure;
+      const ss = (c.sameSite || "").toString().toLowerCase();
+      out.sameSite = ss === "strict" ? "Strict" : ss === "none" ? "None" : "Lax";
+      return out;
+    })
+    .filter((c) => c.name && c.domain);
+}
+
 function getUsers() {
   try {
     if (process.env.EPICHOST_USERS_JSON) {
@@ -424,7 +442,7 @@ async function sendTelegramPhoto(text, imagePath) {
       const saved = await kvGet(cookieKey);
       if (saved) {
         try {
-          const cks = JSON.parse(saved);
+          const cks = normalizeCookies(JSON.parse(saved));
           if (cks.length) {
             await context.addCookies(cks);
             console.log(`  >> 已注入 KV cookie (${cks.length} 条)`);
