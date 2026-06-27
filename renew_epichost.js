@@ -5,8 +5,15 @@
  * 流程: 加载 KV cookie（如果配置）→ 直接打开服务器页点 "ADD 4 HOUR(S)"
  *       或登录后打开服务器页续期 → 截图通知
  *
+ * 增强功能:
+ *   - 两连击 "ADD 4 HOUR(S)" （第一次续期，第二次解除暂停）
+ *   - 离线检测 → 文件管理器检查 server.jar
+ *   - 缺失 server.jar → 从 GitHub release 下载并上传
+ *   - 点击 Uruchom 启动服务器
+ *
  * 环境变量:
  *   EPICHOST_USERS_JSON - 用户配置 (必需)
+ *     格式: [{"username":"...","password":"...","serverUrl":"https://...","javamc":"https://github.com/.../server.jar"}]
  *   KV_ADMIN_URL        - KV Admin Worker URL (推荐，用于 cookie 持久化)
  *   KV_ADMIN_PASS       - KV Admin Worker 密码
  *   HTTP_PROXY          - HTTP 代理 (可选)
@@ -14,9 +21,6 @@
  *   TG_CHAT_ID          - Telegram Chat ID (可选)
  *   TG_THREAD_ID        - Telegram Thread ID (可选)
  *   CHROME_PATH         - Chrome 路径 (默认 /usr/bin/google-chrome)
- *
- * 账号格式:
- *   [{"username":"ql@282820.xyz","password":"qilan123A.","serverUrl":"https://panel.epichost.pl/server/66d97cd5"}]
  */
 
 const { chromium } = require("playwright");
@@ -121,6 +125,7 @@ function extractShortUuid(serverUrl) {
 // 短 UUID → 完整 UUID
 const SHORT_TO_FULL = {
   "66d97cd5": "66d97cd5-ae9c-4b72-8aed-c3ef163a5acb",
+  "9f995d9c": "9f995d9c-a222-4185-bea2-86ec19c8ef28",
 };
 
 async function resolveFullUuid(page, shortUuid) {
@@ -203,116 +208,162 @@ function _race(p, ms) {
   return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("t/o")), ms))]);
 }
 
-// ===================== 续期单个服务器 =====================
+// ===================== 续期 + 检查 + 上传 + 启动 =====================
 
-async function renewSingleServer(page, shortUuid, photoDir) {
+async function renewSingleServer(page, context, shortUuid, javamc, photoDir) {
   const sid = shortUuid || "unknown";
   const fullUuid = await resolveFullUuid(page, shortUuid);
   const shot = path.join(photoDir, `epichost_${sid}.png`);
+  const serverPageUrl = `${PANEL_URL}/server/${shortUuid}`;
 
-  console.log(`  打开服务器页: ${PANEL_URL}/server/${shortUuid}`);
-  await gotoWithRetry(page, `${PANEL_URL}/server/${shortUuid}`);
+  console.log(`  打开服务器页: ${serverPageUrl}`);
+  await gotoWithRetry(page, serverPageUrl);
   await page.waitForTimeout(3000);
 
-  // 检查页面是否有 "ADD 4 HOUR(S)" 按钮
-  const renewBtn = page.locator('button:has-text("ADD 4 HOUR(S)")');
-  const btnVisible = await renewBtn.isVisible().catch(() => false);
+  // ===== 1. 续期：两连击 ADD 4 HOUR(S) =====
+  console.log(`  [续期] 检查 "ADD 4 HOUR(S)" 按钮...`);
 
-  if (!btnVisible) {
-    // 尝试 API 方式
-    console.log(`  未找到续期按钮，尝试 API 续期...`);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const renewBtn = page.locator('button:has-text("ADD 4 HOUR(S)")');
+    const btnVisible = await renewBtn.isVisible().catch(() => false);
 
-    const csrfToken = await page.evaluate(() => {
-      const meta = document.querySelector('meta[name="csrf-token"]');
-      return meta ? meta.getAttribute("content") : null;
-    });
-
-    if (!csrfToken) {
-      console.log(`  ❌ 未找到 CSRF token`);
-      try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-      return { status: "error", message: "未找到 CSRF token", shot };
+    if (!btnVisible) {
+      console.log(`  [续期] 未找到按钮，尝试 API 方式...`);
+      const apiResult = await renewViaApi(page, fullUuid, shot);
+      if (apiResult) return apiResult;
+      // API 也不可用, 继续
+      break;
     }
 
-    // 读取当前过期时间
-    const info = await page.evaluate(async (uuid) => {
-      try {
-        const resp = await fetch(`/api/client/freeservers/${uuid}/info`);
-        return await resp.json();
-      } catch (e) {
-        return { error: e.message };
+    console.log(`  [续期] 第 ${attempt} 次点击 "ADD 4 HOUR(S)"...`);
+    try {
+      await _race(renewBtn.click({ force: true }), 10000);
+      await page.waitForTimeout(3000);
+    } catch (e) {
+      console.log(`  [续期] 点击失败: ${e.message}`);
+      break;
+    }
+
+    // 检查页面反馈
+    const pageText = await page.evaluate(() => document.body.innerText).catch(() => "");
+    if (pageText.includes("You've successfully renew") || pageText.includes("successfully renew")) {
+      console.log(`  ✅ 第 ${attempt} 次续期成功！`);
+      // 如果是第一次成功, 等一下再点第二次
+      if (attempt === 1) {
+        console.log(`  [续期] 等待后尝试第 2 次点击...`);
+        await page.waitForTimeout(2000);
       }
-    }, fullUuid).catch(() => ({}));
-    const currentExpiry = info?.data?.expire || "未知";
-    console.log(`  当前过期: ${currentExpiry}`);
-
-    // 调用续期 API
-    const result = await page.evaluate(async ({ uuid, csrf }) => {
-      try {
-        const resp = await fetch(`/api/client/freeservers/${uuid}/renew`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Requested-With": "XMLHttpRequest",
-            "X-CSRF-TOKEN": csrf,
-            Accept: "application/json",
-          },
-        });
-        const data = await resp.json();
-        return { ok: resp.ok, status: resp.status, data };
-      } catch (e) {
-        return { ok: false, error: e.message };
-      }
-    }, { uuid: fullUuid, csrf: csrfToken });
-
-    console.log(`  API 响应: ${JSON.stringify(result)}`);
-
-    if (result.ok && result.data?.success) {
-      const newInfo = await page.evaluate(async (uuid) => {
-        try {
-          const resp = await fetch(`/api/client/freeservers/${uuid}/info`);
-          return await resp.json();
-        } catch (e) {
-          return { error: e.message };
-        }
-      }, fullUuid).catch(() => ({}));
-      const newExpiry = newInfo?.data?.expire || currentExpiry;
-      console.log(`  ✅ 续期成功！新过期: ${newExpiry}`);
-      try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-      return { status: "success", message: `到期: ${newExpiry}`, shot };
+    } else if (pageText.includes("can only once")) {
+      console.log(`  ⏳ 第 ${attempt} 次: 已续期过 (只能一次), 继续下一步`);
+      break;
+    } else if (pageText.includes("Failed to unsuspend")) {
+      console.log(`  ⚠️ 续期成功但解除暂停失败, 再试一次...`);
+      await page.waitForTimeout(2000);
     }
-
-    if (result.data?.data?.includes("can't renew")) {
-      console.log(`  ⏳ 已续期过，无需再次操作`);
-      try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-      return { status: "wait", message: `已续期过\n当前到期: ${currentExpiry}`, shot };
-    }
-
-    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-    return { status: "error", message: `API 错误: ${JSON.stringify(result.data)}`, shot };
   }
 
-  // 点击 "ADD 4 HOUR(S)" 按钮
-  console.log(`  点击续期按钮 "ADD 4 HOUR(S)"...`);
-  try {
-    await _race(renewBtn.click({ force: true }), 10000);
-    await page.waitForTimeout(3000);
-  } catch (e) {
-    console.log(`  点击按钮失败: ${e.message}`);
-    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-    return { status: "error", message: `按钮点击失败: ${e.message}`, shot };
-  }
-
-  // 等续期生效
+  // 刷新页面看看状态
+  await gotoWithRetry(page, serverPageUrl);
   await page.waitForTimeout(3000);
+
+  // ===== 2. 判断服务器是否离线 =====
+  const pageText = await page.evaluate(() => document.body.innerText).catch(() => "");
+  const isSuspended = pageText.includes("Server Suspended");
+  const isOffline = pageText.includes("Offline") || pageText.includes("Uruchamianie") || isSuspended;
+
+  if (!isOffline) {
+    console.log(`  ✅ 服务器已在运行, 无需更多操作`);
+    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
+    return { status: "success", message: "服务器已在运行", shot };
+  }
+
+  console.log(`  [离线] 服务器处于离线${isSuspended ? "/暂停" : ""}状态, 检查/上传 server.jar...`);
+
+  // ===== 3. 检查文件管理器 =====
+  const hasJar = await checkServerJar(page, shortUuid);
+  console.log(`  [文件] server.jar 是否存在: ${hasJar}`);
+
+  if (!hasJar && javamc) {
+    console.log(`  [上传] 从 ${javamc} 下载并上传 server.jar...`);
+    const uploadOk = await downloadAndUploadJar(page, context, shortUuid, javamc);
+    if (!uploadOk) {
+      console.log(`  ⚠️ 上传失败, 尝试继续启动...`);
+    }
+  } else if (!hasJar && !javamc) {
+    console.log(`  ⚠️ 无 server.jar 且未配置 javamc 链接, 跳过上传`);
+  } else {
+    console.log(`  ✅ server.jar 已存在`);
+  }
+
+  // ===== 4. 启动服务器 =====
+  console.log(`  [启动] 导航到控制台并点击 Uruchom...`);
+  await gotoWithRetry(page, serverPageUrl);
+  await page.waitForTimeout(3000);
+
+  const startBtn = page.locator('button:has-text("Uruchom")').first();
+  const startVisible = await startBtn.isVisible().catch(() => false);
+  const startEnabled = await startBtn.isEnabled().catch(() => false);
+
+  if (startVisible && startEnabled) {
+    try {
+      await _race(startBtn.click({ force: true }), 10000);
+      await page.waitForTimeout(5000);
+      console.log(`  ✅ 已点击 Uruchom, 服务器正在启动`);
+    } catch (e) {
+      console.log(`  ⚠️ 点击 Uruchom 失败: ${e.message}`);
+    }
+  } else {
+    console.log(`  ⚠️ Uruchom 按钮不可用 (可见: ${startVisible}, 可用: ${startEnabled})`);
+  }
+
+  // 最终截图
   try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
 
-  // 读取新过期时间
+  const finalText = await page.evaluate(() => document.body.innerText).catch(() => "");
+  const nowRunning = finalText.includes("Running") || finalText.includes("Starting");
+  const status = nowRunning ? "success" : "partial";
+
+  return {
+    status,
+    message: nowRunning ? "服务器已启动" : "续期完成, 需手动检查启动",
+    shot,
+  };
+}
+
+// ===== API 续期（按钮不可用时） =====
+async function renewViaApi(page, fullUuid, shot) {
   const csrfToken = await page.evaluate(() => {
     const meta = document.querySelector('meta[name="csrf-token"]');
     return meta ? meta.getAttribute("content") : null;
-  }).catch(() => null);
+  });
 
-  if (csrfToken) {
+  if (!csrfToken) {
+    console.log(`  ❌ 未找到 CSRF token`);
+    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
+    return null;
+  }
+
+  const result = await page.evaluate(async ({ uuid, csrf }) => {
+    try {
+      const resp = await fetch(`/api/client/freeservers/${uuid}/renew`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+          "X-CSRF-TOKEN": csrf,
+          Accept: "application/json",
+        },
+      });
+      const data = await resp.json();
+      return { ok: resp.ok, status: resp.status, data };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }, { uuid: fullUuid, csrf: csrfToken });
+
+  console.log(`  API 续期响应: ${JSON.stringify(result)}`);
+
+  if (result.ok && result.data?.success) {
     const newInfo = await page.evaluate(async (uuid) => {
       try {
         const resp = await fetch(`/api/client/freeservers/${uuid}/info`);
@@ -322,11 +373,110 @@ async function renewSingleServer(page, shortUuid, photoDir) {
       }
     }, fullUuid).catch(() => ({}));
     const newExpiry = newInfo?.data?.expire || "未知";
-    console.log(`  新过期: ${newExpiry}`);
-    return { status: "success", message: `到期: ${newExpiry}`, shot };
+    console.log(`  ✅ API 续期成功！新到期: ${newExpiry}`);
+    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
+    return { status: "success", message: `API 续期成功, 到期: ${newExpiry}`, shot };
   }
 
-  return { status: "success", message: "已点击续期按钮，详情见截图", shot };
+  if (result.data?.data?.includes("can't renew")) {
+    console.log(`  ⏳ 已续期过, 无需再次操作`);
+    return null;
+  }
+
+  return null;
+}
+
+// ===== 检查文件管理器是否有 server.jar =====
+async function checkServerJar(page, shortUuid) {
+  console.log(`  [文件管理器] 检查 server.jar...`);
+  await gotoWithRetry(page, `${PANEL_URL}/server/${shortUuid}/files`);
+  await page.waitForTimeout(3000);
+
+  const bodyText = await page.evaluate(() => document.body.innerText).catch(() => "");
+  const hasJar = bodyText.includes("server.jar");
+  console.log(`  [文件管理器] 结果: ${hasJar ? "✅ 存在" : "❌ 不存在"}`);
+  return hasJar;
+}
+
+// ===== 下载并上传 server.jar =====
+async function downloadAndUploadJar(page, context, shortUuid, javamcUrl) {
+  console.log(`  [下载] 开始下载 ${javamcUrl}...`);
+
+  // 打开新标签下载
+  const downloadPage = await context.newPage();
+  let downloadPath = null;
+
+  try {
+    downloadPage.on("download", (download) => {
+      downloadPath = path.join(__dirname, "screenshots", `server_${shortUuid}.jar`);
+      download.saveAs(downloadPath);
+      console.log(`  [下载] 保存到 ${downloadPath}`);
+    });
+
+    await downloadPage.goto(javamcUrl, { waitUntil: "load", timeout: 60000 });
+    await page.waitForTimeout(5000);
+    await downloadPage.close();
+
+    if (!downloadPath || !fs.existsSync(downloadPath)) {
+      console.log(`  [下载] 下载可能未完成, 尝试 curl 备用...`);
+      // curl 备用
+      const { execSync } = require("child_process");
+      downloadPath = path.join(__dirname, "screenshots", `server_${shortUuid}.jar`);
+      try {
+        execSync(`curl -fsSL -o "${downloadPath}" "${javamcUrl}"`, { timeout: 120000 });
+      } catch (e) {
+        console.log(`  [下载] curl 也失败: ${e.message}`);
+        return false;
+      }
+    }
+
+    const stats = fs.statSync(downloadPath);
+    if (stats.size < 1000) {
+      console.log(`  [下载] 文件太小 (${stats.size} bytes), 可能不是有效的 jar`);
+      fs.unlinkSync(downloadPath);
+      return false;
+    }
+    console.log(`  [下载] 成功 (${(stats.size / 1024 / 1024).toFixed(2)} MiB)`);
+  } catch (e) {
+    console.log(`  [下载] 失败: ${e.message}`);
+    if (downloadPage && !downloadPage.isClosed()) await downloadPage.close().catch(() => {});
+    return false;
+  }
+
+  // 回到文件管理器上传
+  console.log(`  [上传] 导航到文件管理器...`);
+  await gotoWithRetry(page, `${PANEL_URL}/server/${shortUuid}/files`);
+  await page.waitForTimeout(3000);
+
+  // 点击上传按钮并选择文件
+  try {
+    const uploadBtn = page.locator('button:has-text("Prześlij")').first();
+    await uploadBtn.waitFor({ state: "visible", timeout: 10000 });
+
+    // 用 file chooser 上传
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent("filechooser", { timeout: 10000 }),
+      uploadBtn.click(),
+    ]);
+    await fileChooser.setFiles([downloadPath]);
+    console.log(`  [上传] 文件已选择, 等待上传完成...`);
+    await page.waitForTimeout(5000);
+
+    // 清理本地临时文件
+    try { fs.unlinkSync(downloadPath); } catch (e) {}
+
+    // 验证上传成功
+    const bodyText = await page.evaluate(() => document.body.innerText).catch(() => "");
+    if (bodyText.includes("server.jar")) {
+      console.log(`  ✅ server.jar 上传成功！`);
+      return true;
+    }
+    console.log(`  ⚠️ 上传后未检测到 server.jar, 可能还在上传中`);
+    return true;
+  } catch (e) {
+    console.log(`  [上传] 失败: ${e.message}`);
+    return false;
+  }
 }
 
 // ===================== Telegram 通知 =====================
@@ -519,8 +669,9 @@ async function sendTelegramPhoto(text, imagePath) {
         continue;
       }
 
-      // 3. 续期
-      const result = await renewSingleServer(page, shortUuid, photoDir);
+      // 3. 续期 + 检查 + 上传 + 启动
+      const javamc = user.javamc || user.javaMc || "";
+      const result = await renewSingleServer(page, context, shortUuid, javamc, photoDir);
       console.log(`  → 结果: [${result.status}] ${result.message}`);
       allResults.push({ user: email, uuid: shortUuid, ...result });
 

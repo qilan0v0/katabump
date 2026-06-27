@@ -66,7 +66,8 @@ jobs:
       env:
         PROJECT_NAME: EpicHost
         # Secret EPICHOST_USERS_JSON 格式:
-        # [{"username":"ql@282820.xyz","password":"qilan123A.","serverUrl":"https://panel.epichost.pl/server/66d97cd5"}]
+        # [{"username":"ql@282820.xyz","password":"qilan123A.","serverUrl":"https://panel.epichost.pl/server/66d97cd5","javamc":"https://github.com/.../download/v-epichost-1/server.jar"}]
+        # javamc 可选，缺省时不检测/上传 server.jar
         EPICHOST_USERS_JSON: ${{ secrets.EPICHOST_USERS_JSON }}
         # KV Admin Worker：缓存登录 cookie，免每次登录
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
