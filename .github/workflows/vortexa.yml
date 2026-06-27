@@ -1,9 +1,6 @@
 name: Vortexa Keep Alive
 
 on:
-  schedule:
-    # 每天北京时间凌晨 2 点 (UTC 前一天 18:05) 运行；偏 5 分钟避开整点拥堵
-    - cron: '5 18 * * *'
   workflow_dispatch:
 
 env:

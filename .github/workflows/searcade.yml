@@ -1,9 +1,6 @@
 name: Searcade Auto Login
 
 on:
-  schedule:
-    # 每周一 UTC 3点 (北京时间周一 11点) 运行一次
-    - cron: '0 3 * * 1'
   workflow_dispatch: # 允许手动触发
 
 # 提前切到 Node.js 24 运行 actions/*，消除 Node 20 弃用警告

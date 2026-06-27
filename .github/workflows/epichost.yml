@@ -1,9 +1,6 @@
 name: EpicHost Auto Renew
 
 on:
-  schedule:
-    # 每 3 小时运行一次（UTC），免费服务器每 4 小时可续一次，留 1 小时缓冲
-    - cron: '5 */3 * * *'
   workflow_dispatch: # 允许手动触发
 
 # 提前切到 Node.js 24 运行 actions/*，消除 Node 20 弃用警告

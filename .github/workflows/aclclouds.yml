@@ -1,9 +1,6 @@
 name: ACLClouds Auto Renew
 
 on:
-  schedule:
-    # 每天 UTC 2点 (北京时间 10点) 运行，与其它工作流错开
-    - cron: '0 2 * * *'
   workflow_dispatch: # 允许手动触发
 
 # 提前切到 Node.js 24 运行 actions/*，消除 Node 20 弃用警告
