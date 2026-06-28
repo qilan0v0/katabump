@@ -4,7 +4,6 @@
 // Secret: npx wrangler secret put KV_ADMIN_PASS
 
 const PROJECT_PREFIXES = [
-  { label: 'EpicHost', prefix: 'epichost_cookie_' },
   { label: 'Katabump', prefix: 'katabump_cookie_' },
   { label: 'Zampto', prefix: 'zampto_cookie_' },
   { label: 'Vortexa', prefix: 'vortexa_cookie_' },
@@ -84,7 +83,6 @@ const HTML = '<!DOCTYPE html>' +
 'tr.expanded td{background:#0d1117}' +
 '.key-cell{font-family:monospace;font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
 '.proj-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500}' +
-'.proj-epichost{background:#a371f722;color:#a371f7}' +
 '.proj-katabump{background:#1f6feb22;color:#58a6ff}' +
 '.proj-zampto{background:#d2a8ff22;color:#d2a8ff}' +
 '.proj-vortexa{background:#3fb95022;color:#3fb950}' +
@@ -260,7 +258,7 @@ const HTML = '<!DOCTYPE html>' +
 '  document.getElementById("countLabel").textContent=f.length+" 条记录";' +
 '  if(f.length===0){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">无记录</div>";return}' +
 '  var pbc=function(proj){' +
-'    var m={EpicHost:"proj-epichost",Katabump:"proj-katabump",Zampto:"proj-zampto",Vortexa:"proj-vortexa",Weirdhost:"proj-weirdhost",FreeMCHost:"proj-freemchost",Gaming4Free:"proj-gaming4free"};' +
+'    var m={Katabump:"proj-katabump",Zampto:"proj-zampto",Vortexa:"proj-vortexa",Weirdhost:"proj-weirdhost",FreeMCHost:"proj-freemchost",Gaming4Free:"proj-gaming4free"};' +
 '    return m[proj]||"proj-unknown"' +
 '  };' +
 '  var h="<table><thead><tr><th>键名</th><th>项目</th><th>邮箱</th><th>Cookie</th><th>最早过期</th><th>更新时间</th><th>操作</th></tr></thead><tbody>";' +
@@ -301,7 +299,7 @@ const HTML = '<!DOCTYPE html>' +
 '  if(r.ok){toast("已删除： "+key);await loadData()}else toast("删除失败","err")' +
 '}' +
 'function doRefresh(){loadData();toast("已刷新")}' +
-'var PROJECTS=[{label:"EpicHost",prefix:"epichost_cookie_"},{label:"Katabump",prefix:"katabump_cookie_"},{label:"Zampto",prefix:"zampto_cookie_"},{label:"Vortexa",prefix:"vortexa_cookie_"},{label:"Weirdhost",prefix:"weirdhost_cookie_"},{label:"FreeMCHost",prefix:"freemchost_cookie_"},{label:"Gaming4Free",prefix:"gaming4free_cookie_"}];' +
+'var PROJECTS=[{label:"Katabump",prefix:"katabump_cookie_"},{label:"Zampto",prefix:"zampto_cookie_"},{label:"Vortexa",prefix:"vortexa_cookie_"},{label:"Weirdhost",prefix:"weirdhost_cookie_"},{label:"FreeMCHost",prefix:"freemchost_cookie_"},{label:"Gaming4Free",prefix:"gaming4free_cookie_"}];' +
 'function showCKEditor(key,rawVal){' +
 '  var isNew=!key;var proj="";var suf="";var ckText="[]";' +
 '  if(key){for(var i=0;i<PROJECTS.length;i++){if(key.startsWith(PROJECTS[i].prefix)){proj=PROJECTS[i].label;suf=key.slice(PROJECTS[i].prefix.length);break}}}' +
@@ -335,8 +333,6 @@ const HTML = '<!DOCTYPE html>' +
 
 // === Worker 路由 ===
 function getPass(req, u) {
-  const bearer = req.headers.get('Authorization');
-  if (bearer && bearer.startsWith('Bearer ')) return bearer.slice(7);
   return req.headers.get('X-Admin-Pass') || u.searchParams.get('pass') || '';
 }
 
@@ -391,14 +387,9 @@ export default {
       return json({ ok: true, entries });
     }
 
-    if (url.pathname === '/api/get' && (method === 'POST' || method === 'GET')) {
-      let key;
-      if (method === 'GET') {
-        key = url.searchParams.get('key');
-      } else {
-        const body = await request.json();
-        key = body.key;
-      }
+    if (url.pathname === '/api/get' && method === 'POST') {
+      const body = await request.json();
+      const key = body.key;
       if (!key) return json({ ok: false, error: 'missing key' });
       const value = await env.COOKIE_KV.get(key);
       return json({ ok: true, key, value });
