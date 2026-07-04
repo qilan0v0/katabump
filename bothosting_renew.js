@@ -447,27 +447,36 @@ function withTimeout(promise, ms, label) {
                 await kvPut(cookieKey, JSON.stringify(cookies));
             } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
 
-            // 4. 点击 "Renew free plan" 按钮
-            console.log('寻找 "Renew free plan" 按钮...');
-            const renewBtn = page.locator('button:has-text("Renew free plan")').first();
-            try {
-                await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
-                await renewBtn.click();
-                console.log('   >> 已点击 "Renew free plan"');
-            } catch (e) {
-                console.log('   >> ⚠️ "Renew free plan" 按钮未找到，可能已续期或页面异常');
-                await sendTelegramMessage(`⚠️ *续期按钮未找到*\n用户: ${user.username}\n"Renew free plan" 按钮不可见，可能已续期。`);
+            // 4. 快速读取页面状态判断是否可续期
+            let pageText = '';
+            try { pageText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => ''); } catch (e) { }
+
+            const isNotRenewed = pageText.includes('Not renewed');
+            const isActive = pageText.includes('Active') || pageText.includes('Renew in');
+            let expiryDate = '';
+            const expMatch = pageText.match(/Expires\s+(\d{4}\/\d{2}\/\d{2})/);
+            if (expMatch) expiryDate = expMatch[1];
+            const expiryInfo = expiryDate ? `到期: ${expiryDate}` : '';
+
+            if (!isNotRenewed || isActive) {
+                console.log(`   >> 未到续期。${expiryInfo}`);
+                await sendTelegramMessage(`⏳ *未到续期时间*\n用户: ${user.username}\n${expiryInfo}`);
+                allResults.push({ user: user.username, status: 'wait' });
                 continue;
             }
 
-            // 5. 等待弹窗出现
-            await page.waitForTimeout(2000);
-            const dialog = page.locator('[role="dialog"]');
-            if (!await dialog.isVisible({ timeout: 5000 }).catch(() => false)) {
-                console.log('   >> ⚠️ 弹窗未出现');
+            // 5. 点击 "Renew free plan"
+            console.log('点击 "Renew free plan"...');
+            const renewBtn = page.locator('button:has-text("Renew free plan")').first();
+            try {
+                await renewBtn.waitFor({ state: 'visible', timeout: 5000 });
+                await renewBtn.click();
+                console.log('   >> 已点击');
+            } catch (e) {
+                console.log('   >> "Renew free plan" 按钮未找到，跳过。');
+                await sendTelegramMessage(`⚠️ *续期按钮未找到*\n用户: ${user.username}`);
                 continue;
             }
-            console.log('   >> 弹窗已出现');
 
             // 6. 过 Cloudflare Turnstile
             console.log('处理 Cloudflare Turnstile...');
@@ -524,14 +533,13 @@ function withTimeout(promise, ms, label) {
                 console.log('   >> ⚠️ 无法点击续期按钮:', e.message);
             }
 
-            // 8. 等待结果并截图（续期按钮点击后等页面刷新即可）
+            // 8. 等待结果并截图
             await page.waitForTimeout(1500);
             const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
             const shot = path.join(photoDir, `bothosting_${safeUser}.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
 
-            // 一次性读取 body 文本用于解析到期时间和检测结果
-            let expiryDate = '';
+            // 续期后重新读取页面文本，获取新到期时间
             let body = '';
             try {
                 body = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
@@ -542,11 +550,11 @@ function withTimeout(promise, ms, label) {
             const isSuccess = /renewed|successfully|extended/i.test(body) || !body.includes('Not renewed');
             const isError = /error|failed|try again/i.test(body);
 
-            const expiryInfo = expiryDate ? `到期: ${expiryDate}` : '';
+            const infoMsg = expiryDate ? `到期: ${expiryDate}` : '';
 
             if (isSuccess) {
-                console.log(`   >> ✅ 续期成功！${expiryInfo}`);
-                await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n${expiryInfo}`, shot);
+                console.log(`   >> ✅ 续期成功！${infoMsg}`);
+                await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n${infoMsg}`, shot);
                 allResults.push({ user: user.username, status: 'success' });
             } else if (isError) {
                 console.log('   >> ❌ 续期失败');
@@ -556,8 +564,8 @@ function withTimeout(promise, ms, label) {
                 console.log('   >> ⚠️ 续期结果未知');
                 const notRenewed = await page.getByText('Not renewed').isVisible().catch(() => false);
                 if (!notRenewed) {
-                    console.log(`   >> ✅ 页面已无 "Not renewed" 标记，视为续期成功${expiryInfo ? ` (${expiryInfo})` : ''}`);
-                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n${expiryInfo}`, shot);
+                    console.log(`   >> ✅ 页面已无 "Not renewed" 标记，视为续期成功${infoMsg ? ` (${infoMsg})` : ''}`);
+                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n${infoMsg}`, shot);
                     allResults.push({ user: user.username, status: 'success' });
                 } else {
                     await sendTelegramMessage(`⚠️ *续期结果未知*\n用户: ${user.username}`, shot);
