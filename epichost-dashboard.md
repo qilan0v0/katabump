@@ -1,0 +1,63 @@
+- generic [ref=e6]:
+  - generic [ref=e8]:
+    - link "EpicHost.pl" [ref=e10] [cursor=pointer]:
+      - /url: /
+      - img
+      - generic [ref=e11]: EpicHost.pl
+    - link "Konto" [ref=e12] [cursor=pointer]:
+      - /url: /account
+      - img [ref=e14]
+      - generic [ref=e17]: Konto
+    - link "Serwery" [ref=e18] [cursor=pointer]:
+      - /url: /
+      - img [ref=e20]
+      - generic [ref=e24]: Serwery
+    - link "Sklep" [ref=e25] [cursor=pointer]:
+      - /url: /shop
+      - img [ref=e27]
+      - generic [ref=e31]: Sklep
+    - link "Płatności" [ref=e32] [cursor=pointer]:
+      - /url: /shop/payments
+      - img [ref=e34]
+      - generic [ref=e36]: Płatności
+    - link "Współpraca" [ref=e37] [cursor=pointer]:
+      - /url: /referral
+      - img [ref=e39]
+      - generic [ref=e44]: Współpraca
+    - link "Darmowy serwer" [ref=e45] [cursor=pointer]:
+      - /url: /freeservers
+      - img [ref=e47]
+      - generic [ref=e52]: Darmowy serwer
+    - link "Zgłoszenia" [ref=e53] [cursor=pointer]:
+      - /url: /account/tickets
+      - img [ref=e55]
+      - generic [ref=e57]: Zgłoszenia
+    - generic [ref=e58]:
+      - link "Website" [ref=e59] [cursor=pointer]:
+        - /url: https://www.epichost.pl
+        - img [ref=e61]
+        - generic [ref=e64]: Website
+      - link "Discord" [ref=e65] [cursor=pointer]:
+        - /url: https://discord.gg/rwenA3Yp27
+        - img [ref=e67]
+        - generic [ref=e69]: Discord
+      - link "Status" [ref=e109] [cursor=pointer]:
+        - /url: https://www.epichost.pl/status
+        - img [ref=e72]
+        - generic [ref=e76]: Status
+    - generic [ref=e77]:
+      - button [ref=e78] [cursor=pointer]:
+        - img [ref=e80]
+      - button [ref=e82] [cursor=pointer]:
+        - img [ref=e84]
+  - generic [ref=e87]:
+    - generic [ref=e90]:
+      - button [ref=e92] [cursor=pointer]:
+        - img [ref=e95]
+      - generic [ref=e97] [cursor=pointer]:
+        - img [ref=e98]
+        - text: Wyszukaj coś...
+    - paragraph [ref=e107]:
+      - link "Pterodactyl®" [ref=e108] [cursor=pointer]:
+        - /url: https://pterodactyl.io
+      - text: © 2015 - 2026

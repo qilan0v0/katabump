@@ -1,0 +1,59 @@
+- generic [ref=e1]:
+  - generic [ref=e7]:
+    - heading "EpicHost.pl" [level=1] [ref=e8]
+    - generic [ref=e11]:
+      - heading "Zaloguj się, aby kontynuować" [level=2] [ref=e12]
+      - generic [ref=e13]:
+        - generic [ref=e14]: Nazwa użytkownika lub adres e-mail
+        - textbox [disabled] [ref=e15]: ql@282820.xyz
+      - generic [ref=e17]:
+        - generic [ref=e18]: Hasło
+        - textbox [disabled] [ref=e19]: qilan123A.
+      - button "Logowanie" [disabled] [ref=e21]: Logowanie
+      - iframe [ref=e24]:
+        - generic [ref=f9e5]:
+          - generic [ref=f9e6]:
+            - text: 由
+            - strong [ref=f9e7]: reCAPTCHA
+            - text: 提供保护
+          - generic [ref=f9e9]:
+            - text: 此网站已超出
+            - link "reCAPTCHA Enterprise 免费配额" [ref=f9e10] [cursor=pointer]:
+              - /url: https://cloud.google.com/recaptcha/docs/billing-information
+            - text: 。
+      - link "Zapomniałeś hasła?" [ref=e26] [cursor=pointer]:
+        - /url: /auth/password
+      - link "Don't have an account?" [ref=e28] [cursor=pointer]:
+        - /url: /auth/register
+    - paragraph [ref=e29]:
+      - text: © 2015 - 2026
+      - link "Pterodactyl Software" [ref=e30] [cursor=pointer]:
+        - /url: https://pterodactyl.io
+  - iframe [active] [ref=e35]:
+    - dialog [ref=f13e3]:
+      - generic [ref=f13e4]:
+        - generic [ref=f13e7]:
+          - text: 请选择所有包含
+          - strong [ref=f13e8]: 自行车
+          - text: 的图片
+          - generic [ref=f13e9]: 在没有新图片可以点按后，请点击“验证”。
+        - table [ref=f13e12]:
+          - rowgroup [ref=f13e13]:
+            - row [ref=f13e14]:
+              - button [ref=f13e15]
+              - button [ref=f13e18]
+              - button [ref=f13e21]
+            - row [ref=f13e24]:
+              - button [ref=f13e25]
+              - button [ref=f13e28]
+              - button [ref=f13e31]
+            - row [ref=f13e34]:
+              - button [ref=f13e35]
+              - button [ref=f13e38]
+              - button [ref=f13e41]
+      - generic [ref=f13e47]:
+        - generic [ref=f13e48]:
+          - button "换一个新的验证码" [ref=f13e50] [cursor=pointer]
+          - button "改用音频验证" [ref=f13e52] [cursor=pointer]
+          - button "帮助" [ref=f13e54] [cursor=pointer]
+        - button "验证" [ref=f13e56] [cursor=pointer]

@@ -1,0 +1,90 @@
+- generic [ref=e6]:
+  - generic [ref=e8]:
+    - link "EpicHost.pl" [ref=e10] [cursor=pointer]:
+      - /url: /
+      - img [ref=e109]
+      - generic [ref=e11]: EpicHost.pl
+    - link "Konto" [ref=e12] [cursor=pointer]:
+      - /url: /account
+      - img [ref=e14]
+      - generic [ref=e17]: Konto
+    - link "Serwery" [ref=e18] [cursor=pointer]:
+      - /url: /
+      - img [ref=e20]
+      - generic [ref=e24]: Serwery
+    - link "Sklep" [ref=e25] [cursor=pointer]:
+      - /url: /shop
+      - img [ref=e27]
+      - generic [ref=e31]: Sklep
+    - link "Płatności" [ref=e32] [cursor=pointer]:
+      - /url: /shop/payments
+      - img [ref=e34]
+      - generic [ref=e36]: Płatności
+    - link "Współpraca" [ref=e37] [cursor=pointer]:
+      - /url: /referral
+      - img [ref=e39]
+      - generic [ref=e44]: Współpraca
+    - link "Darmowy serwer" [ref=e45] [cursor=pointer]:
+      - /url: /freeservers
+      - img [ref=e47]
+      - generic [ref=e52]: Darmowy serwer
+    - link "Zgłoszenia" [ref=e53] [cursor=pointer]:
+      - /url: /account/tickets
+      - img [ref=e55]
+      - generic [ref=e57]: Zgłoszenia
+    - generic [ref=e58]:
+      - link "Website" [ref=e59] [cursor=pointer]:
+        - /url: https://www.epichost.pl
+        - img [ref=e61]
+        - generic [ref=e64]: Website
+      - link "Discord" [ref=e110] [cursor=pointer]:
+        - /url: https://discord.gg/rwenA3Yp27
+        - img [ref=e67]
+        - generic [ref=e69]: Discord
+      - link "Status" [ref=e111] [cursor=pointer]:
+        - /url: https://www.epichost.pl/status
+        - img [ref=e72]
+        - generic [ref=e76]: Status
+    - generic [ref=e77]:
+      - button [ref=e78] [cursor=pointer]:
+        - img [ref=e80]
+      - button [ref=e82] [cursor=pointer]:
+        - img [ref=e84]
+  - generic [ref=e87]:
+    - generic [ref=e88]:
+      - generic [ref=e90]:
+        - button [ref=e92] [cursor=pointer]:
+          - img [ref=e95]
+        - generic [ref=e97] [cursor=pointer]:
+          - img [ref=e98]
+          - text: Wyszukaj coś...
+      - generic [ref=e112]:
+        - img [ref=e113]
+        - text: Wprowadzono ponownie usługę free serwerów! Można je przedłużać co 4h.
+    - generic [ref=e102]:
+      - table [ref=e116]:
+        - row "ID Nazwa Przydział CPU Ram Dysk Status" [ref=e117]:
+          - columnheader "ID" [ref=e118]
+          - columnheader "Nazwa" [ref=e119]
+          - columnheader "Przydział" [ref=e120]
+          - columnheader "CPU" [ref=e121]
+          - columnheader "Ram" [ref=e122]
+          - columnheader "Dysk" [ref=e123]
+          - columnheader "Status" [ref=e124]
+        - row "66d97cd5 ql's Test Server pl1-free.epichost.pl:10579 0.00 % / 100 % 0 Bytes / 3 GiB 122.73 MiB / 5 GiB Offline" [ref=e125]:
+          - cell "66d97cd5" [ref=e126]:
+            - link "66d97cd5" [ref=e127] [cursor=pointer]:
+              - /url: /server/66d97cd5
+          - cell "ql's Test Server" [ref=e128]:
+            - link "ql's Test Server" [ref=e129] [cursor=pointer]:
+              - /url: /server/66d97cd5
+          - cell "pl1-free.epichost.pl:10579" [ref=e130]
+          - cell "0.00 % / 100 %" [ref=e131]
+          - cell "0 Bytes / 3 GiB" [ref=e132]
+          - cell "122.73 MiB / 5 GiB" [ref=e133]
+          - cell "Offline" [ref=e134]:
+            - generic [ref=e135]: Offline
+      - paragraph [ref=e107]:
+        - link "Pterodactyl®" [ref=e108] [cursor=pointer]:
+          - /url: https://pterodactyl.io
+        - text: © 2015 - 2026

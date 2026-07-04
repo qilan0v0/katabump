@@ -1,0 +1,234 @@
+- generic [ref=e6]:
+  - generic [ref=e8]:
+    - link "EpicHost.pl" [ref=e10] [cursor=pointer]:
+      - /url: /
+      - img [ref=e75]
+      - generic [ref=e11]: EpicHost.pl
+    - link "Konto" [ref=e12] [cursor=pointer]:
+      - /url: /account
+      - img [ref=e14]
+      - generic [ref=e17]: Konto
+    - link "Serwery" [ref=e18] [cursor=pointer]:
+      - /url: /
+      - img [ref=e20]
+      - generic [ref=e24]: Serwery
+    - link "Sklep" [ref=e25] [cursor=pointer]:
+      - /url: /shop
+      - img [ref=e27]
+      - generic [ref=e31]: Sklep
+    - link "Płatności" [ref=e32] [cursor=pointer]:
+      - /url: /shop/payments
+      - img [ref=e34]
+      - generic [ref=e36]: Płatności
+    - generic [ref=e37]: KONTROLA SERWERA
+    - link "Konsola" [ref=e38] [cursor=pointer]:
+      - /url: /server/66d97cd5/
+      - img [ref=e40]
+      - generic [ref=e42]: Konsola
+    - link "Menedżery plików" [ref=e76] [cursor=pointer]:
+      - /url: /server/66d97cd5/files
+      - img [ref=e78]
+      - generic [ref=e80]: Menedżery plików
+    - link "Wersje" [ref=e81] [cursor=pointer]:
+      - /url: /server/66d97cd5/minecraft/versions
+      - img [ref=e83]
+      - generic [ref=e86]: Wersje
+    - link "Menadżer graczy" [ref=e87] [cursor=pointer]:
+      - /url: /server/66d97cd5/playermanager
+      - img [ref=e89]
+      - generic [ref=e94]: Menadżer graczy
+    - link "Bazy danych" [ref=e95] [cursor=pointer]:
+      - /url: /server/66d97cd5/databases
+      - img [ref=e97]
+      - generic [ref=e101]: Bazy danych
+    - link "Użytkownicy" [ref=e102] [cursor=pointer]:
+      - /url: /server/66d97cd5/users
+      - img [ref=e104]
+      - generic [ref=e109]: Użytkownicy
+    - link "Kopie zapasowe" [ref=e110] [cursor=pointer]:
+      - /url: /server/66d97cd5/backups
+      - img [ref=e112]
+      - generic [ref=e116]: Kopie zapasowe
+    - link "Sieć" [ref=e117] [cursor=pointer]:
+      - /url: /server/66d97cd5/network
+      - img [ref=e119]
+      - generic [ref=e122]: Sieć
+    - link "Subdomeny" [ref=e123] [cursor=pointer]:
+      - /url: /server/66d97cd5/subdomain
+      - img [ref=e125]
+      - generic [ref=e128]: Subdomeny
+    - link "Uruchamianie" [ref=e129] [cursor=pointer]:
+      - /url: /server/66d97cd5/startup
+      - img [ref=e131]
+      - generic [ref=e132]: Uruchamianie
+    - link "Ustawienia" [ref=e133] [cursor=pointer]:
+      - /url: /server/66d97cd5/settings
+      - img [ref=e135]
+      - generic [ref=e138]: Ustawienia
+    - link "Aktywność" [ref=e139] [cursor=pointer]:
+      - /url: /server/66d97cd5/activity
+      - img [ref=e141]
+      - generic [ref=e144]: Aktywność
+    - generic [ref=e43]:
+      - link "Website" [ref=e145] [cursor=pointer]:
+        - /url: https://www.epichost.pl
+        - img [ref=e46]
+        - generic [ref=e49]: Website
+      - link "Discord" [ref=e146] [cursor=pointer]:
+        - /url: https://discord.gg/rwenA3Yp27
+        - img [ref=e52]
+        - generic [ref=e54]: Discord
+      - link "Status" [ref=e147] [cursor=pointer]:
+        - /url: https://www.epichost.pl/status
+        - img [ref=e57]
+        - generic [ref=e61]: Status
+    - generic [ref=e62]:
+      - button [ref=e63] [cursor=pointer]:
+        - img [ref=e65]
+      - button [ref=e67] [cursor=pointer]:
+        - img [ref=e69]
+  - generic [ref=e72]:
+    - generic [ref=e148]:
+      - generic [ref=e149]:
+        - generic [ref=e150]:
+          - button [ref=e152] [cursor=pointer]:
+            - img [ref=e155]
+          - generic [ref=e157] [cursor=pointer]:
+            - img [ref=e158]
+            - text: Wyszukaj coś...
+        - generic [ref=e161]:
+          - link "Konsola" [ref=e162] [cursor=pointer]:
+            - /url: /server/66d97cd5/
+          - link "Menedżery plików" [ref=e163] [cursor=pointer]:
+            - /url: /server/66d97cd5/files
+          - link "Wersje" [ref=e164] [cursor=pointer]:
+            - /url: /server/66d97cd5/minecraft/versions
+          - link "Menadżer graczy" [ref=e165] [cursor=pointer]:
+            - /url: /server/66d97cd5/playermanager
+          - link "Bazy danych" [ref=e166] [cursor=pointer]:
+            - /url: /server/66d97cd5/databases
+          - link "Użytkownicy" [ref=e167] [cursor=pointer]:
+            - /url: /server/66d97cd5/users
+          - link "Kopie zapasowe" [ref=e168] [cursor=pointer]:
+            - /url: /server/66d97cd5/backups
+          - link "Sieć" [ref=e169] [cursor=pointer]:
+            - /url: /server/66d97cd5/network
+          - link "Subdomeny" [ref=e170] [cursor=pointer]:
+            - /url: /server/66d97cd5/subdomain
+          - link "Uruchamianie" [ref=e171] [cursor=pointer]:
+            - /url: /server/66d97cd5/startup
+          - link "Ustawienia" [ref=e172] [cursor=pointer]:
+            - /url: /server/66d97cd5/settings
+          - link "Aktywność" [ref=e173] [cursor=pointer]:
+            - /url: /server/66d97cd5/activity
+      - generic [ref=e174]:
+        - img [ref=e175]
+        - text: Wprowadzono ponownie usługę free serwerów! Można je przedłużać co 4h.
+    - generic [ref=e178]:
+      - generic [ref=e182]:
+        - generic [ref=e183]:
+          - heading "ql's Test Server" [level=1] [ref=e184]
+          - generic [ref=e185]:
+            - generic [ref=e186]:
+              - img [ref=e188]
+              - text: Offline
+            - generic [ref=e192] [cursor=pointer]:
+              - img [ref=e194]
+              - text: pl1-free.epichost.pl:10579
+            - generic [ref=e198] [cursor=pointer]:
+              - img [ref=e200]
+              - text: 66d97cd5
+            - generic [ref=e203]:
+              - img [ref=e205]
+              - text: pl1-free.epichost.pl
+        - generic [ref=e208]:
+          - button "Uruchom" [ref=e209] [cursor=pointer]
+          - button "Restartuj" [ref=e210] [cursor=pointer]
+          - button "Zatrzymaj" [disabled] [ref=e211]
+      - generic [ref=e213]:
+        - generic [ref=e214]:
+          - generic [ref=e216]:
+            - generic [ref=e217]:
+              - img [ref=e219]
+              - generic [ref=e221]:
+                - paragraph [ref=e222]: 0.00%
+                - generic [ref=e223]: / 100%
+            - generic [ref=e224]:
+              - img [ref=e226]
+              - generic [ref=e228]:
+                - paragraph [ref=e229]: 0 Bytes
+                - generic [ref=e230]: / 3 GiB
+            - generic [ref=e231]:
+              - img [ref=e233]
+              - generic [ref=e235]:
+                - paragraph [ref=e236]: 122.73 MiB
+                - generic [ref=e237]: / 5 GiB
+          - generic [ref=e238]:
+            - generic [ref=e240]:
+              - generic [ref=e242]:
+                - text: ql's Test Server
+                - generic [ref=e243]:
+                  - img [ref=e245]
+                  - text: Offline
+                - generic [ref=e249] [cursor=pointer]:
+                  - img [ref=e251]
+                  - text: pl1-free.epichost.pl:10579
+                - generic [ref=e255] [cursor=pointer]:
+                  - img [ref=e257]
+                  - text: 66d97cd5
+                - generic [ref=e260]:
+                  - img [ref=e262]
+                  - text: pl1-free.epichost.pl
+              - generic [ref=e266]:
+                - paragraph [ref=e267]: Renew Server
+                - generic [ref=e268]:
+                  - paragraph [ref=e269]:
+                    - img [ref=e270]
+                    - text: "Wygasa: 2026-06-25 20:25:22"
+                  - generic [ref=e272]:
+                    - button "ADD 4 HOUR(S)" [ref=e273] [cursor=pointer]:
+                      - generic [ref=e274]: ADD 4 HOUR(S)
+                    - button "Delete My Server" [ref=e275] [cursor=pointer]
+              - generic [ref=e276]:
+                - generic [ref=e277]:
+                  - paragraph [ref=e278]: 0 Bytes
+                  - generic [ref=e279]: / 3 GiB ram
+                - img [ref=e280]
+              - generic [ref=e281]:
+                - generic [ref=e282]:
+                  - paragraph [ref=e283]: 0.00%
+                  - generic [ref=e284]: / 100% CPU
+                - img [ref=e285]
+              - generic [ref=e287]:
+                - paragraph [ref=e288]: 122.73 MiB
+                - generic [ref=e289]: / 5 GiB dysk
+            - generic [ref=e291]:
+              - generic [ref=e292]:
+                - textbox "Terminal input" [ref=e299]
+                - generic [ref=e304]:
+                  - generic [ref=e305]:
+                    - textbox "Console command input." [ref=e306]:
+                      - /placeholder: Wpisz polecenie
+                    - img [ref=e308]
+                  - generic [ref=e311]:
+                    - button "Uruchom" [ref=e312] [cursor=pointer]
+                    - button "Restartuj" [ref=e313] [cursor=pointer]
+                    - button "Zatrzymaj" [disabled] [ref=e314]
+              - generic [ref=e315]:
+                - generic [ref=e316]:
+                  - heading "CPU Load" [level=3] [ref=e318]
+                  - img [ref=e320]
+                - generic [ref=e321]:
+                  - heading "Memory" [level=3] [ref=e323]
+                  - img [ref=e325]
+                - generic [ref=e326]:
+                  - generic [ref=e327]:
+                    - heading "Network" [level=3] [ref=e328]
+                    - paragraph [ref=e329]:
+                      - img [ref=e330]
+                      - img [ref=e332]
+                  - img [ref=e336]
+        - paragraph [ref=e338]:
+          - link "Pterodactyl®" [ref=e339] [cursor=pointer]:
+            - /url: https://pterodactyl.io
+          - text: © 2015 - 2026

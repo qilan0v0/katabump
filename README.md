@@ -166,6 +166,7 @@ node renew.js
 
 ## 🛠️ 项目结构
 
+* `bothosting_renew.js`: Bot-Hosting.net (`bot-hosting.net`) 续期脚本（注入 cookie 直接访问账单页续期，过 CF Turnstile 验证，支持 KV cookie 缓存）。
 * `renew.js`: Windows 本地运行的主程序（Katabump）。
 * `action_renew.js`: 专门用于 GitHub Actions 环境的脚本（Katabump / ACLClouds）。
 * `.github/workflows/renew.yml`: Katabump 续期定时任务（每天北京时间 08:00）。

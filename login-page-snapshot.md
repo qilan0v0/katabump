@@ -1,0 +1,30 @@
+- generic [ref=e7]:
+  - heading "EpicHost.pl" [level=1] [ref=e8]
+  - generic [ref=e11]:
+    - heading "Zaloguj się, aby kontynuować" [level=2] [ref=e12]
+    - generic [ref=e13]:
+      - generic [ref=e14]: Nazwa użytkownika lub adres e-mail
+      - textbox [ref=e15]
+    - generic [ref=e17]:
+      - generic [ref=e18]: Hasło
+      - textbox [ref=e19]
+    - button "Logowanie" [ref=e21] [cursor=pointer]
+    - iframe [ref=e30]:
+      - generic [ref=f5e5]:
+        - generic [ref=f5e6]:
+          - text: 由
+          - strong [ref=f5e7]: reCAPTCHA
+          - text: 提供保护
+        - generic [ref=f5e9]:
+          - text: 此网站已超出
+          - link "reCAPTCHA Enterprise 免费配额" [ref=f5e10] [cursor=pointer]:
+            - /url: https://cloud.google.com/recaptcha/docs/billing-information
+          - text: 。
+    - link "Zapomniałeś hasła?" [ref=e23] [cursor=pointer]:
+      - /url: /auth/password
+    - link "Don't have an account?" [ref=e25] [cursor=pointer]:
+      - /url: /auth/register
+  - paragraph [ref=e26]:
+    - text: © 2015 - 2026
+    - link "Pterodactyl Software" [ref=e27] [cursor=pointer]:
+      - /url: https://pterodactyl.io

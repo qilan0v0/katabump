@@ -1,0 +1,3 @@
+- generic [ref=e76]:
+  - img [ref=e77]
+  - paragraph [ref=e79]: An error was encountered by the application while rendering this view. Try refreshing the page.
