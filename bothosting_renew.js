@@ -589,4 +589,5 @@ function withTimeout(promise, ms, label) {
 
     console.log('关闭浏览器连接。');
     await browser.close();
+    process.exit(0);
 })();
