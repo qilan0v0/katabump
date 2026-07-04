@@ -472,14 +472,13 @@ function withTimeout(promise, ms, label) {
             // 6. 过 Cloudflare Turnstile
             console.log('处理 Cloudflare Turnstile...');
             let turnstileDone = false;
-            for (let attempt = 1; attempt <= 30; attempt++) {
+            for (let attempt = 1; attempt <= 15; attempt++) {
                 const clicked = await attemptTurnstileCdp(page);
                 if (clicked) {
                     console.log(`   >> Turnstile 已点击 (第 ${attempt} 次)`);
-                    // 等待 Turnstile 完成验证
-                    for (let w = 0; w < 15; w++) {
+                    // 等待按钮启用，最多 8s
+                    for (let w = 0; w < 8; w++) {
                         await page.waitForTimeout(1000);
-                        // 检查按钮是否已启用
                         const renew4Btn = page.locator('button:has-text("Renew for 4 days")');
                         const disabled = await renew4Btn.isDisabled().catch(() => true);
                         if (!disabled) {
@@ -487,32 +486,10 @@ function withTimeout(promise, ms, label) {
                             turnstileDone = true;
                             break;
                         }
-                        // 检测是否已判定 Success
-                        const frames = page.frames();
-                        let foundSuccess = false;
-                        for (const f of frames) {
-                            if (f.url().includes('cloudflare') || f.url().includes('turnstile')) {
-                                try {
-                                    if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 300 }).catch(() => false)) {
-                                        foundSuccess = true;
-                                        break;
-                                    }
-                                } catch (e) { }
-                            }
-                        }
-                        if (foundSuccess) {
-                            console.log('   >> ✅ Turnstile Success!');
-                            await page.waitForTimeout(1000);
-                            turnstileDone = true;
-                            break;
-                        }
                     }
                     if (turnstileDone) break;
                 }
-                if (attempt % 10 === 0) {
-                    console.log(`   >> Turnstile 尝试 ${attempt}/30 次...`);
-                }
-                await page.waitForTimeout(1000);
+                await page.waitForTimeout(800);
             }
 
             if (!turnstileDone) {
@@ -547,22 +524,21 @@ function withTimeout(promise, ms, label) {
                 console.log('   >> ⚠️ 无法点击续期按钮:', e.message);
             }
 
-            // 8. 等待结果并截图
-            await page.waitForTimeout(3000);
+            // 8. 等待结果并截图（续期按钮点击后等页面刷新即可）
+            await page.waitForTimeout(1500);
             const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
             const shot = path.join(photoDir, `bothosting_${safeUser}.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
 
-            // 获取到期时间
+            // 一次性读取 body 文本用于解析到期时间和检测结果
             let expiryDate = '';
+            let body = '';
             try {
-                const bodyText = await page.locator('body').innerText().catch(() => '');
-                const expMatch = bodyText.match(/Expires\s+(\d{4}\/\d{2}\/\d{2})/);
+                body = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+                const expMatch = body.match(/Expires\s+(\d{4}\/\d{2}\/\d{2})/);
                 if (expMatch) expiryDate = expMatch[1];
             } catch (e) { }
 
-            // 检测结果
-            const body = await page.locator('body').innerText().catch(() => '');
             const isSuccess = /renewed|successfully|extended/i.test(body) || !body.includes('Not renewed');
             const isError = /error|failed|try again/i.test(body);
 
