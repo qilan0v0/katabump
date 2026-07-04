@@ -553,14 +553,24 @@ function withTimeout(promise, ms, label) {
             const shot = path.join(photoDir, `bothosting_${safeUser}.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
 
+            // 获取到期时间
+            let expiryDate = '';
+            try {
+                const bodyText = await page.locator('body').innerText().catch(() => '');
+                const expMatch = bodyText.match(/Expires\s+(\d{4}\/\d{2}\/\d{2})/);
+                if (expMatch) expiryDate = expMatch[1];
+            } catch (e) { }
+
             // 检测结果
             const body = await page.locator('body').innerText().catch(() => '');
             const isSuccess = /renewed|successfully|extended/i.test(body) || !body.includes('Not renewed');
             const isError = /error|failed|try again/i.test(body);
 
+            const expiryInfo = expiryDate ? `到期: ${expiryDate}` : '';
+
             if (isSuccess) {
-                console.log('   >> ✅ 续期成功！');
-                await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}`, shot);
+                console.log(`   >> ✅ 续期成功！${expiryInfo}`);
+                await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n${expiryInfo}`, shot);
                 allResults.push({ user: user.username, status: 'success' });
             } else if (isError) {
                 console.log('   >> ❌ 续期失败');
@@ -568,11 +578,10 @@ function withTimeout(promise, ms, label) {
                 allResults.push({ user: user.username, status: 'error' });
             } else {
                 console.log('   >> ⚠️ 续期结果未知');
-                // 重新检查页面状态判断
                 const notRenewed = await page.getByText('Not renewed').isVisible().catch(() => false);
                 if (!notRenewed) {
-                    console.log('   >> ✅ 页面已无 "Not renewed" 标记，视为续期成功');
-                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}`, shot);
+                    console.log(`   >> ✅ 页面已无 "Not renewed" 标记，视为续期成功${expiryInfo ? ` (${expiryInfo})` : ''}`);
+                    await sendTelegramMessage(`✅ *续期成功*\n用户: ${user.username}\n${expiryInfo}`, shot);
                     allResults.push({ user: user.username, status: 'success' });
                 } else {
                     await sendTelegramMessage(`⚠️ *续期结果未知*\n用户: ${user.username}`, shot);
