@@ -759,8 +759,26 @@ async function goToServerPage(page, user) {
                     await renewBtn.click();
                     console.log('Renew 按钮已点击。');
 
-                    // aclclouds 模式：点 Renew 后无弹窗，只出 toast 提示，直接判断结果
+                    // aclclouds 模式：点 Renew 后可能出现 Anti-bot 弹窗验证，验证后自动续期，只出 toast 提示
                     if (NO_MODAL) {
+                        // 等待并处理可能出现的 Anti-bot 验证弹窗
+                        try {
+                            const antiBotDialog = page.getByRole('dialog').filter({ hasText: /Anti-bot confirmation/i }).first();
+                            await antiBotDialog.waitFor({ state: 'visible', timeout: 5000 });
+                            console.log('   >> 检测到 Anti-bot 验证弹窗，正在处理验证码...');
+                            // 先试自定义复选框 (aclclouds)，再试 ALTCHA (katabump，备用)
+                            const simpleOk = await clickSimpleCaptcha(page, antiBotDialog);
+                            const captchaOk = simpleOk || await solveAltcha(page, antiBotDialog);
+                            if (captchaOk) {
+                                console.log('   >> ✅ Anti-bot 验证通过，等待续期完成...');
+                                // 勾选后弹窗会自动关闭并执行续期
+                                await antiBotDialog.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
+                            } else {
+                                console.log('   >> ⚠️ Anti-bot 验证码均未通过，继续等待结果...');
+                            }
+                        } catch (e) {
+                            console.log('   >> 未检测到 Anti-bot 验证弹窗，或弹窗已自行消失');
+                        }
                         const fs = require('fs');
                         const path = require('path');
                         await page.waitForTimeout(3000);
