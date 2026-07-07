@@ -186,7 +186,7 @@ function cleanupV2ray(procs = allV2rayProcs) {
 function cleanupCurrentUserV2ray() {
     cleanupV2ray(v2rayProcs);
 }
-process.on('exit', cleanupV2ray);
+process.on('exit', () => cleanupV2ray());
 process.on('SIGINT', () => { cleanupV2ray(); process.exit(0); });
 process.on('SIGTERM', () => { cleanupV2ray(); process.exit(0); });
 
