@@ -296,11 +296,20 @@ async function checkin(user) {
         if (!loggedIn) {
             console.log(`[${user.username}] 打开登录页...`);
             await page.goto(LOGIN_URL, { waitUntil: 'load', timeout: 30000 });
-            await page.waitForTimeout(3000);
+
+            // 等待 Cloudflare 验证通过，页面出现登录输入框（最长等 60 秒）
+            console.log(`[${user.username}] 等待页面就绪（Cloudflare 验证）...`);
+            const emailInput = page.locator('#inputEmail, input[name="username"], input[type="text"]').first();
+            try {
+                await emailInput.waitFor({ state: 'visible', timeout: 60000 });
+            } catch (e) {
+                const pageUrl = page.url();
+                const pageBody = await page.locator('body').innerText().catch(() => '');
+                console.error(`[${user.username}] 页面未就绪，URL=${pageUrl}，内容片段=${pageBody.slice(0, 200)}`);
+                throw new Error(`等待登录表单超时，可能被 Cloudflare 拦截（${pageUrl}）`);
+            }
 
             console.log(`[${user.username}] 填写凭据...`);
-            const emailInput = page.locator('#inputEmail, input[name="username"], input[type="text"]').first();
-            await emailInput.waitFor({ state: 'visible', timeout: 10000 });
             await emailInput.fill(user.username);
 
             const pwdInput = page.locator('#inputPassword, input[name="password"], input[type="password"]').first();

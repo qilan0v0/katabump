@@ -28,7 +28,9 @@ jobs:
         npx playwright install chromium-headless-shell 2>/dev/null || true
 
     - name: Download v2ray
-      if: env.HAS_V2RAY == 'true'
+      # 检查 FREECLOUD_USERS_JSON 中是否有用户指定了 V2 链接，有则下载 v2ray
+      # 也检查全局 FREECLOUD_V2RAY_VMESS Secret（兼容旧配置）
+      if: ${{ secrets.FREECLOUD_V2RAY_VMESS != '' || contains(secrets.FREECLOUD_USERS_JSON, '"V2"') }}
       run: |
         mkdir -p $HOME/v2ray
         cd $HOME/v2ray
@@ -41,7 +43,7 @@ jobs:
         ./v2ray version
 
     - name: Start global v2ray (全局 HTTP 代理)
-      if: env.HAS_V2RAY == 'true'
+      if: ${{ secrets.FREECLOUD_V2RAY_VMESS != '' }}
       env:
         V2RAY_VMESS: ${{ secrets.FREECLOUD_V2RAY_VMESS }}
       run: |
@@ -71,7 +73,8 @@ jobs:
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         # 全局代理（用户没有独立 V2 且全局 V2RAY_VMESS 设置时使用）
-        HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
+        # 注意：即使没有全局 V2，用户 V2 字段也会在脚本内通过 V2RAY_BIN 启动独立 v2ray
+        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
