@@ -28,9 +28,9 @@ jobs:
         npx playwright install chromium-headless-shell 2>/dev/null || true
 
     - name: Download v2ray
-      # 检查 FREECLOUD_USERS_JSON 中是否有用户指定了 V2 链接，有则下载 v2ray
-      # 也检查全局 FREECLOUD_V2RAY_VMESS Secret（兼容旧配置）
-      if: ${{ secrets.FREECLOUD_V2RAY_VMESS != '' || contains(secrets.FREECLOUD_USERS_JSON, '"V2"') }}
+      # 配置了 FREECLOUD_USERS_JSON（用户 V2 字段在脚本内按需启动独立代理）
+      # 或配置了全局 FREECLOUD_V2RAY_VMESS，都需要下载 v2ray
+      if: ${{ secrets.FREECLOUD_USERS_JSON != '' || secrets.FREECLOUD_V2RAY_VMESS != '' }}
       run: |
         mkdir -p $HOME/v2ray
         cd $HOME/v2ray
