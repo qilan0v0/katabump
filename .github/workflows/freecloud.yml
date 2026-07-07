@@ -30,7 +30,7 @@ jobs:
     - name: Download v2ray
       # 配置了 FREECLOUD_USERS_JSON（用户 V2 字段在脚本内按需启动独立代理）
       # 或配置了全局 FREECLOUD_V2RAY_VMESS，都需要下载 v2ray
-      if: ${{ secrets.FREECLOUD_USERS_JSON != '' || secrets.FREECLOUD_V2RAY_VMESS != '' }}
+      if: secrets.FREECLOUD_USERS_JSON != '' || secrets.FREECLOUD_V2RAY_VMESS != ''
       run: |
         mkdir -p $HOME/v2ray
         cd $HOME/v2ray
@@ -43,7 +43,7 @@ jobs:
         ./v2ray version
 
     - name: Start global v2ray (全局 HTTP 代理)
-      if: ${{ secrets.FREECLOUD_V2RAY_VMESS != '' }}
+      if: secrets.FREECLOUD_V2RAY_VMESS != ''
       env:
         V2RAY_VMESS: ${{ secrets.FREECLOUD_V2RAY_VMESS }}
       run: |
