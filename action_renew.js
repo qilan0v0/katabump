@@ -590,6 +590,8 @@ async function goToServerPage(page, user) {
         console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`); // 隐去具体邮箱 logging
 
         try {
+            const photoDir = path.join(process.cwd(), 'screenshots');
+            if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
             if (page.isClosed()) {
                 page = await context.newPage();
                 // Context credentials apply
@@ -618,90 +620,121 @@ async function goToServerPage(page, user) {
                 console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (${page.url()})`);
             }
 
-            // 2. cookie 无效或没有 → 完整登录
+            // 2. cookie 无效或没有 → 完整登录（带重试机制）
             if (!loggedIn) {
-                // 如果当前处于 chrome-error 崩溃状态，先恢复
-                if (page.url().includes('chrome-error') || page.url().includes('chromewebdata')) {
-                    await page.goto('about:blank').catch(() => {});
-                    await page.waitForTimeout(1000);
-                }
-                if (page.url().includes('dashboard')) {
-                    await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
-                    await page.waitForTimeout(2000);
-                }
-                await gotoWithRetry(page, `${BASE_URL}/auth/login`);
-                await page.waitForTimeout(2000);
-                if (page.url().includes('dashboard')) {
-                    await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
-                    await page.waitForTimeout(2000);
-                    await gotoWithRetry(page, `${BASE_URL}/auth/login`);
-                }
-
-                console.log('正在输入凭据...');
-                try {
-                    const emailInput = page.getByRole('textbox', { name: 'Email' });
-                    await emailInput.waitFor({ state: 'visible', timeout: 5000 });
-                    await emailInput.fill(user.username);
-                    const pwdInput = page.getByRole('textbox', { name: 'Password' });
-                    await pwdInput.fill(user.password);
-                    await page.waitForTimeout(500);
-
-                    // --- 登录验证码处理 ---
-                    const simpleCaptcha = await clickSimpleCaptcha(page);
-
-                    console.log('   >> 正在登录前检查 Turnstile (使用 CDP 绕过)...');
-                    let cdpClickResult = false;
-                    if (!simpleCaptcha) {
-                        for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
-                            cdpClickResult = await attemptTurnstileCdp(page);
-                            if (cdpClickResult) break;
-                            await page.waitForTimeout(1000);
-                        }
+                let loginFinalSucceeded = false;
+                LOGIN_RETRY:
+                for (let loginRetryCount = 1; loginRetryCount <= 2; loginRetryCount++) {
+                    if (loginRetryCount > 1) {
+                        console.log(`   >> 重新尝试登录 (第 ${loginRetryCount} 次)...`);
                     }
 
-                    if (simpleCaptcha) {
-                        console.log('   >> 登录验证码 (自定义复选框) 已处理。');
-                    } else if (cdpClickResult) {
-                        console.log('   >> 登录 CDP 点击生效。正在等待最多 10秒 Cloudflare 成功标志...');
-                        for (let waitSec = 0; waitSec < 10; waitSec++) {
-                            const frames = page.frames();
-                            let isSuccess = false;
-                            for (const f of frames) {
-                                if (f.url().includes('cloudflare')) {
-                                    try {
-                                        if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) {
-                                            isSuccess = true;
-                                            break;
-                                        }
-                                    } catch (e) { }
-                                }
+                    // 导航到登录页（首次或重试均适用）
+                    if (page.url().includes('chrome-error') || page.url().includes('chromewebdata')) {
+                        await page.goto('about:blank').catch(() => {});
+                        await page.waitForTimeout(1000);
+                    }
+                    if (page.url().includes('dashboard')) {
+                        await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
+                        await page.waitForTimeout(2000);
+                    }
+                    await gotoWithRetry(page, `${BASE_URL}/auth/login`);
+                    await page.waitForTimeout(2000);
+                    if (page.url().includes('dashboard')) {
+                        await gotoWithRetry(page, `${BASE_URL}/auth/logout`);
+                        await page.waitForTimeout(2000);
+                        await gotoWithRetry(page, `${BASE_URL}/auth/login`);
+                    }
+
+                    console.log('正在输入凭据...');
+                    try {
+                        const emailInput = page.getByRole('textbox', { name: 'Email' });
+                        await emailInput.waitFor({ state: 'visible', timeout: 5000 });
+                        await emailInput.fill(user.username);
+                        const pwdInput = page.getByRole('textbox', { name: 'Password' });
+                        await pwdInput.fill(user.password);
+                        await page.waitForTimeout(500);
+
+                        // --- 登录验证码处理 ---
+                        const simpleCaptcha = await clickSimpleCaptcha(page);
+
+                        console.log('   >> 正在登录前检查 Turnstile (使用 CDP 绕过)...');
+                        let cdpClickResult = false;
+                        if (!simpleCaptcha) {
+                            for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
+                                cdpClickResult = await attemptTurnstileCdp(page);
+                                if (cdpClickResult) break;
+                                await page.waitForTimeout(1000);
                             }
-                            if (isSuccess) {
-                                console.log('   >> 登录前 Turnstile 验证成功。');
+                        }
+
+                        if (simpleCaptcha) {
+                            console.log('   >> 登录验证码 (自定义复选框) 已处理。');
+                        } else if (cdpClickResult) {
+                            console.log('   >> 登录 CDP 点击生效。正在等待最多 10秒 Cloudflare 成功标志...');
+                            for (let waitSec = 0; waitSec < 10; waitSec++) {
+                                const frames = page.frames();
+                                let isSuccess = false;
+                                for (const f of frames) {
+                                    if (f.url().includes('cloudflare')) {
+                                        try {
+                                            if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) {
+                                                isSuccess = true;
+                                                break;
+                                            }
+                                        } catch (e) { }
+                                    }
+                                }
+                                if (isSuccess) {
+                                    console.log('   >> 登录前 Turnstile 验证成功。');
+                                    break;
+                                }
+                                await page.waitForTimeout(1000);
+                            }
+                        } else {
+                            console.log('   >> 登录前未检测到或未点击 Turnstile，继续操作...');
+                        }
+
+                        await page.getByRole('button', { name: /^(log\s?in|sign\s?in)$/i }).first().click();
+
+                        // Check for incorrect password
+                        try {
+                            const errorMsg = page.getByText('Incorrect password or no account');
+                            if (await errorMsg.isVisible({ timeout: 3000 })) {
+                                console.error(`   >> ❌ 登录失败: 用户 ${user.username} 账号或密码错误`);
+                                const failShotPath = path.join(photoDir, `${safeUsername}.png`);
+                                try { await page.screenshot({ path: failShotPath, fullPage: true }); } catch (e) { }
+                                await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: 账号或密码错误`, failShotPath);
+                                break LOGIN_RETRY; // 密码错误无需重试，跳出
+                            }
+                        } catch (e) { }
+
+                        // [修复1] 等待页面跳离 /auth/login，确认登录真正完成
+                        // 避免 Turnstile 未通过时静默失败：保存了无效 cookie，后续找不到 Renew 按钮
+                        for (let w = 0; w < 30; w++) {
+                            await page.waitForTimeout(500);
+                            if (!page.url().includes('/auth/login')) {
+                                loginFinalSucceeded = true;
                                 break;
                             }
-                            await page.waitForTimeout(1000);
                         }
-                    } else {
-                        console.log('   >> 登录前未检测到或未点击 Turnstile，继续操作...');
+                        if (loginFinalSucceeded) {
+                            console.log('   >> 登录成功，已跳离登录页');
+                            break LOGIN_RETRY; // 登录成功，退出重试
+                        } else {
+                            console.log('   >> ⚠️ 点击登录后页面未跳离 /auth/login，Turnstile 验证可能未通过');
+                        }
+
+                    } catch (e) {
+                        console.log(`登录错误 (第 ${loginRetryCount} 次):`, e.message);
                     }
+                    // retry 循环继续
+                } // end LOGIN_RETRY
 
-                    await page.getByRole('button', { name: /^(log\s?in|sign\s?in)$/i }).first().click();
-
-                    // Check for incorrect password
-                    try {
-                        const errorMsg = page.getByText('Incorrect password or no account');
-                        if (await errorMsg.isVisible({ timeout: 3000 })) {
-                            console.error(`   >> ❌ 登录失败: 用户 ${user.username} 账号或密码错误`);
-                            const failShotPath = path.join(photoDir, `${safeUsername}.png`);
-                            try { await page.screenshot({ path: failShotPath, fullPage: true }); } catch (e) { }
-                            await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: 账号或密码错误`, failShotPath);
-                            continue;
-                        }
-                    } catch (e) { }
-
-                } catch (e) {
-                    console.log('登录错误:', e.message);
+                if (!loginFinalSucceeded) {
+                    console.error(`   >> ❌ 登录失败: 用户 ${user.username} 多次尝试后仍无法完成登录`);
+                    try { await page.screenshot({ path: path.join(photoDir, `${safeUsername}.png`) }); } catch (e) { }
+                    continue; // 跳过该用户
                 }
             } // end if (!loggedIn)
 
@@ -723,6 +756,11 @@ async function goToServerPage(page, user) {
                         continue;
                     }
                     page = res.page; // 可能切换到了新标签页
+                    // [修复2] 检测页面是否被重定向到登录页（会话无效）
+                    if (page.url().includes('/auth/login')) {
+                        console.log('   >> ⚠️ 导航到服务器页后被重定向到登录页，会话无效，跳过该用户');
+                        continue;
+                    }
                 } catch (e) {
                     console.log('进入服务器页失败:', e.message);
                     continue;
