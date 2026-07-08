@@ -1044,8 +1044,6 @@ async function goToServerPage(page, user) {
 
         // Snapshot before handling next user
         // In GitHub Actions, we save to 'screenshots' dir
-        const fs = require('fs');
-        const path = require('path');
         const photoDir = path.join(process.cwd(), 'screenshots');
         if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
         // Use safe filename
