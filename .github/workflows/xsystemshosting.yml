@@ -22,7 +22,11 @@ jobs:
 
     - name: Install Dependencies
       run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
         npm install
+        npx playwright install-deps chromium
+        npx playwright install chromium
 
     - name: Run XSH Ad Watcher
       env:
@@ -34,4 +38,4 @@ jobs:
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
-      run: node xsh_login.js
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node xsh_login.js
