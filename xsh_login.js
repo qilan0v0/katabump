@@ -230,19 +230,48 @@ async function discordOAuth(token) {
   return { code, user };
 }
 
+// ---------- 手动跟随重定向（捕获每次 set-cookie） ----------
+async function followRedirects(client, url, jar, options = {}) {
+  const maxFollow = options.maxFollow || 5;
+  let currentUrl = url;
+  for (let i = 0; i < maxFollow; i++) {
+    const res = await client.get(currentUrl, {
+      headers: {
+        Cookie: jar.getHeader(),
+        ...((options.headers) || {}),
+      },
+      maxRedirects: 0,
+      validateStatus: (s) => true,
+      timeout: options.timeout || 15000,
+    });
+    jar.setFromHeaders(res.headers);
+    const loc = res.headers['location'];
+    if (!loc) return res;
+    currentUrl = loc.startsWith('http') ? loc : `${XSH_BASE}${loc}`;
+    log(`    → 跟随重定向 ${i + 1}: ${loc.substring(0, 60)}`, options.label || '');
+  }
+  // 最后一次尝试（最多 follow 次数后依然有重定向则返回最后一站）
+  const finalRes = await client.get(currentUrl, {
+    headers: { Cookie: jar.getHeader() },
+    maxRedirects: 0, validateStatus: (s) => true, timeout: options.timeout || 15000,
+  });
+  jar.setFromHeaders(finalRes.headers);
+  return finalRes;
+}
+
 // ---------- 步骤 3: 完成 xsystemshosting 登录 → 存 CK ----------
 async function loginXSH(code, jar) {
   log('Step 3: 完成 xsystemshosting 登录...');
 
   const client = createClient();
   const callbackUrl = `${REDIRECT_URI}?code=${encodeURIComponent(code)}`;
-  const res = await client.get(callbackUrl, {
-    maxRedirects: 5, validateStatus: (s) => true,
-  });
+  const res = await followRedirects(client, callbackUrl, jar, { label: 'login' });
 
-  jar.setFromHeaders(res.headers);
   log(`  ✅ 登录完成 (${res.status})`);
   log(`  🍪 Cookie: ${Object.keys(jar.cookies).join(', ')}`);
+  if (!jar.hasCookies()) {
+    log(`  ⚠️ 未获取到任何 cookie! 响应头: ${JSON.stringify(res.headers)}`);
+  }
   return jar;
 }
 
@@ -251,13 +280,9 @@ async function fetchAdPage(jar) {
   log('Step 4: 获取广告页面...');
 
   const client = createClient();
-  const res = await client.get('/quests/ad', {
-    headers: { Cookie: jar.getHeader() },
-    maxRedirects: 5, validateStatus: (s) => true,
-  });
+  const res = await followRedirects(client, `${XSH_BASE}/quests/ad`, jar, { label: 'ad' });
 
   const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-  jar.setFromHeaders(res.headers);
 
   let token = '', csrf = '';
   const tokenMatch = html.match(/name=["']token["'][^>]*value=["']([^"']+)["']/);
@@ -396,7 +421,7 @@ async function processUser(userData, index, total) {
   }
 
   log(`\n✅ 完成，共观看 ${adCount} 个广告`, label);
-  return { success: true, username: 'user', adsWatched: adCount };
+  return { success: true, username: '', adsWatched: adCount };
 }
 
 // ---------- 入口 ----------
@@ -439,13 +464,11 @@ async function main() {
   const summary = `📈 总计观看: ${totalAds} 个广告\n💎 总计获得: ${totalAds} 积分`;
   console.log(`\n${summary}`);
 
-  // TG 通知
-  if (results.some(r => r.adsWatched > 0)) {
-    const lines = results.map((r, i) =>
-      `${r.success ? '✅' : '❌'} 用户${i + 1}: ${r.adsWatched || 0} 广告${r.error ? ` (${r.error})` : ''}`
-    );
-    await sendTelegram(`*X Systems Hosting 广告看完了*\n${lines.join('\n')}\n\n${summary}`);
-  }
+  // TG 通知 (无论有没有广告都发)
+  const lines = results.map((r, i) =>
+    `${r.success ? '✅' : '❌'} 用户${i + 1}: ${r.adsWatched || 0} 广告${r.error ? ` (${r.error})` : ''}`
+  );
+  await sendTelegram(`*X Systems Hosting 自动看广告*\n${lines.join('\n')}\n\n${summary}`);
 }
 
 main().catch(err => {
