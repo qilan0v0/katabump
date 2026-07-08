@@ -788,13 +788,7 @@ async function attemptDiscordLogin(page, context, discordToken) {
         }
     }
 
-    // 汇总
-    const successCount = allResults.filter(r => r.status === 'success').length;
-    const failCount = allResults.filter(r => r.status === 'error').length;
     console.log(`\n=== 完成 ===\n成功: ${successCount}, 失败: ${failCount}`);
-    await sendTelegramMessage(
-        `📊 *Bot-Hosting 续期汇总*\n成功: ${successCount}/${allResults.length}\n失败: ${failCount}/${allResults.length}`
-    );
 
     console.log('关闭浏览器连接。');
     await browser.close();
