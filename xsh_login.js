@@ -1,214 +1,407 @@
 /**
- * X Systems Hosting — Discord Token 一键登录工作流 (GitHub Actions 版)
- * ===================================================================
+ * X Systems Hosting — Discord Token 登录 + 自动看广告 (纯 API 版)
+ * ================================================================
+ * 全程无需浏览器！使用纯 HTTP API：
+ *   1. Discord OAuth → 获取授权码 (API)
+ *   2. xsystemshosting callback → 获取 session cookie (HTTP)
+ *   3. 获取广告页 token + csrf (HTTP)
+ *   4. 心跳 + 领取积分 (HTTP)
  *
  * 环境变量:
  *   XSH_USERS_JSON = [{"Discord-token":"MTM3..."}]
- *
- * 工作流:
- *   1. 打开 xsystemshosting.com/login
- *   2. 点击 "Continue with Discord"
- *   3. 用 Discord Token 登录（localStorage iframe 注入法）
- *   4. 回到 OAuth 授权页，点击 "授权"
- *   5. 成功跳转到 /dashboard
+ *   HTTP_PROXY      = (可选) http://user:pass@host:port
  */
 
-const { chromium } = require('playwright');
-const path = require('path');
+const axios = require('axios');
 const fs = require('fs');
+const path = require('path');
+// cookie 解析在 CookieJar 中已实现
 
-// ---------- 读取用户配置 ----------
-const usersJson = process.env.XSH_USERS_JSON;
-if (!usersJson) {
-  console.error('❌ 缺少环境变量 XSH_USERS_JSON');
-  process.exit(1);
-}
+const XSH_BASE = 'https://xsystemshosting.com';
+const DISCORD_API = 'https://discord.com/api/v10';
+const CLIENT_ID = '1472320867060023540';
+const REDIRECT_URI = `${XSH_BASE}/auth/discord/callback`;
+const SCOPES = 'identify email';
+const MAX_ADS_PER_DAY = 25;
 
-let users;
-try {
-  users = JSON.parse(usersJson);
-  if (!Array.isArray(users) || users.length === 0) {
-    throw new Error('XSH_USERS_JSON 必须是非空数组');
+// ---------- 简易 cookie jar ----------
+class CookieJar {
+  constructor() {
+    this.cookies = {};
   }
-} catch (e) {
-  console.error('❌ XSH_USERS_JSON 解析失败:', e.message);
-  process.exit(1);
+  /** 从 response headers 提取 set-cookie */
+  setFromHeaders(headers) {
+    const setCookies = headers['set-cookie'];
+    if (!setCookies) return;
+    const list = Array.isArray(setCookies) ? setCookies : [setCookies];
+    for (const raw of list) {
+      const eq = raw.indexOf('=');
+      if (eq < 0) continue;
+      const name = raw.substring(0, eq).trim();
+      const semi = raw.indexOf(';', eq);
+      const value = semi < 0 ? raw.substring(eq + 1) : raw.substring(eq + 1, semi);
+      this.cookies[name] = value.trim();
+    }
+  }
+  /** 返回 Cookie header 字符串 */
+  getHeader() {
+    const parts = Object.entries(this.cookies).map(([k, v]) => `${k}=${v}`);
+    return parts.join('; ');
+  }
 }
 
-const isCI = process.env.CI === 'true';
-const SCREENSHOT_DIR = path.resolve('screenshots');
+
+// ---------- 创建 HTTP 客户端 ----------
+function createClient(proxyUrl) {
+  const cfg = {
+    baseURL: XSH_BASE,
+    timeout: 30000,
+    maxRedirects: 0, // 不自动跟随重定向
+    validateStatus: (s) => s < 400 || s === 302 || s === 301, // 允许重定向
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    },
+  };
+  if (proxyUrl) {
+    const url = new URL(proxyUrl);
+    cfg.proxy = {
+      host: url.hostname,
+      port: parseInt(url.port) || 8080,
+      protocol: url.protocol.replace(':', ''),
+    };
+    if (url.username) {
+      cfg.proxy.auth = { username: url.username, password: url.password };
+    }
+  }
+  return axios.create(cfg);
+}
 
 // ---------- 工具函数 ----------
-async function screenshot(page, name) {
-  if (!fs.existsSync(SCREENSHOT_DIR)) {
-    fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
-  }
-  const filePath = path.join(SCREENSHOT_DIR, `xsh-${name}.png`);
-  await page.screenshot({ path: filePath, fullPage: true });
-  console.log(`  📸 截图已保存: ${filePath}`);
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
-// ---------- 登录单个用户 ----------
-async function loginUser(browser, user, index) {
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 720 },
-    locale: 'zh-CN',
+function log(msg, label = '') {
+  const prefix = label ? `[${label}]` : '[xsh]';
+  console.log(`${prefix} ${msg}`);
+}
+
+// ---------- 步骤 1: Discord OAuth 授权 ----------
+async function discordOAuth(token) {
+  log('Step 1: Discord OAuth 授权...', '1/5');
+
+  // 验证 token
+  const userRes = await axios.get(`${DISCORD_API}/users/@me`, {
+    headers: { Authorization: token },
+    timeout: 15000,
   });
-  const page = await context.newPage();
+  if (userRes.status !== 200) {
+    throw new Error(`Discord token 无效: ${userRes.status}`);
+  }
+  const user = userRes.data;
+  log(`  ✅ Discord 用户: ${user.global_name || user.username} (${user.id})`, '1/5');
 
-  const token = user['Discord-token'] || user.token;
-  const label = `${index + 1}/${users.length}`;
+  // 直接调用 Discord OAuth authorize API
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPES,
+  });
 
-  console.log(`\n===== 用户 ${label} =====`);
+  const authRes = await axios.post(
+    `${DISCORD_API}/oauth2/authorize?${params}`,
+    {
+      authorize: true,
+      client_id: CLIENT_ID,
+      response_type: 'code',
+      redirect_uri: REDIRECT_URI,
+      scope: SCOPES,
+      permissions: '0',
+      integration_type: 0,
+    },
+    {
+      headers: {
+        Authorization: token,
+        'Content-Type': 'application/json',
+      },
+      timeout: 15000,
+      maxRedirects: 0,
+      validateStatus: (s) => true,
+    }
+  );
+
+  // 从重定向 location 提取 code
+  const location = authRes.headers['location'] || '';
+  if (!location.includes('code=')) {
+    // 尝试从 body 找 location
+    if (authRes.data && authRes.data.location) {
+      const code = new URL(authRes.data.location).searchParams.get('code');
+      if (code) {
+        log(`  ✅ 获取到授权码: ${code.substring(0, 20)}...`, '1/5');
+        return { code, user };
+      }
+    }
+    throw new Error(`OAuth 授权失败: status=${authRes.status}, body=${JSON.stringify(authRes.data || '').substring(0, 200)}`);
+  }
+
+  const code = new URL(location).searchParams.get('code');
+  log(`  ✅ 获取到授权码: ${code.substring(0, 20)}...`, '1/5');
+  return { code, user };
+}
+
+// ---------- 步骤 2: 完成 xsystemshosting 登录 ----------
+async function loginXSH(code, jar) {
+  log('Step 2: 完成 xsystemshosting 登录...', '2/5');
+
+  const client = createClient();
+
+  // 访问 callback URL 获取 session cookie
+  const callbackUrl = `${REDIRECT_URI}?code=${encodeURIComponent(code)}`;
+  const res = await client.get(callbackUrl, {
+    maxRedirects: 5, // 允许跟随重定向以获取完整 cookie
+    validateStatus: (s) => true,
+  });
+
+  // 提取所有 set-cookie
+  jar.setFromHeaders(res.headers);
+
+  log(`  ✅ 登录完成: ${res.status}`, '2/5');
+  log(`  🍪 Session cookie: ${Object.keys(jar.cookies).join(', ')}`, '2/5');
+
+  return jar;
+}
+
+// ---------- 步骤 3: 获取广告页面 token+csrf ----------
+async function fetchAdPage(jar) {
+  log('Step 3: 获取广告页面...', '3/5');
+
+  const client = createClient();
+  const res = await client.get('/quests/ad', {
+    headers: { Cookie: jar.getHeader() },
+    maxRedirects: 5,
+    validateStatus: (s) => true,
+  });
+
+  const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+  jar.setFromHeaders(res.headers);
+
+  // 提取 token (通常在 URL 或 hidden input 中)
+  // token 格式: URL /quests/ads/heartbeat 表单中的 token
+  let token = '';
+  let csrf = '';
+
+  // 尝试从 HTML 中提取 token 和 csrf
+  // 模式1: name="token" value="xxx"
+  const tokenMatch = html.match(/name=["']token["'][^>]*value=["']([^"']+)["']/);
+  if (tokenMatch) token = tokenMatch[1];
+
+  // 模式2: name="csrf" value="xxx"
+  const csrfMatch = html.match(/name=["']csrf["'][^>]*value=["']([^"']+)["']/);
+  if (csrfMatch) csrf = csrfMatch[1];
+
+  // 模式3: 从 JS 变量中提取
+  if (!token) {
+    const tMatch = html.match(/token["']?\s*[:=]\s*["']([^"']+)["']/);
+    if (tMatch) token = tMatch[1];
+  }
+
+  log(`  📄 页面长度: ${html.length} 字节`, '3/5');
+
+  if (!token) {
+    // 看看页面内容
+    const bodyExcerpt = html.substring(0, 1000);
+    log(`  ⚠️ 未找到 token，页面内容: ${bodyExcerpt}`, '3/5');
+    // 保存到文件以便调试
+    fs.writeFileSync(path.join(process.env.SCREENSHOT_DIR || '.', 'ad-page.html'), html);
+    throw new Error('无法从广告页提取 token');
+  }
+
+  log(`  ✅ token: ${token.substring(0, 20)}...`, '3/5');
+  log(`  ✅ csrf: ${csrf ? csrf.substring(0, 20) + '...' : '(无)'}`, '3/5');
+
+  return { token, csrf, html };
+}
+
+// ---------- 步骤 4: 心跳 ----------
+async function sendHeartbeat(jar, token, csrf, seconds) {
+  const client = createClient();
+  const formData = new URLSearchParams();
+  formData.append('token', token);
+  formData.append('seconds', String(seconds));
+  if (csrf) formData.append('csrf', csrf);
+
+  const res = await client.post('/quests/ads/heartbeat', formData.toString(), {
+    headers: {
+      Cookie: jar.getHeader(),
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Referer': `${XSH_BASE}/quests/ad`,
+    },
+    maxRedirects: 0,
+    validateStatus: (s) => true,
+  });
+
+  jar.setFromHeaders(res.headers);
+  return res.data;
+}
+
+// ---------- 步骤 5: 领取积分 ----------
+async function claimCredit(jar, token, csrf) {
+  log('Step 5: 领取积分...', '5/5');
+
+  const client = createClient();
+  const formData = new URLSearchParams();
+  formData.append('token', token);
+  if (csrf) formData.append('csrf', csrf);
+
+  const res = await client.post('/quests/ads/claim', formData.toString(), {
+    headers: {
+      Cookie: jar.getHeader(),
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Referer': `${XSH_BASE}/quests/ad`,
+    },
+    maxRedirects: 0,
+    validateStatus: (s) => true,
+  });
+
+  jar.setFromHeaders(res.headers);
+
+  // 检查重定向到 dashboard 的 notice
+  const location = res.headers['location'] || '';
+  if (location.includes('notice=')) {
+    const notice = decodeURIComponent(location.split('notice=')[1] || '');
+    log(`  ✅ 领取成功! ${notice}`, '5/5');
+    return { success: true, notice };
+  }
+
+  if (res.status === 302) {
+    log(`  ✅ 领取成功 (重定向: ${location})`, '5/5');
+    return { success: true, location };
+  }
+
+  // 尝试解析 body
+  try {
+    const body = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+    log(`  ℹ️ 响应: ${JSON.stringify(body)}`, '5/5');
+    if (body.ok) return { success: true, ...body };
+    return { success: false, ...body };
+  } catch {
+    log(`  ℹ️ raw: ${String(res.data).substring(0, 200)}`, '5/5');
+  }
+
+  return { success: false, error: `status=${res.status}` };
+}
+
+// ---------- 主流程 ----------
+async function processUser(userData, index, total) {
+  const token = userData['Discord-token'] || userData.token;
+  const label = `${index + 1}/${total}`;
+  const jar = new CookieJar();
+
+  console.log(`\n======= 用户 ${label} =======`);
 
   try {
-    // ===== Step 1: 打开 xsystemshosting =====
-    console.log(`  [${label}] Step 1: 打开 xsystemshosting...`);
-    await page.goto('https://xsystemshosting.com/dashboard/discord', {
-      waitUntil: 'networkidle',
-      timeout: 30000,
-    });
-    console.log(`  URL: ${page.url()}`);
-    if (page.url().includes('/dashboard')) {
-      console.log(`  ✅ [${label}] 已登录，跳过登录流程`);
-      await context.close();
-      return { success: true, user: token.slice(0, 20) + '...' };
-    }
+    // 1. Discord OAuth
+    const { code, user } = await discordOAuth(token);
+    const username = user.global_name || user.username;
+    log(`用户: ${username}`, label);
 
-    // ===== Step 2: 点击 "Continue with Discord" =====
-    console.log(`  [${label}] Step 2: 点击 "Continue with Discord"...`);
-    await page.click('text="Continue with Discord"');
-    await page.waitForTimeout(3000);
-    console.log(`  URL: ${page.url()}`);
+    // 2. 登录 xsystemshosting
+    await loginXSH(code, jar);
 
-    // 如果已经登录了 Discord，可能直接跳过了
-    if (page.url().includes('authorize')) {
-      console.log(`  [${label}] 已在 Discord 登录状态，直接处理授权...`);
-    } else {
-      // ===== Step 3: 用 Token 登录 Discord =====
-      console.log(`  [${label}] Step 3: 注入 Discord Token...`);
+    // 3-5. 循环看广告
+    let adCount = 0;
+    for (let i = 0; i < MAX_ADS_PER_DAY; i++) {
+      log(`\n--- 第 ${i + 1}/${MAX_ADS_PER_DAY} 个广告 ---`, label);
 
-      // 方法: 通过 iframe 写入 localStorage token
-      await page.evaluate((t) => {
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        const iframeWindow = iframe.contentWindow;
-        iframeWindow.localStorage.setItem('token', JSON.stringify(t));
-        document.body.removeChild(iframe);
-      }, token);
-
-      // 跳转到 Discord 频道页以触发 token 认证
-      await page.goto('https://discord.com/channels/@me', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-      await page.waitForTimeout(3000);
-      console.log(`  Discord 登录后 URL: ${page.url()}`);
-    }
-
-    // ===== Step 4: 导航到 OAuth 授权页 =====
-    console.log(`  [${label}] Step 4: 导航到 OAuth 授权页...`);
-    await page.goto(
-      'https://discord.com/oauth2/authorize?client_id=1472320867060023540&redirect_uri=https%3A%2F%2Fxsystemshosting.com%2Fauth%2Fdiscord%2Fcallback&response_type=code&scope=identify%20email',
-      { waitUntil: 'networkidle', timeout: 30000 }
-    );
-    await page.waitForTimeout(2000);
-    console.log(`  OAuth URL: ${page.url()}`);
-
-    // 检查是否已经授权成功被重定向
-    if (page.url().includes('xsystemshosting.com')) {
-      console.log(`  ✅ [${label}] 已授权并跳转回 xsystemshosting`);
-      await screenshot(page, `user${index + 1}-done`);
-      await context.close();
-      return { success: true, user: token.slice(0, 20) + '...' };
-    }
-
-    // ===== Step 5: 点击 "授权" =====
-    console.log(`  [${label}] Step 5: 点击 "授权"...`);
-
-    // 等待 "授权" 按钮出现
-    try {
-      await page.waitForSelector('button:has-text("授权")', { timeout: 10000 });
-      await page.click('button:has-text("授权")');
-    } catch {
-      // 可能按钮文本不同，尝试英文
       try {
-        await page.waitForSelector('button:has-text("Authorize")', { timeout: 5000 });
-        await page.click('button:has-text("Authorize")');
-      } catch {
-        console.log(`  ⚠️ [${label}] 未找到授权按钮，尝试通用点击...`);
-        // 截图留存
-        await screenshot(page, `user${index + 1}-no-auth-btn`);
-        await context.close();
-        return { success: false, user: token.slice(0, 20) + '...', error: '找不到授权按钮' };
+        // 3. 获取广告页
+        const { token: adToken, csrf: adCsrf } = await fetchAdPage(jar);
+
+        // 4. 发送心跳 (一次发 10 秒直接达标)
+        log(`  Step 4: 发送心跳...`, label);
+        const hb = await sendHeartbeat(jar, adToken, adCsrf, 10);
+        log(`  心跳响应: ${JSON.stringify(hb)}`, label);
+
+        // 5. 领取
+        const claimResult = await claimCredit(jar, adToken, adCsrf);
+        if (claimResult.success) {
+          adCount++;
+          log(`  🎉 累计已领取 ${adCount} 个广告积分`, label);
+        } else {
+          log(`  ⚠️ 领取可能失败: ${JSON.stringify(claimResult)}`, label);
+          break; // 可能当天已达上限
+        }
+
+        // 短暂延迟避免触发限流
+        await sleep(1500);
+
+      } catch (err) {
+        if (err.message.includes('无法从广告页提取 token')) {
+          log(`  ⚠️ 可能已达当日上限或没有更多广告`, label);
+        } else {
+          log(`  ❌ 广告 ${i + 1} 失败: ${err.message}`, label);
+        }
+        break;
       }
     }
 
-    // 等待重定向回 xsystemshosting
-    await page.waitForTimeout(5000);
-    console.log(`  授权后 URL: ${page.url()}`);
-
-    // ===== 验证 =====
-    if (page.url().includes('/dashboard')) {
-      console.log(`  ✅ [${label}] 登录成功！`);
-      await screenshot(page, `user${index + 1}-success`);
-      await context.close();
-      return { success: true, user: token.slice(0, 20) + '...' };
-    }
-
-    // 等待最终跳转（可能有点慢）
-    try {
-      await page.waitForURL('**/dashboard**', { timeout: 15000 });
-      console.log(`  ✅ [${label}] 最终跳转成功！`);
-      await screenshot(page, `user${index + 1}-success`);
-      await context.close();
-      return { success: true, user: token.slice(0, 20) + '...' };
-    } catch {
-      console.log(`  ⚠️ [${label}] 可能未完全跳转，当前 URL: ${page.url()}`);
-      await screenshot(page, `user${index + 1}-final`);
-      await context.close();
-      return { success: false, user: token.slice(0, 20) + '...', error: '未跳转到 dashboard' };
-    }
+    log(`\n✅ 用户 ${username} 完成，共观看 ${adCount} 个广告`, label);
+    return { success: true, username, adsWatched: adCount };
   } catch (err) {
-    console.error(`  ❌ [${label}] 错误: ${err.message}`);
-    await screenshot(page, `user${index + 1}-error`).catch(() => {});
-    await context.close();
-    return { success: false, user: token.slice(0, 20) + '...', error: err.message };
+    log(`❌ 用户处理失败: ${err.message}`, label);
+    return { success: false, error: err.message, adsWatched: 0 };
   }
 }
 
-// ---------- 主函数 ----------
-(async () => {
-  console.log(`🚀 X Systems Hosting 登录工作流启动`);
-  console.log(`   共 ${users.length} 个用户`);
+// ---------- 入口 ----------
+async function main() {
+  console.log('🚀 X Systems Hosting 自动看广告 (纯 API 版)');
+  console.log('='.repeat(50));
 
-  const browser = await chromium.launch({
-    headless: !isCI,     // CI 下 headless，本地可见
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-  });
+  // 读取用户配置
+  const usersJson = process.env.XSH_USERS_JSON;
+  if (!usersJson) {
+    console.error('❌ 缺少环境变量 XSH_USERS_JSON');
+    process.exit(1);
+  }
+
+  let users;
+  try {
+    users = JSON.parse(usersJson);
+    if (!Array.isArray(users) || users.length === 0) {
+      throw new Error('需要非空数组');
+    }
+  } catch (e) {
+    console.error('❌ XSH_USERS_JSON 解析失败:', e.message);
+    process.exit(1);
+  }
+
+  console.log(`📋 共 ${users.length} 个用户\n`);
 
   const results = [];
   for (let i = 0; i < users.length; i++) {
-    const r = await loginUser(browser, users[i], i);
+    const r = await processUser(users[i], i, users.length);
     results.push(r);
   }
 
-  await browser.close();
-
-  // ---------- 汇总 ----------
-  console.log('\n========== 汇总 ==========');
-  const successCount = results.filter((r) => r.success).length;
-  console.log(`  成功: ${successCount}/${results.length}`);
+  // 汇总
+  console.log('\n' + '='.repeat(50));
+  console.log('📊 汇总');
+  console.log('='.repeat(50));
+  let totalAds = 0;
   results.forEach((r, i) => {
     const status = r.success ? '✅' : '❌';
-    console.log(`  ${status} 用户${i + 1}: ${r.user}${r.error ? ` — ${r.error}` : ''}`);
+    console.log(`  ${status} 用户${i + 1}: ${r.username || '?'} — 看过 ${r.adsWatched || 0} 个广告${r.error ? ` (${r.error})` : ''}`);
+    totalAds += r.adsWatched || 0;
   });
+  console.log(`\n📈 总计观看: ${totalAds} 个广告`);
+  console.log(`💎 总计获得: ${totalAds} 积分`);
+}
 
-  if (successCount < results.length) {
-    console.log('\n⚠️  部分用户登录失败，请检查截图');
-    process.exit(1);
-  } else {
-    console.log('\n🎉 所有用户登录成功！');
-  }
-})();
+main().catch(err => {
+  console.error(`\n❌ 严重错误: ${err.message}`);
+  process.exit(1);
+});
