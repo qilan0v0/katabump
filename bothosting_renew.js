@@ -345,6 +345,151 @@ function withTimeout(promise, ms, label) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
+// --- Discord OAuth 登录（备用，当 cookie 失效时用 Discord Token 重新登录）---
+const DISCORD_CLIENT_ID = '884382422530158623';
+const OAUTH_REDIRECT_URI = 'https://bot-hosting.net/login';
+const OAUTH_SCOPE = 'identify email guilds';
+const DISCORD_API = 'https://discord.com/api/v9/oauth2/authorize';
+const DISCORD_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
+
+/**
+ * 通过 Discord Token 走 OAuth 流程登录 bot-hosting.net
+ * 参考 https://github.com/eooce/Auto-Renew-Bothosting
+ */
+async function attemptDiscordLogin(page, context, discordToken) {
+    console.log('   >> 🔑 尝试 Discord OAuth 登录...');
+
+    // Step 1: 打开 /login/discord 获取 state
+    try {
+        await gotoWithRetry(page, 'https://bot-hosting.net/login/discord');
+        await page.waitForTimeout(3000);
+    } catch (e) {
+        console.error('   >> 打开 /login/discord 失败:', e.message);
+        return false;
+    }
+
+    const currentUrl = page.url();
+    console.log(`   >> 当前 URL: ${currentUrl}`);
+
+    if (!currentUrl.includes('discord.com')) {
+        console.log('   >> ⚠️ 未跳转到 Discord 页面，可能已登录或链接异常');
+        // 如果已经回到 bot-hosting.net 说明可能已经登录
+        if (currentUrl.includes('bot-hosting.net') && !currentUrl.includes('/login')) {
+            console.log('   >> ✅ 似乎已登录 bot-hosting.net');
+            return true;
+        }
+        return false;
+    }
+
+    // 提取 state
+    const stateMatch = currentUrl.match(/[?&]state=([^&]+)/);
+    if (!stateMatch) {
+        console.log('   >> ❌ 无法提取 state');
+        return false;
+    }
+    const state = decodeURIComponent(stateMatch[1]);
+    console.log('   >> ✅ 已捕获 state');
+
+    // Step 2: 用 Discord Token 调用 OAuth2 authorize API
+    const queryParams = {
+        client_id: DISCORD_CLIENT_ID,
+        response_type: 'code',
+        redirect_uri: OAUTH_REDIRECT_URI,
+        scope: OAUTH_SCOPE,
+        state: state,
+    };
+    const authorizeUrl = `${DISCORD_API}?${new URLSearchParams(queryParams).toString()}`;
+
+    const referer = `https://discord.com/oauth2/authorize?${new URLSearchParams(queryParams).toString()}`;
+
+    const axiosConfig = {
+        headers: {
+            'accept': '*/*',
+            'authorization': discordToken,
+            'content-type': 'application/json',
+            'origin': 'https://discord.com',
+            'referer': referer,
+            'user-agent': DISCORD_UA,
+            'x-discord-locale': 'zh-CN',
+        },
+        timeout: 20000,
+    };
+
+    // Discord API 请求也走代理（如果配了）
+    if (PROXY_CONFIG) {
+        axiosConfig.proxy = {
+            protocol: 'http',
+            host: new URL(PROXY_CONFIG.server).hostname,
+            port: new URL(PROXY_CONFIG.server).port,
+        };
+        if (PROXY_CONFIG.username && PROXY_CONFIG.password) {
+            axiosConfig.proxy.auth = { username: PROXY_CONFIG.username, password: PROXY_CONFIG.password };
+        }
+    }
+
+    try {
+        const resp = await axios.post(authorizeUrl, {
+            permissions: '0',
+            authorize: true,
+            integration_type: 0,
+            location_context: {
+                guild_id: '10000',
+                channel_id: '10000',
+                channel_type: 10000,
+            },
+        }, axiosConfig);
+
+        if (resp.status !== 200) {
+            console.log(`   >> ❌ Discord OAuth2 授权失败: HTTP ${resp.status}`);
+            return false;
+        }
+
+        const location = resp.data.location;
+        if (!location) {
+            console.log('   >> ❌ 授权响应中未找到 location 字段');
+            return false;
+        }
+
+        const masked = location.replace(/code=[^&]+/, 'code=***');
+        console.log(`   >> ✅ 拿到回调 URL: ${masked}`);
+
+        // Step 3: 打开回调 URL 完成登录
+        console.log('   >> ↩️ 携带授权码打开回调链接...');
+        await gotoWithRetry(page, location);
+        await page.waitForTimeout(3000);
+
+        const finalUrl = page.url();
+        console.log(`   >> 回调后 URL: ${finalUrl}`);
+
+        if (finalUrl.includes('/error/banned')) {
+            console.log('   >> 🚫 账号已被封禁');
+            return false;
+        }
+
+        if (finalUrl.includes('bot-hosting.net') && !finalUrl.includes('/login')) {
+            console.log('   >> ✅ Discord OAuth 登录成功！');
+            return true;
+        }
+
+        // 等待一下可能还在跳转
+        for (let w = 0; w < 20; w++) {
+            const url = page.url();
+            if (url.includes('bot-hosting.net') && !url.includes('/login') && !url.includes('discord')) {
+                console.log('   >> ✅ Discord OAuth 登录成功！');
+                return true;
+            }
+            await page.waitForTimeout(500);
+        }
+
+        console.log(`   >> ❌ 登录超时，最终 URL: ${page.url()}`);
+        return false;
+
+    } catch (e) {
+        console.error('   >> ❌ Discord OAuth 请求异常:', e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message);
+        return false;
+    }
+}
+
 // === 主流程 ===
 (async () => {
     const users = getUsers();
@@ -436,9 +581,37 @@ function withTimeout(promise, ms, label) {
             console.log(`   >> 登录状态: ${loggedIn ? '已登录' : '未登录'} (${page.url()})`);
 
             if (!loggedIn) {
-                console.log('   >> ⚠️ Cookie 已失效，需要重新登录。跳过该用户。');
-                await sendTelegramMessage(`⚠️ *Cookie 已失效*\n用户: ${user.username}\nBot-Hosting cookie 已过期，需要手动更新。`);
-                continue;
+                // 尝试 Discord OAuth 登录（如果用户配置了 Discord-token）
+                if (user['Discord-token'] || user['discord_token'] || user['discordToken']) {
+                    const dcToken = user['Discord-token'] || user['discord_token'] || user['discordToken'];
+                    console.log('   >> ⚠️ Cookie 已失效，尝试 Discord OAuth 重新登录...');
+                    // 先清理 cookie 再尝试登录
+                    try { await context.clearCookies(); } catch (e) { }
+                    const dcOk = await attemptDiscordLogin(page, context, dcToken);
+                    if (dcOk) {
+                        console.log('   >> ✅ Discord OAuth 登录成功，重新打开账单页...');
+                        await gotoWithRetry(page, BILLING_URL);
+                        await page.waitForTimeout(3000);
+                        // 重新检查登录状态
+                        loggedIn = !page.url().includes('/auth/login') && !page.url().includes('login');
+                        if (loggedIn) {
+                            console.log('   >> ✅ 确认已登录，继续续期流程');
+                            // 保存新 cookie 到 KV
+                            try {
+                                const newCookies = await context.cookies();
+                                await kvPut(cookieKey, JSON.stringify(newCookies));
+                            } catch (e) { console.warn('   >> 保存新 cookie 失败:', e.message); }
+                        }
+                    } else {
+                        console.log('   >> ❌ Discord OAuth 登录失败');
+                    }
+                } else {
+                    console.log('   >> ⚠️ 未配置 Discord-token，无法自动重新登录');
+                }
+                if (!loggedIn) {
+                    await sendTelegramMessage(`⚠️ *Cookie 已失效*\n用户: ${user.username}\nBot-Hosting cookie 已过期，需要手动更新。`);
+                    continue;
+                }
             }
 
             // 3. 保存 cookie 到 KV (登录有效)
