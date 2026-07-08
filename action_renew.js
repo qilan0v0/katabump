@@ -296,10 +296,12 @@ async function launchChrome() {
     args.push('--disable-dev-shm-usage'); // 避免共享内存不足
 
 
+    let stderrBuf = '';
     const chrome = spawn(CHROME_PATH, args, {
         detached: true,
-        stdio: 'ignore'
+        stdio: ['ignore', 'ignore', 'pipe']
     });
+    chrome.stderr.on('data', (d) => { stderrBuf += d.toString(); });
     chrome.unref();
 
     console.log('正在等待 Chrome 初始化...');
@@ -310,6 +312,7 @@ async function launchChrome() {
 
     if (!await checkPort(DEBUG_PORT)) {
         console.error('Chrome 无法在端口 ' + DEBUG_PORT + ' 上启动');
+        if (stderrBuf) console.error('Chrome stderr:', stderrBuf.slice(0, 1000));
         throw new Error('Chrome 启动失败');
     }
 }
