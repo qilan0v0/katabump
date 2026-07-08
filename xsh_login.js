@@ -141,10 +141,22 @@ async function loginWithBrowser(token, cookieHeader) {
     log('  → 需要 Discord OAuth 登录...');
 
     // 点击 "Continue with Discord"
+    log('  → 点击 "Continue with Discord"...');
     await page.click('text="Continue with Discord"');
     await page.waitForTimeout(3000);
+    log(`  → 当前 URL: ${page.url()}`);
+
+    // 如果已经跳转到 xsystemshosting dashboard，说明已登录
+    if (page.url().includes(XSH_BASE)) {
+      log('  ✅ 已重定向回 xsystemshosting，直接提取 cookie');
+      const cookies = await context.cookies();
+      const xshCookies = parseCookiesFromBrowser(cookies);
+      await browser.close();
+      return xshCookies;
+    }
 
     // 注入 Discord Token
+    log('  → 注入 Discord Token...');
     await page.evaluate((t) => {
       const iframe = document.createElement('iframe');
       iframe.style.display = 'none';
@@ -154,18 +166,57 @@ async function loginWithBrowser(token, cookieHeader) {
     }, token);
 
     // 触发 Discord 登录
+    log('  → 触发 Discord 登录...');
     await page.goto('https://discord.com/channels/@me', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
+    log(`  → Discord 登录后 URL: ${page.url()}`);
 
     // 回到 OAuth 授权页
+    log('  → 回到 OAuth 授权页...');
     await page.goto(
       'https://discord.com/oauth2/authorize?client_id=1472320867060023540&redirect_uri=https%3A%2F%2Fxsystemshosting.com%2Fauth%2Fdiscord%2Fcallback&response_type=code&scope=identify%20email',
       { waitUntil: 'networkidle', timeout: 30000 }
     );
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(3000);
+    log(`  → OAuth URL: ${page.url()}`);
 
-    // 点击 "授权"
-    await page.click('button:has-text("授权")');
+    // 检查是否已授权成功（被重定向回 xsystemshosting）
+    if (page.url().includes(XSH_BASE)) {
+      log('  ✅ 已自动授权，提取 cookie');
+      const cookies = await context.cookies();
+      const xshCookies = parseCookiesFromBrowser(cookies);
+      await browser.close();
+      return xshCookies;
+    }
+
+    // 调试：打印页面内容
+    const pageText = await page.evaluate(() => document.body?.innerText?.substring(0, 500) || '');
+    log(`  → 页面内容: ${pageText}`);
+
+    // 尝试找到授权按钮（支持中文/英文）
+    log('  → 查找授权按钮...');
+    const authBtn = [
+      'button:has-text("授权")',
+      'button:has-text("Authorize")',
+      '[type="submit"]:has-text("授权")',
+      '[type="submit"]:has-text("Authorize")',
+    ];
+    let clicked = false;
+    for (const sel of authBtn) {
+      const btn = await page.$(sel);
+      if (btn) {
+        const text = await btn.textContent();
+        log(`  → 点击: "${text?.trim()}"`);
+        await btn.click();
+        clicked = true;
+        break;
+      }
+    }
+    if (!clicked) {
+      // 最后的尝试：点击任何包含 "授权" 或 "Authorize" 的按钮
+      log('  → 尝试模糊匹配...');
+      await page.click('button:has-text("授权")').catch(() => page.click('[type="submit"]').catch(() => {}));
+    }
     await page.waitForTimeout(5000);
 
     // 等待跳转到 dashboard
@@ -264,7 +315,7 @@ async function processUser(userData, index, total) {
   // ---- 尝试读 CK ----
   let cookieHeader = null;
   const ckJson = await kvGet(ckKey);
-  if (ckJson) {
+  if (ckJson && ckJson.length > 10) {
     try {
       const parsed = JSON.parse(ckJson);
       if (Array.isArray(parsed) && parsed.length > 0) {
