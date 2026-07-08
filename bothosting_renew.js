@@ -381,14 +381,28 @@ async function attemptDiscordLogin(page, context, discordToken) {
         return false;
     }
 
-    // 提取 state
-    const stateMatch = currentUrl.match(/[?&]state=([^&]+)/);
-    if (!stateMatch) {
-        console.log('   >> ❌ 无法提取 state');
+    // 提取 state — 可能在直接 OAuth 页面的查询参数中，或在 login?redirect_to=... 的编码 redirect_to 里
+    let state = null;
+    const directStateMatch = currentUrl.match(/[?&]state=([^&]+)/);
+    if (directStateMatch) {
+        state = decodeURIComponent(directStateMatch[1]);
+        console.log('   >> ✅ 已从 URL 直接捕获 state');
+    } else {
+        // 尝试从 login?redirect_to=... 中提取
+        const redirectToMatch = currentUrl.match(/[?&]redirect_to=([^&]+)/);
+        if (redirectToMatch) {
+            const decodedRedirect = decodeURIComponent(redirectToMatch[1]);
+            const stateInRedirect = decodedRedirect.match(/[?&]state=([^&]+)/);
+            if (stateInRedirect) {
+                state = decodeURIComponent(stateInRedirect[1]);
+                console.log('   >> ✅ 已从 redirect_to 参数中提取 state');
+            }
+        }
+    }
+    if (!state) {
+        console.log('   >> ❌ 无法从 URL 或 redirect_to 中提取 state');
         return false;
     }
-    const state = decodeURIComponent(stateMatch[1]);
-    console.log('   >> ✅ 已捕获 state');
 
     // Step 2: 用 Discord Token 调用 OAuth2 authorize API
     const queryParams = {
