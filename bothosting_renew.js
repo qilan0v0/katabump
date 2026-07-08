@@ -429,35 +429,58 @@ async function attemptDiscordLogin(page, context, discordToken) {
         timeout: 20000,
     };
 
-    // Discord API 请求也走代理（如果配了）
-    if (PROXY_CONFIG) {
-        axiosConfig.proxy = {
-            protocol: 'http',
-            host: new URL(PROXY_CONFIG.server).hostname,
-            port: new URL(PROXY_CONFIG.server).port,
-        };
-        if (PROXY_CONFIG.username && PROXY_CONFIG.password) {
-            axiosConfig.proxy.auth = { username: PROXY_CONFIG.username, password: PROXY_CONFIG.password };
+    // Discord API 请求：先直连（GHA 一般可直接访问），失败再尝试走代理
+    const discordApiPayload = {
+        permissions: '0',
+        authorize: true,
+        integration_type: 0,
+        location_context: {
+            guild_id: '10000',
+            channel_id: '10000',
+            channel_type: 10000,
+        },
+    };
+
+    let resp;
+    try {
+        // 尝试直连
+        resp = await axios.post(authorizeUrl, discordApiPayload, { ...axiosConfig, proxy: false });
+        console.log('   >> Discord API 请求（直连）成功');
+    } catch (directErr) {
+        console.log('   >> Discord API 直连失败:', directErr.message.slice(0, 80));
+        // 如果有代理则尝试走代理
+        if (PROXY_CONFIG) {
+            console.log('   >> 尝试通过代理请求 Discord API...');
+            try {
+                resp = await axios.post(authorizeUrl, discordApiPayload, {
+                    ...axiosConfig,
+                    proxy: {
+                        protocol: 'http',
+                        host: new URL(PROXY_CONFIG.server).hostname,
+                        port: new URL(PROXY_CONFIG.server).port,
+                        ...(PROXY_CONFIG.username && PROXY_CONFIG.password
+                            ? { auth: { username: PROXY_CONFIG.username, password: PROXY_CONFIG.password } }
+                            : {}),
+                    },
+                });
+                console.log('   >> Discord API 请求（代理）成功');
+            } catch (proxyErr) {
+                console.error('   >> ❌ Discord OAuth2 授权失败（直连和代理均失败）:',
+                    proxyErr.response ? JSON.stringify(proxyErr.response.data).slice(0, 200) : proxyErr.message);
+                return false;
+            }
+        } else {
+            console.error('   >> ❌ Discord OAuth2 授权失败:', directErr.message);
+            return false;
         }
     }
 
+    if (resp.status !== 200) {
+        console.log(`   >> ❌ Discord OAuth2 授权失败: HTTP ${resp.status}`);
+        return false;
+    }
+
     try {
-        const resp = await axios.post(authorizeUrl, {
-            permissions: '0',
-            authorize: true,
-            integration_type: 0,
-            location_context: {
-                guild_id: '10000',
-                channel_id: '10000',
-                channel_type: 10000,
-            },
-        }, axiosConfig);
-
-        if (resp.status !== 200) {
-            console.log(`   >> ❌ Discord OAuth2 授权失败: HTTP ${resp.status}`);
-            return false;
-        }
-
         const location = resp.data.location;
         if (!location) {
             console.log('   >> ❌ 授权响应中未找到 location 字段');
@@ -497,9 +520,8 @@ async function attemptDiscordLogin(page, context, discordToken) {
 
         console.log(`   >> ❌ 登录超时，最终 URL: ${page.url()}`);
         return false;
-
     } catch (e) {
-        console.error('   >> ❌ Discord OAuth 请求异常:', e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message);
+        console.error('   >> ❌ Discord OAuth 回调处理异常:', e.message);
         return false;
     }
 }
