@@ -106,8 +106,8 @@ async function runUser(token) {
 
       // 如果已跳回 xsh，跳过 Discord 登录
       if (!page.url().includes(XSH_BASE)) {
-        // ===== 3. 注入 Discord Token =====
-        console.log('  [3] 注入 Discord Token...');
+        // ===== 3. 注入 Discord Token + 刷新 =====
+        console.log('  [3] 注入 Discord Token 并刷新...');
         await page.evaluate((t) => {
           const iframe = document.createElement('iframe');
           iframe.style.display = 'none';
@@ -116,51 +116,43 @@ async function runUser(token) {
           document.body.removeChild(iframe);
         }, token);
 
-        // 跳转 Discord 频道页触发 token 认证
-        await page.goto('https://discord.com/channels/@me', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        // 刷新当前页（discord.com/login?redirect_to=...）
+        // Discord 会自动读取 localStorage 中的 token → 登录 → 重定向到 OAuth 授权页
+        await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
         await page.waitForTimeout(3000);
-        console.log(`      Discord URL: ${page.url()}`);
+        console.log(`      刷新后 URL: ${page.url()}`);
 
-        // ===== 4. 回到 OAuth 授权页 =====
-        console.log('  [4] 回到 OAuth 授权页...');
-        await page.goto(
-          'https://discord.com/oauth2/authorize?client_id=1472320867060023540&redirect_uri=https%3A%2F%2Fxsystemshosting.com%2Fauth%2Fdiscord%2Fcallback&response_type=code&scope=identify%20email',
-          { waitUntil: 'networkidle', timeout: 30000 }
-        );
-        await page.waitForTimeout(3000);
-        console.log(`      OAuth URL: ${page.url()}`);
+        // ===== 4. 点击授权按钮 =====
+        console.log('  [4] 点击授权按钮...');
+        await page.waitForTimeout(2000);
 
-        // ===== 5. 点击授权按钮 =====
-        console.log('  [5] 点击授权按钮...');
-
-        // 等待按钮出现（最多 10 秒）
-        await page.waitForSelector('button:has-text("授权")', { timeout: 10000 }).catch(() => {});
-        await page.waitForSelector('button:has-text("Authorize")', { timeout: 3000 }).catch(() => {});
-
-        // 用 locator 方式点击
-        const authBtn = page.locator('button').filter({ hasText: /授权|Authorize/ }).first();
-        if (await authBtn.count() > 0) {
-          const text = await authBtn.textContent();
-          console.log(`      找到按钮: "${text?.trim()}"`);
-          await authBtn.click();
+        // 如果已经跳回 xsh，说明已自动授权
+        if (page.url().includes(XSH_BASE)) {
+          console.log('      已自动授权跳回 xsh');
         } else {
-          // fallback: 用 evaluate 直接提交
-          console.log('      按钮未找到，尝试 JavaScript 提交...');
-          await page.evaluate(() => {
+          // 等待按钮出现
+          await page.waitForSelector('button:has-text("授权")', { timeout: 15000 }).catch(() => {});
+          await page.waitForSelector('button:has-text("Authorize")', { timeout: 5000 }).catch(() => {});
+
+          // 用 evaluate 直接点击（最可靠）
+          const clicked = await page.evaluate(() => {
             const btns = document.querySelectorAll('button');
             for (const btn of btns) {
-              if (btn.textContent?.includes('授权') || btn.textContent?.includes('Authorize')) {
+              const t = btn.textContent || '';
+              if (t.includes('授权') || t.includes('Authorize')) {
                 btn.click();
-                return;
+                return t.trim().substring(0, 30);
               }
             }
+            return null;
           });
+          console.log(`      点击: ${clicked || '没找到'} `);
         }
 
         // 等待跳转回 xsystemshosting
         await page.waitForTimeout(5000);
         try {
-          await page.waitForURL('**/xsystemshosting.com/**', { timeout: 20000 });
+          await page.waitForURL('**/xsystemshosting.com/**', { timeout: 25000 });
         } catch {}
       }
 
