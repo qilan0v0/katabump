@@ -572,8 +572,18 @@ async function gotoWithRetry(page, url, retries = 3) {
     for (let i = 1; i <= retries; i++) {
         try {
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            // 检查是否为 Cloudflare 错误页（522/521/520 等），是则视为失败重试
+            const bodyText = await page.locator('body').innerText().catch(() => '');
+            if (/error code (52[0-9]|403)|connection timed out/i.test(bodyText)) {
+                const match = bodyText.match(/Error code (52[0-9]|403)/i);
+                console.warn(`[导航] Cloudflare ${match ? match[1] : '错误'}: 连接源服务器超时，第 ${i}/${retries} 次重试...`);
+                if (i === retries) throw new Error(`Cloudflare 错误 (${match ? match[1] : '未知'})：源服务器不可达`);
+                await page.waitForTimeout(10000); // 服务器端问题，多等一会
+                continue;
+            }
             return;
         } catch (e) {
+            if (e.message.startsWith('Cloudflare')) throw e; // 已达最大重试，直接抛出
             console.warn(`[导航] 打开 ${url} 失败 (第 ${i}/${retries} 次): ${e.message}`);
             if (i === retries) throw e;
             await page.waitForTimeout(3000);
