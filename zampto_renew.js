@@ -19,7 +19,7 @@ const net = require('net');
 const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
 const { buildConfig: buildH2Config } = require('./.github/scripts/gen-hysteria2-config');
 
-const LOGIN_URL = 'https://auth.zampto.net/sign-in';
+const LOGIN_URL = 'https://dash.zampto.net/auth/login';
 
 // --- Turnstile CDP Bypass 注入脚本 ---
 // 劫持 attachShadow 捕获 Turnstile checkbox，计算位置比例存入 window.__turnstile_data
