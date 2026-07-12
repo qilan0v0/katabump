@@ -479,6 +479,10 @@ async function launchChrome(proxyConfig) {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
+        '--disable-extensions',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--disable-blink-features=AutomationControlled',
         '--user-data-dir=/tmp/chrome_user_data'
     ];
     if (proxyConfig) {
@@ -643,6 +647,25 @@ async function processUser(context, page, user, photoDir) {
             console.log(`打开续费页: ${user.serverUrl}`);
             await gotoWithRetry(page, user.serverUrl);
             await page.waitForTimeout(3000);
+
+            // 检测 Ad Blocker / VPN 检测等拦截页面，点击 "Refresh Page" 或 "Check Again"
+            const blockedText = await page.locator('body').innerText().catch(() => '');
+            if (/ad blocker|disable.*ad|refresh\s*page|check\s*again/i.test(blockedText)) {
+                console.log('   >> 检测到拦截页面 (Ad Blocker/VPN)，尝试点击刷新...');
+                const refreshBtn = page.getByRole('button', { name: /refresh\s*page|check\s*again/i })
+                    .or(page.locator('button, a, [role="button"]').filter({ hasText: /refresh|check again/i }))
+                    .first();
+                try {
+                    await refreshBtn.waitFor({ state: 'visible', timeout: 5000 });
+                    await refreshBtn.click();
+                    await page.waitForTimeout(5000);
+                    console.log('   >> 已点击刷新，等待页面加载...');
+                } catch (e) {
+                    console.log('   >> 未找到刷新按钮，尝试页面刷新...');
+                    await page.reload();
+                    await page.waitForTimeout(5000);
+                }
+            }
 
             // 续期按钮：精确匹配 "Renew Server"（绿色按钮），兼容 button/a/[role=button] 及其它续期文案
             const renewBtn = page.locator('button, a, [role="button"]')
