@@ -619,33 +619,26 @@ async function attemptTurnstileCdp(page) {
     return false;
 }
 
-// 登录单个账号（两步：先邮箱后密码）：返回 true/false
+// 登录单个账号（新页面：邮箱+密码同屏，点击 "Login" 提交）：返回 true/false
 async function loginOnce(page, user) {
     await gotoWithRetry(page, LOGIN_URL);
     await page.waitForTimeout(2000);
 
-    // 第 1 步：输入邮箱 → 点继续
     console.log('输入邮箱...');
-    const emailInput = page.locator('input[type="email"], input[name="email"], input[name="identifier"], input[placeholder*="email" i]').first();
+    const emailInput = page.locator('input#email, input[type="email"], input[name="email"], input[placeholder*="example" i]').first();
     await emailInput.waitFor({ state: 'visible', timeout: 30000 });
     await emailInput.fill(user.username);
     await page.waitForTimeout(400);
-    const contBtn = page.getByRole('button', { name: /continue|next|sign\s?in|log\s?in/i })
-        .or(page.locator('button[type="submit"]'))
-        .first();
-    await contBtn.click();
-    await page.waitForTimeout(2500);
 
-    // 第 2 步：输入密码 → 点登录
     console.log('输入密码...');
-    const pwdInput = page.locator('input[type="password"], input[name="password"], input[placeholder*="password" i]').first();
+    const pwdInput = page.locator('input#password, input[type="password"], input[name="password"]').first();
     await pwdInput.waitFor({ state: 'visible', timeout: 30000 });
     await pwdInput.fill(user.password);
     await page.waitForTimeout(400);
-    const signInBtn = page.getByRole('button', { name: /sign\s?in|log\s?in|continue/i })
-        .or(page.locator('button[type="submit"]'))
-        .first();
-    await signInBtn.click();
+
+    console.log('点击 Login...');
+    const loginBtn = page.locator('button[type="submit"]').or(page.getByRole('button', { name: /login|sign\s?in/i })).first();
+    await loginBtn.click();
 
     // 等待离开登录页 = 登录成功
     for (let s = 0; s < 25; s++) {
