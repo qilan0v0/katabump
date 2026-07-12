@@ -8,6 +8,20 @@ function urlDecode(str) {
 }
 
 function parseLink(link) {
+    // socks5://host:port:user:pass 非标准格式特殊处理
+    const socksNonStandard = link.match(/^socks5?:\/\/([^:]+):(\d+):([^:]+):(.+)$/);
+    if (socksNonStandard) {
+        return {
+            tag: 'proxy',
+            type: 'socks',
+            server: socksNonStandard[1],
+            server_port: parseInt(socksNonStandard[2]),
+            username: socksNonStandard[3],
+            password: socksNonStandard[4],
+            version: '5'
+        };
+    }
+
     const u = new URL(link);
     const proto = u.protocol.replace(':', '');
     const content = link.slice(link.indexOf('://') + 3).split('#')[0];
