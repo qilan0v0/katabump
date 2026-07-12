@@ -26,40 +26,32 @@ jobs:
         npm install
         npx playwright install-deps chrome
 
-    - name: Install v2ray
+    - name: Install sing-box
       run: |
-        mkdir -p $HOME/v2ray
-        cd $HOME/v2ray
-        V2RAY_URL=$(curl -fsSL https://api.github.com/repos/v2fly/v2ray-core/releases/latest \
-          | grep "browser_download_url" | grep 'v2ray-linux-64\.zip"' | cut -d '"' -f 4)
-        echo "下载 v2ray: $V2RAY_URL"
-        curl -fsSL -o v2ray.zip "$V2RAY_URL"
-        unzip -o v2ray.zip
-        chmod +x v2ray
-        ./v2ray version
-
-    - name: Install hysteria2
-      run: |
-        mkdir -p $HOME/hysteria2
-        cd $HOME/hysteria2
-        HY2_URL=$(curl -fsSL https://api.github.com/repos/apernet/hysteria/releases/latest \
-          | grep "browser_download_url" | grep 'hysteria-linux-amd64"' | cut -d '"' -f 4 | head -1)
-        echo "下载 hysteria2: $HY2_URL"
-        curl -fsSL -o hysteria "$HY2_URL"
-        chmod +x hysteria
-        ./hysteria version
+        mkdir -p $HOME/sing-box
+        cd $HOME/sing-box
+        LATEST=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases \
+          | jq -r '[.[] | select(.prerelease==false)][0].tag_name | sub("^v"; "")')
+        [ -z "$LATEST" ] && LATEST=1.13.14
+        echo "下载 sing-box: v${LATEST}"
+        curl -fsSL -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${LATEST}/sing-box-${LATEST}-linux-amd64.tar.gz"
+        tar -xzf sing-box.tar.gz
+        mv sing-box-*/sing-box ./
+        rm -rf sing-box-*
+        chmod +x sing-box
+        ./sing-box version
 
     - name: Run Zampto Renew Script
       env:
         PROJECT_NAME: Zampto
         # Secret ZAMPTO_USERS_JSON 格式:
-        # [{"username":"xxx","password":"xxx","serverUrl":"https://...","proxy":"vmess://...","h2":"hysteria2://..."}]
-        # 每个用户可通过 proxy 字段指定自己的 vmess/vless 代理节点, 或通过 h2 字段指定 hysteria2 节点 (h2 优先级更高)
+        # [{"username":"xxx","password":"xxx","serverUrl":"https://...","v2":"vless://..."}]
+        # v2 字段可选: 代理链接 (vless/vmess/trojan/hysteria2/tuic/anytls/socks5), 脚本启动 sing-box 作为本地 SOCKS5 代理
         ZAMPTO_USERS_JSON: ${{ secrets.ZAMPTO_USERS_JSON }}
         # KV Admin Worker：缓存登录 cookie，免每次登录
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
-        # 全局回退代理（用户未配置 vmess 时使用）
+        # 全局回退代理（用户未配置 v2 时使用）
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}

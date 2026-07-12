@@ -1,13 +1,12 @@
 // Zampto (zampto.net) 续期保活脚本 —— 专用于 GitHub Actions (Linux/Headless)
-// 流程: 打开登录页 → 输邮箱点继续 → 输密码点登录 → 登录成功
-//       → 打开配置的 serverUrl → 点续期按钮
+// 流程: 登录页 (cookie 免登录) → 打开配置的 serverUrl → 点续期按钮
 // 账号来源: Secret ZAMPTO_USERS_JSON =
-//   [{"username":"a@b.com","password":"pwd","serverUrl":"https://...","proxy":"vmess://...","h2":"hysteria2://..."}]
-//   proxy 字段可选: 每个用户可带自己的 vmess:// / vless:// 分享链接, 脚本会为其
-//   启动独立的本地 v2ray 实例并让该用户的浏览器走它; 不带 proxy 的用户回退到
-//   全局 HTTP_PROXY (workflow 用 V2RAY_VMESS 启动的 127.0.0.1:10809)。
-//   h2 字段可选: 每个用户可带自己的 hysteria2:// 分享链接, 脚本会为其启动独立的
-//   本地 hysteria2 实例并让该用户的浏览器走它; h2 优先级高于 proxy。
+//   [{"username":"a@b.com","password":"pwd","serverUrl":"https://...","v2":"vless://..."}]
+//   v2 字段可选: 代理链接 (vless:// vmess:// trojan:// hysteria2:// tuic:// anytls:// socks5://),
+//   脚本会启动 sing-box 作为本地 SOCKS5 代理, 覆盖全局 HTTP_PROXY。
+//   不带 v2 的用户回退到全局 HTTP_PROXY。
+// 登录: 不再内置登录流程, cookie 从 KV Cookie Admin Worker 读取。
+//   用户需自行获取登录后的 cookie 并写入 KV。
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const axios = require('axios');
@@ -16,8 +15,7 @@ const path = require('path');
 const { spawn, exec } = require('child_process');
 const http = require('http');
 const net = require('net');
-const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
-const { buildConfig: buildH2Config } = require('./.github/scripts/gen-hysteria2-config');
+const { buildConfig: buildSingboxConfig } = require('./.github/scripts/gen-singbox-config');
 
 const LOGIN_URL = 'https://dash.zampto.net/auth/login';
 
@@ -51,17 +49,13 @@ const INJECTED_SCRIPT = `
 })();
 `;
 
-// --- Per-user v2ray 进程管理 ---
-// 每个不同的 proxy 分享链接 → 一个独立 v2ray 实例, 本地 HTTP 端口从 10810 起递增。
-const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
-const HYSTERIA2_BIN = process.env.HYSTERIA2_BIN || `${process.env.HOME}/hysteria2/hysteria`;
+// --- Per-user sing-box 进程管理 ---
+// 每个不同的 v2 链接 → 一个独立 sing-box 实例, 本地 SOCKS5 端口从 10810 起递增。
+const SINGBOX_BIN = process.env.SINGBOX_BIN || `${process.env.HOME}/sing-box/sing-box`;
 const PER_USER_PROXY_BASE_PORT = 10810;
-const v2rayProcs = [];        // 已启动的 { proc, port, link } 列表, 退出时统一清理
-const v2rayByLink = new Map(); // link → 本地 http 代理 url (复用同一链接的实例)
+const singboxProcs = [];        // 已启动的 { proc, port, link } 列表, 退出时统一清理
+const singboxByLink = new Map(); // link → 本地 socks5 代理 url (复用同一链接的实例)
 let nextProxyPort = PER_USER_PROXY_BASE_PORT;
-
-const hysteria2Procs = [];        // 已启动的 { proc, port, link } 列表
-const hysteria2ByLink = new Map(); // link → 本地 socks5 代理 url (复用同一链接的实例)
 
 function waitProxyReady(port, tries = 15) {
     return new Promise((resolve) => {
@@ -83,87 +77,46 @@ function waitProxyReady(port, tries = 15) {
     });
 }
 
-// 为某个分享链接启动 v2ray, 返回本地 http 代理 url (http://127.0.0.1:port)。失败返回 null。
-async function startV2rayForLink(link) {
-    if (v2rayByLink.has(link)) return v2rayByLink.get(link);
-    if (!fs.existsSync(V2RAY_BIN)) {
-        console.error(`[v2ray] 未找到 v2ray 二进制 (${V2RAY_BIN})，无法为用户启动专属代理。`);
+// 为某个代理链接启动 sing-box, 返回本地 socks5 代理 url。失败返回 null。
+async function startSingboxForLink(link) {
+    if (singboxByLink.has(link)) return singboxByLink.get(link);
+    if (!fs.existsSync(SINGBOX_BIN)) {
+        console.error(`[sing-box] 未找到 sing-box 二进制 (${SINGBOX_BIN})，无法为用户启动代理。`);
         return null;
     }
-    const port = nextProxyPort++;
+    const socksPort = nextProxyPort++;
+    const httpPort = nextProxyPort++; // HTTP 入站用于就绪检测
     let cfgPath;
     try {
-        const cfg = buildConfig(link, port);
-        cfgPath = path.join(process.cwd(), `v2ray-user-${port}.json`);
+        const cfg = buildSingboxConfig(link, socksPort, httpPort);
+        cfgPath = path.join(process.cwd(), `singbox-user-${socksPort}.json`);
         fs.writeFileSync(cfgPath, JSON.stringify(cfg));
     } catch (e) {
-        console.error(`[v2ray] 解析用户 proxy 链接失败: ${e.message}`);
+        console.error(`[sing-box] 解析 v2 链接失败: ${e.message}`);
         return null;
     }
-    console.log(`[v2ray] 为用户代理启动实例 (端口 ${port})...`);
-    const proc = spawn(V2RAY_BIN, ['run', '-config', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    console.log(`[sing-box] 为用户代理启动实例 (SOCKS5 端口 ${socksPort}, HTTP 端口 ${httpPort})...`);
+    const proc = spawn(SINGBOX_BIN, ['run', '-c', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
-    v2rayProcs.push({ proc, port, link });
-    const ready = await waitProxyReady(port);
+    singboxProcs.push({ proc, port: socksPort, link });
+    // 通过 HTTP 入站检测就绪
+    const ready = await waitProxyReady(httpPort);
     if (!ready) {
-        console.error(`[v2ray] 端口 ${port} 未就绪。stderr 末尾:\n${stderr.slice(-400)}`);
+        console.error(`[sing-box] 代理端口未就绪。stderr 末尾:\n${stderr.slice(-400)}`);
         return null;
     }
-    const url = `http://127.0.0.1:${port}`;
-    v2rayByLink.set(link, url);
-    console.log(`[v2ray] 用户代理就绪: ${url}`);
+    const url = `socks5://127.0.0.1:${socksPort}`;
+    singboxByLink.set(link, url);
+    console.log(`[sing-box] 用户代理就绪: ${url}`);
     return url;
 }
 
-// 为某个 hysteria2 分享链接启动本地客户端, 返回本地 socks5 代理 url。
-// hysteria2 原生支持通过 SOCKS5 出站，返回 socks5://127.0.0.1:port。
-async function startHysteria2ForLink(link) {
-    if (hysteria2ByLink.has(link)) return hysteria2ByLink.get(link);
-    if (!fs.existsSync(HYSTERIA2_BIN)) {
-        console.error(`[hysteria2] 未找到 hysteria2 二进制 (${HYSTERIA2_BIN})，无法为用户启动专属代理。`);
-        return null;
-    }
-    const port = nextProxyPort++;
-    let cfgPath;
-    try {
-        const cfg = buildH2Config(link, port);
-        cfgPath = path.join(process.cwd(), `hysteria2-user-${port}.json`);
-        fs.writeFileSync(cfgPath, JSON.stringify(cfg));
-    } catch (e) {
-        console.error(`[hysteria2] 解析用户 h2 链接失败: ${e.message}`);
-        return null;
-    }
-    console.log(`[hysteria2] 为用户代理启动实例 (SOCKS5 端口 ${port})...`);
-    const proc = spawn(HYSTERIA2_BIN, ['-c', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-    if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
-    proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
-    hysteria2Procs.push({ proc, port, link });
-    // 等待 SOCKS5 端口就绪
-    const ready = await waitProxyReady(port);
-    if (!ready) {
-        console.error(`[hysteria2] SOCKS5 端口 ${port} 未就绪。stderr 末尾:\n${stderr.slice(-400)}`);
-        return null;
-    }
-    const url = `socks5://127.0.0.1:${port}`;
-    hysteria2ByLink.set(link, url);
-    console.log(`[hysteria2] 用户代理就绪: ${url}`);
-    return url;
-}
-
-function stopAllV2ray() {
-    for (const { proc, port } of v2rayProcs) {
+function stopAllSingbox() {
+    for (const { proc, port } of singboxProcs) {
         try { process.kill(-proc.pid); } catch (e) { try { proc.kill(); } catch (e2) { } }
-        try { fs.unlinkSync(path.join(process.cwd(), `v2ray-user-${port}.json`)); } catch (e) { }
-    }
-}
-
-function stopAllHysteria2() {
-    for (const { proc, port } of hysteria2Procs) {
-        try { process.kill(-proc.pid); } catch (e) { try { proc.kill(); } catch (e2) { } }
-        try { fs.unlinkSync(path.join(process.cwd(), `hysteria2-user-${port}.json`)); } catch (e) { }
+        try { fs.unlinkSync(path.join(process.cwd(), `singbox-user-${port}.json`)); } catch (e) { }
     }
 }
 
@@ -619,85 +572,20 @@ async function attemptTurnstileCdp(page) {
     return false;
 }
 
-// 登录单个账号（新页面：邮箱+密码同屏，点击 "Login" 提交）：返回 true/false
-async function loginOnce(page, user) {
-    await gotoWithRetry(page, LOGIN_URL);
-    await page.waitForTimeout(2000);
-
-    console.log('输入邮箱...');
-    const emailInput = page.locator('input#email, input[type="email"], input[name="email"], input[placeholder*="example" i]').first();
-    await emailInput.waitFor({ state: 'visible', timeout: 30000 });
-    await emailInput.fill(user.username);
-    await page.waitForTimeout(400);
-
-    console.log('输入密码...');
-    const pwdInput = page.locator('input#password, input[type="password"], input[name="password"]').first();
-    await pwdInput.waitFor({ state: 'visible', timeout: 30000 });
-    await pwdInput.fill(user.password);
-    await page.waitForTimeout(400);
-
-    console.log('点击 Login...');
-    const loginBtn = page.locator('button[type="submit"]').or(page.getByRole('button', { name: /login|sign\s?in/i })).first();
-    await loginBtn.click();
-
-    // 等待离开登录页 = 登录成功
-    for (let s = 0; s < 25; s++) {
-        await page.waitForTimeout(1000);
-        if (!/sign-in|\/login/i.test(page.url())) return true;
-        const err = await page.getByText(/invalid|incorrect|wrong|failed|error|not found/i)
-            .first().isVisible().catch(() => false);
-        if (err) return false;
-    }
-    return !/sign-in|\/login/i.test(page.url());
-}
-
 // 解析每个用户应使用的代理:
-//   h2 = hysteria2://...               → 为其启动 per-user hysteria2 (本地 socks5), 优先级最高
-//   proxy = http(s)://... 或 socks5:// → 直接用该代理，不启 v2ray
-//   proxy = vmess:// / vless://       → 为其启动 per-user v2ray (本地 http url)
-//   不带 proxy 也不带 h2               → 回退到全局 HTTP_PROXY
+//   v2 = vless:// vmess:// trojan:// hysteria2:// tuic:// anytls:// socks5://...
+//        → 启动 per-user sing-box (本地 socks5), 覆盖全局 HTTP_PROXY
+//   不带 v2 → 回退到全局 HTTP_PROXY
 // 返回 { config, label } (config 为 null 表示直连)
 async function resolveUserProxy(user) {
-    // h2 (hysteria2) 优先级最高
-    if (user.h2 && typeof user.h2 === 'string' && user.h2.trim()) {
-        const link = user.h2.trim();
-        if (link.startsWith('hysteria2://')) {
-            const localUrl = await startHysteria2ForLink(link);
-            if (localUrl) {
-                const cfg = parseProxyUrl(localUrl);
-                return { config: cfg, label: `专属 hysteria2 (${localUrl})` };
-            }
-            console.warn(`   >> 用户 h2 代理启动失败，回退到 proxy/全局代理。`);
-        } else {
-            console.warn(`   >> h2 字段不是 hysteria2:// 链接，忽略。`);
+    if (user.v2 && typeof user.v2 === 'string' && user.v2.trim()) {
+        const link = user.v2.trim();
+        const localUrl = await startSingboxForLink(link);
+        if (localUrl) {
+            const cfg = parseProxyUrl(localUrl);
+            return { config: cfg, label: `sing-box (${localUrl})` };
         }
-    }
-    if (user.proxy && typeof user.proxy === 'string' && user.proxy.trim()) {
-        const link = user.proxy.trim();
-        // http(s):// 或 socks5:// → 直接解析，不走 v2ray
-        if (/^(https?|socks5?):\/\//i.test(link)) {
-            const cfg = parseProxyUrl(link);
-            if (!cfg) {
-                console.warn(`   >> proxy 格式无效，回退到全局代理。`);
-            } else if (cfg.username && /^socks5/i.test(cfg.server)) {
-                // SOCKS5 + 认证：Chrome 不支持 --proxy-server 直接带认证，
-                // 启动本地 HTTP 中继来转发
-                const url = new URL(cfg.server);
-                const relay = await startSocksRelay(url.hostname, url.port, cfg.username, cfg.password);
-                socksRelays.push(relay);
-                const localCfg = parseProxyUrl(relay.server);
-                return { config: localCfg, label: `本地中继 → SOCKS5 (${url.hostname}:${url.port})` };
-            } else {
-                return { config: cfg, label: `直连代理 (${cfg.server})` };
-            }
-        } else {
-            // vmess:// / vless:// → 启动 per-user v2ray
-            const localUrl = await startV2rayForLink(link);
-            if (localUrl) {
-                return { config: parseProxyUrl(localUrl), label: `专属 v2ray (${localUrl})` };
-            }
-            console.warn(`   >> 用户专属 proxy 启动失败，回退到全局代理。`);
-        }
+        console.warn(`   >> v2 代理启动失败，回退到全局代理。`);
     }
     return {
         config: GLOBAL_PROXY_CONFIG,
@@ -733,29 +621,20 @@ async function processUser(context, page, user, photoDir) {
                 console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (当前: ${page.url()})`);
             }
 
-            // 3. cookie 失效 → 完整登录 → 存新 cookie
+            // 3. cookie 失效 → 用户需手动更新
             if (!loggedIn) {
-                loggedIn = await loginOnce(page, user);
-                if (!loggedIn) {
-                    const shot = path.join(photoDir, `zampto_${safeUser}_loginfail.png`);
+                const shot = path.join(photoDir, `zampto_${safeUser}_cookie_expired.png`);
                     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                    console.log(`   >> ❌ 登录失败，停留在: ${page.url()}`);
-                    await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n停留在: ${page.url()}`, shot);
+                    console.log(`   >> ❌ cookie 已过期，跳过该用户。请手动获取 cookie 并写入 KV (key: ${cookieKey})`);
+                    await sendTelegramMessage(`❌ *Cookie 已过期*\n用户: ${user.username}\n请手动获取 cookie 并写入 KV\nkey: \`${cookieKey}\``, shot);
                     console.log('用户处理完成');
                     return;
-                }
-                console.log(`   >> ✅ 登录成功: ${page.url()}`);
-                // 保存新 cookie 到 KV
-                try {
-                    const cookies = await context.cookies();
-                    await kvPut(cookieKey, JSON.stringify(cookies));
-                } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
             }
 
             if (!user.serverUrl) {
                 const shot = path.join(photoDir, `zampto_${safeUser}.png`);
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                await sendTelegramMessage(`✅ *登录成功*\n用户: ${user.username}\n(未配置 serverUrl，跳过续期)`, shot);
+                await sendTelegramMessage(`✅ *Cookie 有效*\n用户: ${user.username}\n(未配置 serverUrl，跳过续期)`, shot);
                 console.log('用户处理完成');
                 return;
             }
@@ -929,8 +808,7 @@ async function processUser(context, page, user, photoDir) {
         await browser.close();
     }
 
-    stopAllHysteria2();
-    stopAllV2ray();
+    stopAllSingbox();
     for (const r of socksRelays) r.close();
     console.log('完成。');
     process.exit(0);
