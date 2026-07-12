@@ -181,7 +181,7 @@ chromium.use(stealth);
 
 const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
 const DEBUG_PORT = 9222;
-process.env.NO_PROXY = 'localhost,127.0.0.1';
+process.env.NO_PROXY = 'localhost,127.0.0.1,.zampto.net,.dash.zampto.net,.auth.zampto.net';
 
 // --- Proxy Configuration ---
 // 全局 HTTP_PROXY (workflow 用 V2RAY_VMESS 启动的 127.0.0.1:10809) 作为回退代理。
@@ -483,7 +483,7 @@ async function launchChrome(proxyConfig) {
     ];
     if (proxyConfig) {
         args.push(`--proxy-server=${proxyConfig.server}`);
-        args.push('--proxy-bypass-list=<-loopback>');
+        args.push('--proxy-bypass-list=<-loopback>,zampto.net,dash.zampto.net,auth.zampto.net');
     }
     for (let attempt = 1; attempt <= 2; attempt++) {
         console.log(`正在启动 Chrome (路径: ${CHROME_PATH}, 第 ${attempt} 次)...`);
