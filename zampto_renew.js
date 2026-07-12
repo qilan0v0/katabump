@@ -617,7 +617,7 @@ async function loginOnce(page, user) {
     // 第 1 步：输入邮箱 → 点继续
     console.log('输入邮箱...');
     const emailInput = page.locator('input[type="email"], input[name="email"], input[name="identifier"], input[placeholder*="email" i]').first();
-    await emailInput.waitFor({ state: 'visible', timeout: 15000 });
+    await emailInput.waitFor({ state: 'visible', timeout: 30000 });
     await emailInput.fill(user.username);
     await page.waitForTimeout(400);
     const contBtn = page.getByRole('button', { name: /continue|next|sign\s?in|log\s?in/i })
@@ -629,7 +629,7 @@ async function loginOnce(page, user) {
     // 第 2 步：输入密码 → 点登录
     console.log('输入密码...');
     const pwdInput = page.locator('input[type="password"], input[name="password"], input[placeholder*="password" i]').first();
-    await pwdInput.waitFor({ state: 'visible', timeout: 15000 });
+    await pwdInput.waitFor({ state: 'visible', timeout: 30000 });
     await pwdInput.fill(user.password);
     await page.waitForTimeout(400);
     const signInBtn = page.getByRole('button', { name: /sign\s?in|log\s?in|continue/i })
