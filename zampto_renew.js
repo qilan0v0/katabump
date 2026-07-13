@@ -552,7 +552,11 @@ async function attemptTurnstileCdp(page) {
     const frames = page.frames();
     for (const frame of frames) {
         try {
-            const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
+            // 给 frame.evaluate 加 3s 超时，防止卡死
+            const data = await Promise.race([
+                frame.evaluate(() => window.__turnstile_data).catch(() => null),
+                new Promise(r => setTimeout(() => r(null), 3000))
+            ]);
             if (data) {
                 console.log('   >> 在 Frame 中找到 Turnstile:', data);
                 const iframeElement = await frame.frameElement();
