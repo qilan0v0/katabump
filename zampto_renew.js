@@ -786,31 +786,51 @@ async function processUser(context, page, user, photoDir) {
 
                 // --- 等待弹窗出现 + CF Turnstile 处理 ---
                 await page.waitForTimeout(3000);
-                console.log('   >> 等待 Turnstile 弹窗...');
+                console.log('   >> 等待 Turnstile 弹窗加载...');
+                // 等待 "Loading" 文字消失（最多 30s）
+                for (let w = 0; w < 30; w++) {
+                    const dlgText = await page.locator('body').innerText().catch(() => '');
+                    if (!/loading/i.test(dlgText)) break;
+                    if (w === 0 || w % 5 === 4) console.log(`   >> 仍在加载 (${w+1}s)...`);
+                    await page.waitForTimeout(1000);
+                }
+                // 等待 Turnstile 复选框出现并点击
+                console.log('   >> 尝试点击 Turnstile...');
                 let cdpClicked = false;
-                for (let findAttempt = 0; findAttempt < 20; findAttempt++) {
+                for (let findAttempt = 0; findAttempt < 30; findAttempt++) {
                     cdpClicked = await attemptTurnstileCdp(page);
                     if (cdpClicked) break;
                     await page.waitForTimeout(1000);
                 }
                 if (cdpClicked) {
                     console.log('   >> CDP 点击成功，等待验证结果...');
-                    for (let waitSec = 0; waitSec < 15; waitSec++) {
+                    for (let waitSec = 0; waitSec < 30; waitSec++) {
                         let isSuccess = false;
+                        // 检查 Cloudflare 帧中的 Success 消息
                         for (const f of page.frames()) {
                             if (f.url().includes('cloudflare')) {
                                 try { if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) { isSuccess = true; break; } } catch (e) { }
                             }
                         }
+                        // 也检查页面正文中是否出现验证成功
+                        if (!isSuccess) {
+                            const bodyText = await page.locator('body').innerText().catch(() => '');
+                            if (/verification.*(success|complete|passed)/i.test(bodyText)) isSuccess = true;
+                        }
                         if (isSuccess) { console.log('   >> ✅ Turnstile 验证成功！'); break; }
                         await page.waitForTimeout(1000);
                     }
                 } else {
-                    console.log('   >> ⚠️ 未找到 Turnstile，继续...');
+                    console.log('   >> ⚠️ 30s 内未找到 Turnstile，继续...');
                 }
-                // 弹窗确认按钮
+                // 弹窗确认按钮 — 等待按钮可用
+                console.log('   >> 等待确认按钮...');
                 const confirmBtn = page.locator('#renew-modal button, #renew-modal [role="button"], button, a, [role="button"]')
                     .filter({ hasText: /renew|confirm|续期|确定/i }).first();
+                for (let w = 0; w < 15; w++) {
+                    if (await confirmBtn.isVisible().catch(() => false) && !(await confirmBtn.isDisabled().catch(() => true))) break;
+                    await page.waitForTimeout(1000);
+                }
                 if (await confirmBtn.isVisible().catch(() => false)) {
                     console.log('   >> 点击弹窗确认按钮...');
                     await confirmBtn.click({ timeout: 8000, force: true }).catch(() => confirmBtn.click({ force: true, timeout: 8000 }));
