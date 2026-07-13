@@ -1,12 +1,11 @@
 // Zampto (zampto.net) 续期保活脚本 —— 专用于 GitHub Actions (Linux/Headless)
-// 流程: 登录页 (cookie 免登录) → 打开配置的 serverUrl → 点续期按钮
+// 流程: cookie 免登录 (KV) → 打开配置的 serverUrl → 点续期按钮
+// cookie 失效时自动尝试邮箱+密码登录，需要验证码时使用 LOGIN_CODE 环境变量
 // 账号来源: Secret ZAMPTO_USERS_JSON =
 //   [{"username":"a@b.com","password":"pwd","serverUrl":"https://...","v2":"vless://..."}]
 //   v2 字段可选: 代理链接 (vless:// vmess:// trojan:// hysteria2:// tuic:// anytls:// socks5://),
 //   脚本会启动 sing-box 作为本地 SOCKS5 代理, 覆盖全局 HTTP_PROXY。
 //   不带 v2 的用户回退到全局 HTTP_PROXY。
-// 登录: 不再内置登录流程, cookie 从 KV Cookie Admin Worker 读取。
-//   用户需自行获取登录后的 cookie 并写入 KV。
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const axios = require('axios');
@@ -576,6 +575,63 @@ async function attemptTurnstileCdp(page) {
     return false;
 }
 
+// 登录单个账号（支持验证码流程）：返回 true/false
+async function loginOnce(page, user) {
+    await gotoWithRetry(page, LOGIN_URL);
+    await page.waitForTimeout(2000);
+
+    console.log('输入邮箱...');
+    const emailInput = page.locator('input#email, input[type="email"], input[name="email"]').first();
+    await emailInput.waitFor({ state: 'visible', timeout: 30000 });
+    await emailInput.fill(user.username);
+    await page.waitForTimeout(400);
+
+    console.log('输入密码...');
+    const pwdInput = page.locator('input#password, input[type="password"], input[name="password"]').first();
+    await pwdInput.waitFor({ state: 'visible', timeout: 30000 });
+    await pwdInput.fill(user.password);
+    await page.waitForTimeout(400);
+
+    console.log('点击 Login...');
+    const loginBtn = page.locator('button[type="submit"]').or(page.getByRole('button', { name: /login|sign\\s?in/i })).first();
+    await loginBtn.click();
+    await page.waitForTimeout(3000);
+
+    // 检测是否需要邮箱验证码
+    const pageText = await page.locator('body').innerText().catch(() => '');
+    if (/verification code|6-digit|login code|verify code|sent to your email/i.test(pageText)) {
+        console.log('   >> 需要邮箱验证码...');
+        const loginCode = process.env.LOGIN_CODE;
+        if (loginCode && loginCode.length === 6) {
+            console.log('   >> 使用 LOGIN_CODE 环境变量中的验证码');
+            const codeInput = page.locator('input[placeholder*="000000"], input[maxlength="6"], input[type="text"]').first();
+            try {
+                await codeInput.waitFor({ state: 'visible', timeout: 5000 });
+                await codeInput.fill(loginCode);
+                await page.waitForTimeout(400);
+                const verifyBtn = page.locator('button').filter({ hasText: /verify|confirm|submit/i }).first();
+                await verifyBtn.click();
+                await page.waitForTimeout(3000);
+            } catch (e) {
+                console.warn('   >> 验证码输入失败:', e.message);
+            }
+        } else {
+            console.log('   >> 需要验证码但未配置 LOGIN_CODE，请设置后重试');
+            return false;
+        }
+    }
+
+    // 等待离开登录页 = 登录成功
+    for (let s = 0; s < 25; s++) {
+        await page.waitForTimeout(1000);
+        if (!/sign-in|\\/login/i.test(page.url())) return true;
+        const err = await page.getByText(/invalid|incorrect|wrong|failed|error|not found/i)
+            .first().isVisible().catch(() => false);
+        if (err) return false;
+    }
+    return !/sign-in|\\/login/i.test(page.url());
+}
+
 // 解析每个用户应使用的代理:
 //   v2 = vless:// vmess:// trojan:// hysteria2:// tuic:// anytls:// socks5://...
 //        → 启动 per-user sing-box (本地 socks5), 覆盖全局 HTTP_PROXY
@@ -625,14 +681,28 @@ async function processUser(context, page, user, photoDir) {
                 console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (当前: ${page.url()})`);
             }
 
-            // 3. cookie 失效 → 用户需手动更新
+            // 3. cookie 失效 → 尝试登录
             if (!loggedIn) {
-                const shot = path.join(photoDir, `zampto_${safeUser}_cookie_expired.png`);
+                console.log('   >> 尝试手动登录...');
+                const loginOk = await loginOnce(page, user);
+                if (loginOk) {
+                    console.log('   >> ✅ 登录成功!');
+                    loggedIn = true;
+                    // 保存新 cookie 到 KV
+                    try {
+                        const cookies = await context.cookies();
+                        await kvPut(cookieKey, JSON.stringify(cookies));
+                    } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
+                } else {
+                    const shot = path.join(photoDir, `zampto_${safeUser}_loginfail.png`);
                     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                    console.log(`   >> ❌ cookie 已过期，跳过该用户。请手动获取 cookie 并写入 KV (key: ${cookieKey})`);
-                    await sendTelegramMessage(`❌ *Cookie 已过期*\n用户: ${user.username}\n请手动获取 cookie 并写入 KV\nkey: \`${cookieKey}\``, shot);
+                    console.log(`   >> ❌ 登录失败，停留在: ${page.url()}`);
+                    await sendTelegramMessage(`❌ *登录失败*
+用户: ${user.username}
+停留在: ${page.url()}`, shot);
                     console.log('用户处理完成');
                     return;
+                }
             }
 
             if (!user.serverUrl) {
@@ -741,6 +811,29 @@ async function processUser(context, page, user, photoDir) {
                             return;
                         }
                     } catch (e) { }
+                }
+                // 等待弹窗消失 + 页面更新（重试 3 轮）
+                let renewalDone = false;
+                for (let r = 0; r < 3; r++) {
+                    await page.waitForTimeout(3000);
+                    // 检查是否有成功消息
+                    const bodyText = await page.locator('body').innerText().catch(() => '');
+                    if (/renew(ed)?\s*success|successfully\s*renew|续期成功|时间已更新/i.test(bodyText)) {
+                        console.log('   >> ✅ 续期成功消息已出现');
+                        renewalDone = true;
+                        break;
+                    }
+                    // 如果弹窗确认按钮还在，再点一次
+                    if (await confirmBtn.isVisible().catch(() => false)) {
+                        console.log(`   >> 弹窗仍在，第 ${r+1} 次点击确认...`);
+                        await confirmBtn.click({ timeout: 5000, force: true }).catch(() => {});
+                    }
+                    // 检查弹窗是否已关闭（确认按钮不可见）
+                    if (!(await confirmBtn.isVisible().catch(() => false))) {
+                        console.log('   >> 弹窗已关闭');
+                        await page.waitForTimeout(2000);
+                        break;
+                    }
                 }
                 // 等待页面刷新或更新
                 await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => page.waitForTimeout(5000));
