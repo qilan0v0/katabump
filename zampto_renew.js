@@ -563,8 +563,20 @@ async function attemptTurnstileCdp(page) {
                 const clickY = box.y + (box.height * data.yRatio);
                 console.log(`   >> CDP 点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
                 const client = await page.context().newCDPSession(page);
+                // 模拟鼠标移动轨迹，避免被检测为机器人
+                const startX = clickX - (30 + Math.random() * 50);
+                const startY = clickY - (20 + Math.random() * 30);
+                const steps = 5 + Math.floor(Math.random() * 5);
+                for (let s = 1; s <= steps; s++) {
+                    const t = s / steps;
+                    const mx = startX + (clickX - startX) * t + (Math.random() - 0.5) * 5;
+                    const my = startY + (clickY - startY) * t + (Math.random() - 0.5) * 5;
+                    await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(mx), y: Math.round(my) });
+                    await new Promise(r => setTimeout(r, 10 + Math.random() * 20));
+                }
+                await new Promise(r => setTimeout(r, 30 + Math.random() * 50));
                 await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                await new Promise(r => setTimeout(r, 80 + Math.random() * 50));
                 await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
                 console.log('   >> CDP 点击发送成功。');
                 await client.detach();
