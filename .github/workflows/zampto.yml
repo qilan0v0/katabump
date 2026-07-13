@@ -1,0 +1,67 @@
+name: Zampto Auto Renew
+
+on:
+  workflow_dispatch: # 允许手动触发
+
+# 提前切到 Node.js 24 运行 actions/*，消除 Node 20 弃用警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        npm install
+        npx playwright install-deps chrome
+
+    - name: Install sing-box
+      run: |
+        mkdir -p $HOME/sing-box
+        cd $HOME/sing-box
+        LATEST=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases \
+          | jq -r '[.[] | select(.prerelease==false)][0].tag_name | sub("^v"; "")')
+        [ -z "$LATEST" ] && LATEST=1.13.14
+        echo "下载 sing-box: v${LATEST}"
+        curl -fsSL -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${LATEST}/sing-box-${LATEST}-linux-amd64.tar.gz"
+        tar -xzf sing-box.tar.gz
+        mv sing-box-*/sing-box ./
+        rm -rf sing-box-*
+        chmod +x sing-box
+        ./sing-box version
+
+    - name: Run Zampto Renew Script
+      env:
+        PROJECT_NAME: Zampto
+        # Secret ZAMPTO_USERS_JSON 格式:
+        # [{"username":"xxx","password":"xxx","serverUrl":"https://...","v2":"vless://..."}]
+        # v2 字段可选: 代理链接 (vless/vmess/trojan/hysteria2/tuic/anytls/socks5), 脚本启动 sing-box 作为本地 SOCKS5 代理
+        ZAMPTO_USERS_JSON: ${{ secrets.ZAMPTO_USERS_JSON }}
+        # KV Admin Worker：缓存登录 cookie，免每次登录
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
+        # 全局回退代理（用户未配置 v2 时使用）
+        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+        LOGIN_CODE: ${{ secrets.LOGIN_CODE }}
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node zampto_renew.js
+
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: zampto-screenshots
+        path: screenshots/
