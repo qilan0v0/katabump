@@ -593,7 +593,7 @@ async function loginOnce(page, user) {
     await page.waitForTimeout(400);
 
     console.log('点击 Login...');
-    const loginBtn = page.locator('button[type="submit"]').or(page.getByRole('button', { name: /login|sign\\s?in/i })).first();
+    const loginBtn = page.locator('button[type="submit"]').or(page.getByRole('button', { name: /login|sign\s?in/i })).first();
     await loginBtn.click();
     await page.waitForTimeout(3000);
 
@@ -624,12 +624,12 @@ async function loginOnce(page, user) {
     // 等待离开登录页 = 登录成功
     for (let s = 0; s < 25; s++) {
         await page.waitForTimeout(1000);
-        if (!/sign-in|\\/login/i.test(page.url())) return true;
+        if (!/sign-in|\/login/i.test(page.url())) return true;
         const err = await page.getByText(/invalid|incorrect|wrong|failed|error|not found/i)
             .first().isVisible().catch(() => false);
         if (err) return false;
     }
-    return !/sign-in|\\/login/i.test(page.url());
+    return !/sign-in|\/login/i.test(page.url());
 }
 
 // 解析每个用户应使用的代理:
