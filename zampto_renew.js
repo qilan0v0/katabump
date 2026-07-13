@@ -848,31 +848,12 @@ async function processUser(context, page, user, photoDir) {
                         }
                     } catch (e) { }
                 }
-                // 等待弹窗消失 + 页面更新（重试 3 轮）
-                let renewalDone = false;
-                for (let r = 0; r < 3; r++) {
-                    await page.waitForTimeout(3000);
-                    // 检查是否有成功消息
-                    const bodyText = await page.locator('body').innerText().catch(() => '');
-                    if (/renew(ed)?\s*success|successfully\s*renew|续期成功|时间已更新/i.test(bodyText)) {
-                        console.log('   >> ✅ 续期成功消息已出现');
-                        renewalDone = true;
-                        break;
-                    }
-                    // 如果弹窗确认按钮还在，再点一次
-                    if (await confirmBtn.isVisible().catch(() => false)) {
-                        console.log(`   >> 弹窗仍在，第 ${r+1} 次点击确认...`);
-                        await confirmBtn.click({ timeout: 5000, force: true }).catch(() => {});
-                    }
-                    // 检查弹窗是否已关闭（确认按钮不可见）
-                    if (!(await confirmBtn.isVisible().catch(() => false))) {
-                        console.log('   >> 弹窗已关闭');
-                        await page.waitForTimeout(2000);
-                        break;
-                    }
-                }
-                // 等待页面刷新或更新
-                await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => page.waitForTimeout(5000));
+                // 点击确认后，刷新页面使时间生效
+                console.log('   >> 确认已点击，刷新页面检查时间...');
+                await page.waitForTimeout(2000);
+                await page.reload();
+                await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => page.waitForTimeout(5000));
+                await page.waitForTimeout(2000);
                 await page.waitForTimeout(2000);
                 // 抓取续期后的时间信息
                 const afterTimes = await getRenewTimes();
