@@ -14,7 +14,7 @@ const http = require('http');
 const LOGIN_URL = 'https://panel.freegamehost.xyz/auth/login';
 
 // --- v2ray 进程管理 (per-user 代理) ---
-const V2RAY_BIN = process.env.V2RAY_PATH || '/usr/local/bin/v2ray';
+const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
 let nextV2rayPort = 11080;
 const v2rayProcs = [];      // 当前用户的 v2ray
 const allV2rayProcs = [];   // 全局 v2ray（用于 exit 时全部清理）
