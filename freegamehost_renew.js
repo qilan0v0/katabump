@@ -13,6 +13,118 @@ const http = require('http');
 
 const LOGIN_URL = 'https://panel.freegamehost.xyz/auth/login';
 
+// --- v2ray 进程管理 (per-user 代理) ---
+const V2RAY_BIN = process.env.V2RAY_PATH || '/usr/local/bin/v2ray';
+let nextV2rayPort = 11080;
+const v2rayProcs = [];      // 当前用户的 v2ray
+const allV2rayProcs = [];   // 全局 v2ray（用于 exit 时全部清理）
+
+function cleanupV2ray(procs = allV2rayProcs) {
+    for (const { proc, port } of procs) {
+        try { proc.kill('SIGTERM'); } catch (e) { }
+        try { proc.kill('SIGKILL'); } catch (e) { }
+    }
+    procs.length = 0;
+}
+
+// 启动一个 v2ray 实例用于 per-user 代理
+async function startV2rayForLink(link) {
+    if (!require('fs').existsSync(V2RAY_BIN)) {
+        console.error(`[v2ray] 未找到 v2ray 二进制 (${V2RAY_BIN})`);
+        return null;
+    }
+    const port = nextV2rayPort++;
+    let cfgPath;
+    try {
+        const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
+        const cfg = buildConfig(link, port);
+        cfgPath = path.join(process.cwd(), `v2ray-freegamehost-${port}.json`);
+        require('fs').writeFileSync(cfgPath, JSON.stringify(cfg));
+    } catch (e) {
+        console.error(`[v2ray] 解析 V2 链接失败: ${e.message}`);
+        return null;
+    }
+    console.log(`[v2ray] 启动实例 (HTTP 127.0.0.1:${port})...`);
+    const proc = spawn(V2RAY_BIN, ['run', '-config', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
+    const entry = { proc, port, link };
+    v2rayProcs.push(entry);
+    allV2rayProcs.push(entry);
+
+    const ready = await new Promise((resolve) => {
+        let n = 0;
+        const tick = () => {
+            const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 3000 }, () => resolve(true));
+            req.on('error', () => { if (++n >= 15) return resolve(false); setTimeout(tick, 2000); });
+            req.on('timeout', () => { req.destroy(); if (++n >= 15) return resolve(false); else setTimeout(tick, 2000); });
+            req.end();
+        };
+        tick();
+    });
+    if (!ready) {
+        console.error(`[v2ray] 端口 ${port} 未就绪。stderr:\n${stderr.slice(-400)}`);
+        cleanupV2ray(v2rayProcs);
+        return null;
+    }
+    console.log(`[v2ray] 代理就绪 → http://127.0.0.1:${port}`);
+    return { port, url: `http://127.0.0.1:${port}` };
+}
+
+function parseProxyUrl(urlStr) {
+    const url = new URL(urlStr);
+    return {
+        server: `${url.protocol}//${url.hostname}:${url.port}`,
+        username: url.username ? decodeURIComponent(url.username) : undefined,
+        password: url.password ? decodeURIComponent(url.password) : undefined
+    };
+}
+
+// 解析每个用户应使用的代理:
+//   user.V2 → 启动 per-user v2ray, 覆盖全局 HTTP_PROXY
+//   不带 V2 → 回退到全局 HTTP_PROXY
+async function resolveUserProxy(user) {
+    // 清理上一用户的 v2ray
+    cleanupV2ray(v2rayProcs);
+
+    if (user.V2 || user.v2) {
+        const link = (user.V2 || user.v2).trim();
+        console.log(`   >> 检测到用户专属 V2 链接，启动独立 v2ray...`);
+        const localUrl = await startV2rayForLink(link);
+        if (localUrl) {
+            const cfg = parseProxyUrl(localUrl);
+            return { config: cfg, label: `v2ray (${localUrl})` };
+        }
+        console.warn('   >> 专属 v2ray 启动失败，回退到全局代理。');
+    }
+
+    // 回退到全局 HTTP_PROXY
+    if (HTTP_PROXY) {
+        try {
+            const url = new URL(HTTP_PROXY);
+            console.log(`   >> 使用全局 HTTP 代理: ${url.hostname}:${url.port}`);
+            return {
+                config: {
+                    server: `${url.protocol}//${url.hostname}:${url.port}`,
+                    username: url.username ? decodeURIComponent(url.username) : undefined,
+                    password: url.password ? decodeURIComponent(url.password) : undefined
+                },
+                label: `全局代理 (${HTTP_PROXY})`
+            };
+        } catch (e) {
+            console.warn(`   >> HTTP_PROXY 格式无效: ${HTTP_PROXY}`);
+        }
+    }
+
+    console.log('   >> 直连 (无代理)');
+    return { config: null, label: '直连 (无代理)' };
+}
+
+process.on('exit', () => cleanupV2ray());
+process.on('SIGINT', () => { cleanupV2ray(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupV2ray(); process.exit(0); });
+
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const TG_THREAD_ID = process.env.TG_THREAD_ID; // 可选：超级群话题(Topic)的 message_thread_id
@@ -74,6 +186,7 @@ chromium.use(stealth);
 
 const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
 const DEBUG_PORT = 9222;
+let chromeProcess = null; // 追踪 Chrome 进程以便按用户重启
 process.env.NO_PROXY = 'localhost,127.0.0.1';
 
 // --- Proxy Configuration ---
@@ -219,20 +332,21 @@ const INJECTED_SCRIPT = `
 })();
 `;
 
-async function checkProxy() {
-    if (!PROXY_CONFIG) return true;
+async function checkProxy(proxyConfig) {
+    const cfg = proxyConfig || PROXY_CONFIG;
+    if (!cfg) return true;
     console.log('[代理] 正在验证代理连接...');
     try {
         const axiosConfig = {
             proxy: {
                 protocol: 'http',
-                host: new URL(PROXY_CONFIG.server).hostname,
-                port: new URL(PROXY_CONFIG.server).port,
+                host: new URL(cfg.server).hostname,
+                port: new URL(cfg.server).port,
             },
             timeout: 10000
         };
-        if (PROXY_CONFIG.username && PROXY_CONFIG.password) {
-            axiosConfig.proxy.auth = { username: PROXY_CONFIG.username, password: PROXY_CONFIG.password };
+        if (cfg.username && cfg.password) {
+            axiosConfig.proxy.auth = { username: cfg.username, password: cfg.password };
         }
         await axios.get('https://www.google.com', axiosConfig);
         try {
@@ -257,9 +371,26 @@ function checkPort(port) {
     });
 }
 
-async function launchChrome() {
+async function stopChrome() {
+    if (chromeProcess) {
+        console.log('正在停止 Chrome...');
+        try { process.kill(-chromeProcess.pid); } catch (e) { }
+        chromeProcess = null;
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    // 确保端口关闭
+    for (let i = 0; i < 20; i++) {
+        if (!(await checkPort(DEBUG_PORT))) return;
+        await new Promise(r => setTimeout(r, 1000));
+    }
+}
+
+async function launchChrome(proxyConfig) {
     console.log('检查 Chrome 是否已在端口 ' + DEBUG_PORT + ' 上运行...');
-    if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已开启。'); return; }
+    if (await checkPort(DEBUG_PORT)) {
+        console.log('Chrome 已开启，先停止旧实例...');
+        await stopChrome();
+    }
     const args = [
         `--remote-debugging-port=${DEBUG_PORT}`,
         '--remote-debugging-address=127.0.0.1',
@@ -272,14 +403,15 @@ async function launchChrome() {
         '--disable-dev-shm-usage',
         '--user-data-dir=/tmp/chrome_user_data'
     ];
-    if (PROXY_CONFIG) {
-        args.push(`--proxy-server=${PROXY_CONFIG.server}`);
+    if (proxyConfig) {
+        args.push(`--proxy-server=${proxyConfig.server}`);
         args.push('--proxy-bypass-list=<-loopback>');
     }
     for (let attempt = 1; attempt <= 2; attempt++) {
         console.log(`正在启动 Chrome (路径: ${CHROME_PATH}, 第 ${attempt} 次)...`);
         let stderr = '';
         const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+        chromeProcess = chrome;
         if (chrome.stderr) chrome.stderr.on('data', d => { stderr += d.toString(); });
         chrome.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
         chrome.unref();
@@ -291,6 +423,7 @@ async function launchChrome() {
         console.error(`Chrome 第 ${attempt} 次未在端口 ${DEBUG_PORT} 起来。stderr 末尾:\n` + stderr.slice(-800));
         try { process.kill(-chrome.pid); } catch (e) { }
         try { fs.rmSync('/tmp/chrome_user_data', { recursive: true, force: true }); } catch (e) { }
+        chromeProcess = null;
         await new Promise(r => setTimeout(r, 2000));
     }
     throw new Error('Chrome 启动失败');
@@ -474,53 +607,72 @@ async function clickRenewButton(page) {
         process.exit(1);
     }
 
+    const photoDir = path.join(process.cwd(), 'screenshots');
+    if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
+
+    // 先解析全局代理是否可用（用于没有 V2 链接的用户）
     if (PROXY_CONFIG) {
         const ok = await checkProxy();
         if (!ok) {
-            console.error('[代理] 代理无效，降级直连。');
+            console.error('[代理] 全局代理无效，降级直连。');
             PROXY_CONFIG = null;
             process.env.HTTP_PROXY = '';
         }
     }
 
-    await launchChrome();
-
-    console.log('正在连接 Chrome...');
-    let browser;
-    for (let k = 0; k < 5; k++) {
-        try {
-            browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
-            console.log('连接成功！');
-            break;
-        } catch (e) {
-            console.log(`连接尝试 ${k + 1} 失败。2秒后重试...`);
-            await new Promise(r => setTimeout(r, 2000));
-        }
-    }
-    if (!browser) { console.error('连接失败。退出。'); process.exit(1); }
-
-    const context = browser.contexts()[0];
-    let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
-    page.setDefaultTimeout(60000);
-
-    // 注入 Turnstile Hook 脚本
-    await page.addInitScript(INJECTED_SCRIPT);
-    console.log('Turnstile 注入脚本已添加。');
-
-    if (PROXY_CONFIG && PROXY_CONFIG.username) {
-        console.log('[代理] 正在设置认证...');
-        await context.setHTTPCredentials({ username: PROXY_CONFIG.username, password: PROXY_CONFIG.password });
-    } else {
-        await context.setHTTPCredentials(null);
-    }
-
-    const photoDir = path.join(process.cwd(), 'screenshots');
-    if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
+    let lastProxyConfig = undefined;
 
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
         const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
         console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`);
+
+        // 解析该用户的代理（支持独立 V2 链接）
+        const { config: proxyConfig, label: proxyLabel } = await resolveUserProxy(user);
+        console.log(`   >> 使用代理: ${proxyLabel}`);
+
+        // 代理配置变化时重启 Chrome
+        const proxyChanged = JSON.stringify(proxyConfig) !== JSON.stringify(lastProxyConfig);
+        if (proxyChanged) {
+            await stopChrome();
+            if (proxyConfig) {
+                const ok = await checkProxy(proxyConfig);
+                if (!ok) {
+                    console.error('[代理] 代理无效，跳过该用户。');
+                    await sendTelegramMessage(`❌ *代理无效*\n用户: ${user.username}\n代理: ${proxyLabel}`);
+                    continue;
+                }
+            }
+            await launchChrome(proxyConfig);
+            lastProxyConfig = proxyConfig;
+        }
+
+        console.log('正在连接 Chrome...');
+        let browser;
+        for (let k = 0; k < 5; k++) {
+            try {
+                browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
+                console.log('连接成功！');
+                break;
+            } catch (e) {
+                console.log(`连接尝试 ${k + 1} 失败。2秒后重试...`);
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+        if (!browser) { console.error('连接失败，跳过该用户。'); continue; }
+
+        const context = browser.contexts()[0];
+        let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
+        page.setDefaultTimeout(60000);
+
+        // 注入 Turnstile Hook 脚本
+        await page.addInitScript(INJECTED_SCRIPT);
+
+        if (proxyConfig && proxyConfig.username) {
+            await context.setHTTPCredentials({ username: proxyConfig.username, password: proxyConfig.password });
+        } else {
+            await context.setHTTPCredentials(null);
+        }
 
         const cookieKey = `freegamehost_cookie_${safeUser}`;
         try {
@@ -557,6 +709,7 @@ async function clickRenewButton(page) {
                     console.log(`   >> ❌ 登录失败，停留在: ${page.url()}`);
                     await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n停留在: ${page.url()}`, shot);
                     console.log('用户处理完成');
+                    await browser.close();
                     continue;
                 }
                 console.log(`   >> ✅ 登录成功: ${page.url()}`);
@@ -572,6 +725,7 @@ async function clickRenewButton(page) {
                 try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
                 await sendTelegramMessage(`✅ *登录成功*\n用户: ${user.username}\n(未配置 serverUrl，跳过续期)`, shot);
                 console.log('用户处理完成');
+                await browser.close();
                 continue;
             }
 
@@ -584,7 +738,6 @@ async function clickRenewButton(page) {
             const beforeExpiry = await page.evaluate(() => {
                 const timerEl = document.querySelector('[class*="timer"], [id*="time"], [class*="remaining"]');
                 if (timerEl) return timerEl.textContent || '';
-                // 查找 Time remaining 旁边的文本节点
                 const labels = document.querySelectorAll('p, span, div');
                 for (const el of labels) {
                     if (el.textContent && el.textContent.includes('Time remaining')) {
@@ -619,9 +772,11 @@ async function clickRenewButton(page) {
             await sendTelegramMessage(`❌ *处理异常*\n用户: ${user.username}\n错误: ${err.message}`, shot);
         }
         console.log('用户处理完成');
+        await browser.close();
     }
 
+    cleanupV2ray();
+    await stopChrome();
     console.log('完成。');
-    await browser.close();
     process.exit(0);
 })();
