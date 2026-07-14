@@ -432,7 +432,9 @@ async function launchChrome(proxyConfig) {
 function getUsers() {
     try {
         if (process.env.FREEGAMEHOST_USERS_JSON) {
-            const parsed = JSON.parse(process.env.FREEGAMEHOST_USERS_JSON);
+            // 清除字符串值中的控制字符（如换行符），避免 JSON.parse 失败
+            const cleaned = process.env.FREEGAMEHOST_USERS_JSON.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+            const parsed = JSON.parse(cleaned);
             return Array.isArray(parsed) ? parsed : (parsed.users || []);
         }
     } catch (e) {
