@@ -93,7 +93,7 @@ async function resolveUserProxy(user) {
         console.log(`   >> 检测到用户专属 V2 链接，启动独立 v2ray...`);
         const localUrl = await startV2rayForLink(link);
         if (localUrl) {
-            const cfg = parseProxyUrl(localUrl);
+            const cfg = parseProxyUrl(localUrl.url);
             return { config: cfg, label: `v2ray (${localUrl})` };
         }
         console.warn('   >> 专属 v2ray 启动失败，回退到全局代理。');
