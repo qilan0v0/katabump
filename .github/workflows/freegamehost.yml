@@ -1,0 +1,85 @@
+name: FreeGameHost Auto Renew
+
+on:
+  workflow_dispatch: # 允许手动触发
+
+# 提前切到 Node.js 24 运行 actions/*，消除 Node 20 弃用警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    env:
+      HAS_V2RAY: ${{ secrets.V2RAY_VMESS != '' }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        npm install
+        npx playwright install-deps chrome
+
+    - name: Install v2ray
+      if: env.HAS_V2RAY == 'true'
+      run: |
+        mkdir -p $HOME/v2ray
+        cd $HOME/v2ray
+        V2RAY_URL=$(curl -fsSL https://api.github.com/repos/v2fly/v2ray-core/releases/latest \
+          | grep "browser_download_url" | grep 'v2ray-linux-64\.zip"' | cut -d '"' -f 4)
+        echo "下载 v2ray: $V2RAY_URL"
+        curl -fsSL -o v2ray.zip "$V2RAY_URL"
+        unzip -o v2ray.zip
+        chmod +x v2ray
+        ./v2ray version
+
+    - name: Start v2ray (本地 HTTP 代理)
+      if: env.HAS_V2RAY == 'true'
+      env:
+        V2RAY_VMESS: ${{ secrets.V2RAY_VMESS }}
+      run: |
+        node .github/scripts/gen-v2ray-config.js "$V2RAY_VMESS" 10809 $HOME/v2ray/config.json
+        nohup $HOME/v2ray/v2ray run -config $HOME/v2ray/config.json > $HOME/v2ray/v2ray.log 2>&1 &
+        for i in $(seq 1 15); do
+          if curl -fsS -x http://127.0.0.1:10809 -m 10 https://api.ipify.org > /tmp/proxy_ip 2>/dev/null; then
+            echo "代理就绪，出口 IP: $(cat /tmp/proxy_ip)"
+            break
+          fi
+          echo "等待 v2ray 启动... ($i)"
+          sleep 2
+        done
+        if [ ! -s /tmp/proxy_ip ]; then
+          echo "v2ray 启动失败，日志如下:"
+          cat $HOME/v2ray/v2ray.log
+          exit 1
+        fi
+
+    - name: Run FreeGameHost Renew Script
+      env:
+        PROJECT_NAME: FreeGameHost
+        # Secret FREEGAMEHOST_USERS_JSON 格式:
+        # [{"username":"xxx","password":"xxx","serverUrl":"https://panel.freegamehost.xyz/server/xxxx"}]
+        FREEGAMEHOST_USERS_JSON: ${{ secrets.FREEGAMEHOST_USERS_JSON }}
+        # KV Admin Worker：缓存登录 cookie，免每次登录
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
+        HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node freegamehost_renew.js
+
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: freegamehost-screenshots
+        path: screenshots/

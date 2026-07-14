@@ -3,7 +3,7 @@
 // 部署: npx wrangler deploy
 // Secret: npx wrangler secret put KV_ADMIN_PASS
 
-const PROJECT_PREFIXES = [
+const DEFAULT_PROJECTS = [
   { label: 'Katabump', prefix: 'katabump_cookie_' },
   { label: 'Zampto', prefix: 'zampto_cookie_' },
   { label: 'Vortexa', prefix: 'vortexa_cookie_' },
@@ -13,15 +13,38 @@ const PROJECT_PREFIXES = [
   { label: 'BotHosting', prefix: 'bothosting_cookie_' },
 ];
 
-function extractEmail(key) {
-  for (const p of PROJECT_PREFIXES) {
+let _projectsCache = null;
+
+async function getProjects(env) {
+  if (_projectsCache) return _projectsCache;
+  try {
+    const raw = await env.COOKIE_KV.get('_config:projects');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) {
+        _projectsCache = parsed.filter(p => p.label !== 'Unknown');
+        _projectsCache.push({ label: 'Unknown', prefix: '' });
+        return _projectsCache;
+      }
+    }
+  } catch(e) {}
+  _projectsCache = [...DEFAULT_PROJECTS, { label: 'Unknown', prefix: '' }];
+  return _projectsCache;
+}
+
+function invalidateProjects() {
+  _projectsCache = null;
+}
+
+function extractEmail(key, projects) {
+  for (const p of projects) {
     if (key.startsWith(p.prefix)) return key.slice(p.prefix.length);
   }
   return key;
 }
 
-function extractProject(key) {
-  for (const p of PROJECT_PREFIXES) {
+function extractProject(key, projects) {
+  for (const p of projects) {
     if (key.startsWith(p.prefix)) return p.label;
   }
   return 'Unknown';
@@ -141,7 +164,7 @@ const HTML = '<!DOCTYPE html>' +
 '    <div class="container">' +
 '      <div style="display:flex;justify-content:space-between;align-items:center">' +
 '        <div><h1>KV Cookie 管理</h1><div class="sub">管理 KV 中存储的登录 Cookie</div></div>' +
-'        <div style="display:flex;gap:6px"><button class="btn-add" data-action="addCK">新增</button><button class="btn-del" data-action="refresh" style="color:#8b949e;border-color:#30363d">刷新</button></div>' +
+'        <div style="display:flex;gap:6px"><button class="btn-add" data-action="addCK">新增</button><button class="btn-edit" data-action="manageProjects" style="color:#d2a8ff;border-color:#d2a8ff44">项目</button><button class="btn-del" data-action="refresh" style="color:#8b949e;border-color:#30363d">刷新</button></div>' +
 '      </div>' +
 '      <div class="tabs" id="tabs"></div>' +
 '      <div class="search-row">' +
@@ -176,6 +199,9 @@ const HTML = '<!DOCTYPE html>' +
 '  else if(a==="addCK")showCKEditor(null,null);' +
 '  else if(a==="editCK"){e.stopPropagation();(function(){var k=t.dataset.key;for(var i=0;i<DATA.length;i++){if(DATA[i].key===k){showCKEditor(k,JSON.stringify(DATA[i].cookies,null,2));return}}})()}' +
 '  else if(a==="saveCK"){var k=t.dataset.key||"";doSaveCK(k)}' +
+'  else if(a==="manageProjects")showProjectMgr();' +
+'  else if(a==="addProject")addProject();' +
+'  else if(a==="delProject"){var l=t.dataset.label;if(l)delProject(l)}' +
 '});' +
 'async function doLogin(){' +
 '  var p=document.getElementById("passInput").value||sessionStorage.getItem("kv_admin_pass");' +
@@ -187,7 +213,7 @@ const HTML = '<!DOCTYPE html>' +
 '      sessionStorage.setItem("kv_admin_pass",p);' +
 '      document.getElementById("loginBox").style.display="none";' +
 '      document.getElementById("mainPanel").style.display="block";' +
-'      loadData()' +
+'      await loadProjects();loadData()' +
 '    }else document.getElementById("loginErr").style.display="block"' +
 '  }catch(e){console.error(e);document.getElementById("loginErr").textContent="错误： "+e.message;document.getElementById("loginErr").style.display="block"}' +
 '}' +
@@ -300,10 +326,52 @@ const HTML = '<!DOCTYPE html>' +
 '  if(r.ok){toast("已删除： "+key);await loadData()}else toast("删除失败","err")' +
 '}' +
 'function doRefresh(){loadData();toast("已刷新")}' +
-'var PROJECTS=[{label:"Katabump",prefix:"katabump_cookie_"},{label:"Zampto",prefix:"zampto_cookie_"},{label:"Vortexa",prefix:"vortexa_cookie_"},{label:"Weirdhost",prefix:"weirdhost_cookie_"},{label:"FreeMCHost",prefix:"freemchost_cookie_"},{label:"Gaming4Free",prefix:"gaming4free_cookie_"},{label:"BotHosting",prefix:"bothosting_cookie_"}];' +
+'let PROJECTS=[];' +
+'async function loadProjects(){var r=await api("/api/projects",{});if(r.ok&&r.projects){PROJECTS=r.projects}else PROJECTS=[{label:"Unknown",prefix:""}]}' +
+'function showProjectMgr(){' +
+'  var box=document.createElement("div");box.className="modal-overlay";' +
+'  var title=document.createElement("h3");title.textContent="管理项目";' +
+'  var desc=document.createElement("div");desc.style.cssText="margin-bottom:12px;font-size:13px;color:#8b949e";desc.textContent="自定义项目名称和前缀，新增后会在 Cookie 编辑器的下拉菜单中出现。";' +
+'  var listWrap=document.createElement("div");listWrap.id="projList";listWrap.style.marginBottom="12px";' +
+'  var list=PROJECTS.filter(function(p){return p.label!=="Unknown"});' +
+'  if(list.length===0){listWrap.textContent="暂无自定义项目";listWrap.style.color="#8b949e";listWrap.style.fontSize="13px";listWrap.style.padding="8px 0"}' +
+'  for(var i=0;i<list.length;i++){' +
+'    var row=document.createElement("div");row.style.cssText="display:flex;gap:6px;align-items:center;margin-bottom:4px;padding:4px 0;border-bottom:1px solid #21262d";' +
+'    var nameSpan=document.createElement("span");nameSpan.style.cssText="flex:1;font-size:13px";nameSpan.textContent=list[i].label;' +
+'    var codeSpan=document.createElement("code");codeSpan.style.cssText="flex:1;font-size:11px;color:#8b949e";codeSpan.textContent=list[i].prefix;' +
+'    var delBtn=document.createElement("button");delBtn.className="btn-del";delBtn.textContent="删除";delBtn.dataset.action="delProject";delBtn.dataset.label=list[i].label;' +
+'    row.appendChild(nameSpan);row.appendChild(codeSpan);row.appendChild(delBtn);listWrap.appendChild(row)' +
+'  }' +
+'  var addWrap=document.createElement("div");addWrap.style.cssText="border-top:1px solid #30363d;padding-top:12px";' +
+'  var addRow=document.createElement("div");addRow.style.cssText="display:flex;gap:6px;align-items:center;margin-bottom:8px";' +
+'  var nameInput=document.createElement("input");nameInput.id="newProjLabel";nameInput.placeholder="项目名称（如 MyApp）";nameInput.style.cssText="flex:1;padding:6px 10px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#e6edf3;font-size:13px;outline:none";' +
+'  var prefixInput=document.createElement("input");prefixInput.id="newProjPrefix";prefixInput.placeholder="前缀（如 myapp_cookie_）";prefixInput.style.cssText="flex:1;padding:6px 10px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#e6edf3;font-size:13px;outline:none";' +
+'  var addBtn=document.createElement("button");addBtn.className="btn-add";addBtn.textContent="添加";addBtn.dataset.action="addProject";' +
+'  addRow.appendChild(nameInput);addRow.appendChild(prefixInput);addRow.appendChild(addBtn);addWrap.appendChild(addRow);' +
+'  var actions=document.createElement("div");actions.style.cssText="display:flex;gap:8px;justify-content:flex-end";' +
+'  var closeBtn=document.createElement("button");closeBtn.className="cancel";closeBtn.textContent="关闭";closeBtn.dataset.action="closeModal";' +
+'  actions.appendChild(closeBtn);' +
+'  var inner=document.createElement("div");inner.className="modal-box modal-wide";' +
+'  inner.appendChild(title);inner.appendChild(desc);inner.appendChild(listWrap);inner.appendChild(addWrap);inner.appendChild(actions);box.appendChild(inner);' +
+'  document.body.appendChild(box)' +
+'}' +'async function addProject(){' +
+'  var label=document.getElementById("newProjLabel").value.trim();' +
+'  var prefix=document.getElementById("newProjPrefix").value.trim();' +
+'  if(!label||!prefix){toast("请填写名称和前缀","err");return}' +
+'  if(PROJECTS.some(function(p){return p.label===label})){toast("该项目已存在","err");return}' +
+'  var list=PROJECTS.filter(function(p){return p.label!=="Unknown"});' +
+'  list.push({label:label,prefix:prefix});' +
+'  var r=await api("/api/projects/save",{projects:list});' +
+'  if(r.ok){toast("项目已添加: "+label);await loadProjects();var m=document.querySelector(".modal-overlay");if(m)m.remove();showProjectMgr()}else toast("保存失败","err")' +
+'}' +
+'async function delProject(label){' +
+'  var list=PROJECTS.filter(function(p){return p.label!==label&&p.label!=="Unknown"});' +
+'  var r=await api("/api/projects/save",{projects:list});' +
+'  if(r.ok){toast("已删除: "+label);await loadProjects();var m=document.querySelector(".modal-overlay");if(m)m.remove();showProjectMgr()}else toast("删除失败","err")' +
+'}' +
 'function showCKEditor(key,rawVal){' +
 '  var isNew=!key;var proj="";var suf="";var ckText="[]";' +
-'  if(key){for(var i=0;i<PROJECTS.length;i++){if(key.startsWith(PROJECTS[i].prefix)){proj=PROJECTS[i].label;suf=key.slice(PROJECTS[i].prefix.length);break}}}' +
+'  if(key){for(var i=0;i<PROJECTS.length-1;i++){if(key.startsWith(PROJECTS[i].prefix)){proj=PROJECTS[i].label;suf=key.slice(PROJECTS[i].prefix.length);break}}if(!proj){proj="Unknown";suf=key}}' +
 '  if(rawVal){try{ckText=JSON.stringify(JSON.parse(rawVal),null,2)}catch(e){ckText=rawVal}}' +
 '  var box=document.createElement("div");box.className="modal-overlay";' +
 '  var h="<div class=\\"modal-box modal-wide\\"><h3>"+(isNew?"新增 Cookie":"编辑 Cookie")+"</h3>";' +
@@ -322,7 +390,7 @@ const HTML = '<!DOCTYPE html>' +
 'function getFullKey(){var sel=document.getElementById("ckProject");var pfx="";for(var i=0;i<PROJECTS.length;i++){if(PROJECTS[i].label===sel.value){pfx=PROJECTS[i].prefix;break}}return pfx+document.getElementById("ckSuffix").value}' +
 'async function doSaveCK(key){' +
 '  var fullKey=key||getFullKey();' +
-'  if(!fullKey||fullKey.indexOf("_cookie_")===-1){toast("Key 格式错误","err");return}' +
+'  var selProj=document.getElementById("ckProject").value;if(!fullKey||(selProj!=="Unknown"&&fullKey.indexOf("_cookie_")===-1)){toast("Key 格式错误","err");return}' +
 '  var val=document.getElementById("ckValue").value;' +
 '  if(!val){toast("请输入 Cookie 数据","err");return}' +
 '  try{JSON.parse(val)}catch(e){toast("JSON 格式错误: "+e.message,"err");return}' +
@@ -363,6 +431,7 @@ export default {
 
     if (url.pathname === '/api/list' && method === 'POST') {
       const prefix = '_cookie_';
+      const projects = await getProjects(env);
       let cursor = undefined;
       const entries = [];
       do {
@@ -375,8 +444,8 @@ export default {
               entries.push({
                 key: key.name,
                 value,
-                project: extractProject(key.name),
-                email: extractEmail(key.name),
+                project: extractProject(key.name, projects),
+                email: extractEmail(key.name, projects),
                 metadata: key.metadata || null,
               });
             }
@@ -386,6 +455,21 @@ export default {
       } while (cursor);
       entries.sort((a, b) => a.key.localeCompare(b.key));
       return json({ ok: true, entries });
+    }
+
+    if (url.pathname === '/api/projects' && method === 'POST') {
+      const projects = await getProjects(env);
+      return json({ ok: true, projects });
+    }
+
+    if (url.pathname === '/api/projects/save' && method === 'POST') {
+      const body = await request.json();
+      const { projects } = body;
+      if (!Array.isArray(projects)) return json({ ok: false, error: 'invalid data' });
+      const toSave = projects.filter(p => p.label && p.label !== 'Unknown');
+      await env.COOKIE_KV.put('_config:projects', JSON.stringify(toSave));
+      invalidateProjects();
+      return json({ ok: true });
     }
 
     if (url.pathname === '/api/get' && method === 'POST') {
