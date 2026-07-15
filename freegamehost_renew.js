@@ -524,21 +524,35 @@ async function loginOnce(page, user) {
 
 // 尝试点击 +8 Hours 续期按钮，处理可能出现的 Turnstile 验证
 async function clickRenewButton(page) {
-    // 查找 +8 Hours 按钮
-    const renewBtn = page.getByRole('button', { name: /\+8\s?hours/i })
-        .or(page.locator('button:has-text("+8 Hours")'))
-        .first();
+    // 先检查是否是冷却状态（按钮显示 "XX:XX:XXrenewal cooldown"）
+    const cooldownInfo = await page.evaluate(() => {
+        const btns = document.querySelectorAll('button');
+        for (const b of btns) {
+            const text = (b.textContent || '').replace(/\s+/g, ' ').trim();
+            if (text.includes('renewal cooldown')) {
+                return { found: true, text };
+            }
+        }
+        return { found: false };
+    }).catch(() => ({ found: false }));
+    if (cooldownInfo.found) {
+        console.log(`   >> ⏳ 冷却中: ${cooldownInfo.text}`);
+        return { status: 'cooldown', cooldown: cooldownInfo.text };
+    }
+
+    // 查找 +8 Hours 续期按钮
+    const renewBtn = page.locator('button').filter({ hasText: /\+8 hours/i }).first();
     try {
         await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
     } catch (e) {
-        console.log('   >> 未找到 +8 Hours 按钮');
-        return 'no_button';
+        console.log('   >> 未找到续期按钮');
+        return { status: 'no_button' };
     }
 
     const disabled = await renewBtn.isDisabled().catch(() => false);
     if (disabled) {
-        console.log('   >> ⏳ +8 Hours 按钮禁用 (冷却中)');
-        return 'disabled';
+        console.log('   >> ⏳ +8 Hours 按钮禁用');
+        return { status: 'disabled' };
     }
 
     console.log('   >> 点击 +8 Hours 续期...');
@@ -583,23 +597,25 @@ async function clickRenewButton(page) {
 
     await page.waitForTimeout(3000);
 
-    // 获取续期后的到期时间
-    const afterExpiry = await page.locator('[id*="timer"], [class*="timer"], text=Time remaining')
-        .first().isVisible().catch(() => false);
-    let expiryText = '';
-    if (afterExpiry) {
-        // 尝试读取 timer 附近文本 (通常是 sibling/adjacent 元素)
-        expiryText = await page.evaluate(() => {
-            const timerParent = document.querySelector('[id*="timer"], [class*="timer"]');
-            if (timerParent) {
-                const allText = timerParent.parentElement ? timerParent.parentElement.innerText : '';
-                return allText;
+    // 获取续期后的到期时间 (仅用于日志)
+    const expiryText = await page.evaluate(() => {
+        const allEls = document.querySelectorAll('div, span, p, section');
+        for (const el of allEls) {
+            const text = (el.textContent || '').trim();
+            if (/^\d{1,2}:\d{2}:\d{2}$/.test(text) && !text.includes('renewal')) return text;
+        }
+        for (const el of allEls) {
+            const text = (el.textContent || '').trim();
+            if (text === 'Time remaining' && el.nextElementSibling) {
+                const val = (el.nextElementSibling.textContent || '').trim();
+                if (/^\d{1,2}:\d{2}:\d{2}$/.test(val)) return val;
             }
-            return '';
-        }).catch(() => '');
-    }
+        }
+        return '';
+    }).catch(() => '');
+    if (expiryText) console.log(`   >> 续期后到期: ${expiryText}`);
 
-    return 'clicked';
+    return { status: 'clicked' };
 }
 
 (async () => {
@@ -738,13 +754,18 @@ async function clickRenewButton(page) {
 
             // 获取续期前的到期时间
             const beforeExpiry = await page.evaluate(() => {
-                const timerEl = document.querySelector('[class*="timer"], [id*="time"], [class*="remaining"]');
-                if (timerEl) return timerEl.textContent || '';
-                const labels = document.querySelectorAll('p, span, div');
-                for (const el of labels) {
-                    if (el.textContent && el.textContent.includes('Time remaining')) {
-                        const next = el.nextElementSibling;
-                        if (next) return next.textContent || '';
+                // 先找匹配 HH:MM:SS 格式的纯时间文本（最精确）
+                const allEls = document.querySelectorAll('div, span, p, section');
+                for (const el of allEls) {
+                    const text = (el.textContent || '').trim();
+                    if (/^\d{1,2}:\d{2}:\d{2}$/.test(text) && !text.includes('renewal')) return text;
+                }
+                // 回退：找 "Time remaining" 的下一个兄弟元素，并验证是时间格式
+                for (const el of allEls) {
+                    const text = (el.textContent || '').trim();
+                    if (text === 'Time remaining' && el.nextElementSibling) {
+                        const val = (el.nextElementSibling.textContent || '').trim();
+                        if (/^\d{1,2}:\d{2}:\d{2}$/.test(val)) return val;
                     }
                 }
                 return '';
@@ -756,12 +777,19 @@ async function clickRenewButton(page) {
             const shot = path.join(photoDir, `freegamehost_${safeUser}_renew.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
 
-            if (result === 'no_button') {
+            if (result.status === 'no_button') {
                 await sendTelegramMessage(`⚠️ *未找到续期按钮*\n用户: ${user.username}\n到期: ${beforeExpiry || '?'}\n详见截图`, shot);
-            } else if (result === 'disabled') {
-                console.log('   >> ⏳ 暂不可续期 (按钮禁用/冷却中)。');
-                await sendTelegramMessage(`⏳ *暂不可续期*\n用户: ${user.username}\n到期: ${beforeExpiry || '?'}\n原因: +8 Hours 按钮禁用 (冷却中)`, shot);
-            } else if (result === 'clicked') {
+            } else if (result.status === 'cooldown') {
+                console.log(`   >> ⏳ 冷却中: ${result.cooldown}`);
+                console.log(`   >> 服务器剩余时间: ${beforeExpiry || '?'}`);
+                await sendTelegramMessage(
+                    `⏳ *冷却中，暂不可续期*\n用户: ${user.username}\n`
+                    + `冷却: ${result.cooldown}\n`
+                    + `服务器到期: ${beforeExpiry || '?'}`, shot);
+            } else if (result.status === 'disabled') {
+                console.log('   >> ⏳ +8 Hours 按钮禁用。');
+                await sendTelegramMessage(`⏳ *续期按钮禁用*\n用户: ${user.username}\n到期: ${beforeExpiry || '?'}`, shot);
+            } else if (result.status === 'clicked') {
                 console.log('   >> ✅ 已点击续期。');
                 await sendTelegramMessage(
                     `✅ *续期操作已完成*\n用户: ${user.username}\n`
