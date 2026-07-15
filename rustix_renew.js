@@ -297,14 +297,39 @@ function getUsers() {
 async function gotoWithRetry(page, url, retries = 3) {
     for (let i = 1; i <= retries; i++) {
         try {
-            await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+            await page.goto(url, { waitUntil: 'load', timeout: 60000 });
             return;
         } catch (e) {
             console.warn(`[导航] 打开 ${url} 失败 (第 ${i}/${retries} 次): ${e.message}`);
             if (i === retries) throw e;
+            await page.waitForTimeout(5000);
+        }
+    }
+}
+
+async function waitForLoginForm(page, timeoutMs = 60000) {
+    // 等待页面渲染出登录表单（可能被 Cloudflare Turnstile 拖慢）
+    const emailInput = page.locator('input[type="email"]');
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const visible = await emailInput.isVisible({ timeout: 5000 }).catch(() => false);
+            if (visible) return true;
+        } catch (e) {}
+        // 检查页面是否卡在 Cloudflare 挑战上
+        const bodyText = await page.locator('body').innerText().catch(() => '');
+        if (bodyText.includes('Just a moment') || bodyText.includes('Checking your browser')) {
+            console.log('   >> ⏳ 正在等待 Cloudflare 验证通过...');
+        }
+        await page.waitForTimeout(3000);
+        // 如果页面没动过，reload 一下
+        if (Date.now() - start > 15000 && !bodyText.includes('Введите email')) {
+            console.log('   >> ⚠️ 登录页似乎未加载，尝试刷新...');
+            try { await page.reload({ waitUntil: 'load', timeout: 30000 }).catch(() => {}); } catch (e) {}
             await page.waitForTimeout(3000);
         }
     }
+    return false;
 }
 
 function _race(p, ms) {
@@ -352,27 +377,33 @@ async function attemptTurnstileCdp(page) {
 
 // 登录单个账号：填写邮箱密码，处理 Turnstile，点击登录
 async function login(page, user) {
+    console.log('   >> 打开登录页...');
     await gotoWithRetry(page, LOGIN_URL);
-    await page.waitForTimeout(3000);
+
+    console.log('   >> 等待登录表单渲染（Cloudflare 验证）...');
+    const formReady = await waitForLoginForm(page);
+    if (!formReady) {
+        console.log('   >> ❌ 等待登录表单超时');
+        return false;
+    }
+    await page.waitForTimeout(2000);
 
     console.log('   >> 填写邮箱...');
-    const emailInput = page.locator('input[placeholder="Введите email"]');
-    await emailInput.waitFor({ state: 'visible', timeout: 20000 });
+    const emailInput = page.locator('input[type="email"]').first();
     await emailInput.fill(user.username);
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(500);
 
     console.log('   >> 填写密码...');
-    const pwdInput = page.locator('input[placeholder="Введите пароль"]');
-    await pwdInput.waitFor({ state: 'visible', timeout: 10000 });
+    const pwdInput = page.locator('input[type="password"]').first();
     await pwdInput.fill(user.password);
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(500);
 
     console.log('   >> 点击 Войти...');
     const loginBtn = page.locator('button:has-text("Войти")');
     await loginBtn.click();
 
     // 处理 Turnstile（如果出现）
-    for (let attempt = 1; attempt <= 15; attempt++) {
+    for (let attempt = 1; attempt <= 20; attempt++) {
         await page.waitForTimeout(1500);
         const currentUrl = page.url();
         if (!currentUrl.includes('/auth/signin') && !currentUrl.includes('/auth/login')) {
@@ -383,12 +414,10 @@ async function login(page, user) {
         const clicked = await attemptTurnstileCdp(page);
         if (clicked) {
             console.log(`   >> Turnstile 已点击 (第 ${attempt} 次)`);
-            // 等几秒后尝试重新点击登录按钮
             await page.waitForTimeout(2000);
             await loginBtn.click().catch(() => {});
         } else {
-            // 没检测到 Turnstile 但也没跳转，再次点击登录按钮
-            console.log(`   >> 未检测到 Turnstile，再次点击登录按钮 (第 ${attempt} 次)`);
+            console.log(`   >> 再次点击登录按钮 (第 ${attempt} 次)`);
             await loginBtn.click().catch(() => {});
         }
     }
