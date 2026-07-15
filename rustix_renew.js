@@ -18,15 +18,8 @@ const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const TG_THREAD_ID = process.env.TG_THREAD_ID;
 const PROJECT = process.env.PROJECT_NAME || 'Rustix';
 
-// 全局 HTTP 代理 (由 workflow 启动的 v2ray 全局代理，或用户设置的 HTTP_PROXY)
+// 全局 HTTP 代理 (回退用)
 const HTTP_PROXY = process.env.HTTP_PROXY;
-
-// v2ray 二进制路径
-const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
-
-// 管理所有启动的 v2ray 子进程
-const allV2rayProcs = [];
-let nextV2rayPort = 10810;
 
 // ===== Telegram 通知 =====
 async function sendTelegramMessage(message, imagePath = null) {
@@ -81,34 +74,39 @@ async function sendTelegramMessage(message, imagePath = null) {
     }
 }
 
-// ===== v2ray 管理 =====
-async function startV2rayForLink(link) {
-    if (!fs.existsSync(V2RAY_BIN)) {
-        console.error(`[v2ray] 未找到 v2ray 二进制 (${V2RAY_BIN})`);
+// ===== sing-box 管理 =====
+const { buildSingboxConfig } = require('./.github/scripts/gen-singbox-config');
+const SINGBOX_BIN = process.env.SINGBOX_BIN || `${process.env.HOME}/sing-box/sing-box`;
+const singboxProcs = [];
+let nextSocksPort = 10810;
+
+async function startSingboxForLink(link) {
+    if (!fs.existsSync(SINGBOX_BIN)) {
+        console.error(`[sing-box] 未找到 sing-box 二进制 (${SINGBOX_BIN})`);
         return null;
     }
-    const port = nextV2rayPort++;
+    const socksPort = nextSocksPort++;
+    const httpPort = nextSocksPort++;
     let cfgPath;
     try {
-        const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
-        const cfg = buildConfig(link, port);
-        cfgPath = path.join(process.cwd(), `v2ray-rustix-${port}.json`);
+        const cfg = buildSingboxConfig(link, socksPort, httpPort);
+        cfgPath = path.join(process.cwd(), `singbox-rustix-${socksPort}.json`);
         fs.writeFileSync(cfgPath, JSON.stringify(cfg));
     } catch (e) {
-        console.error(`[v2ray] 解析 V2 链接失败: ${e.message}`);
+        console.error(`[sing-box] 解析 V2 链接失败: ${e.message}`);
         return null;
     }
-    console.log(`[v2ray] 启动实例 (HTTP 127.0.0.1:${port})...`);
-    const proc = spawn(V2RAY_BIN, ['run', '-config', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    console.log(`[sing-box] 启动实例 (SOCKS5 ${socksPort}, HTTP ${httpPort})...`);
+    const proc = spawn(SINGBOX_BIN, ['run', '-c', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
-    allV2rayProcs.push({ proc, port });
+    singboxProcs.push({ proc, port: socksPort });
 
     const ready = await new Promise((resolve) => {
         let n = 0;
         const tick = () => {
-            const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 3000 }, () => resolve(true));
+            const req = http.get({ host: '127.0.0.1', port: httpPort, path: '/', timeout: 3000 }, () => resolve(true));
             req.on('error', () => { if (++n >= 15) return resolve(false); setTimeout(tick, 2000); });
             req.on('timeout', () => { req.destroy(); if (++n >= 15) return resolve(false); else setTimeout(tick, 2000); });
             req.end();
@@ -116,71 +114,38 @@ async function startV2rayForLink(link) {
         tick();
     });
     if (!ready) {
-        console.error(`[v2ray] 端口 ${port} 未就绪。stderr:\n${stderr.slice(-400)}`);
+        console.error(`[sing-box] 代理端口未就绪。stderr:\n${stderr.slice(-400)}`);
         return null;
     }
-    console.log(`[v2ray] 代理就绪 → http://127.0.0.1:${port}`);
-    return { port, url: `http://127.0.0.1:${port}` };
+    const url = `socks5://127.0.0.1:${socksPort}`;
+    console.log(`[sing-box] 代理就绪 → ${url}`);
+    return { port: socksPort, url };
 }
 
-function cleanupV2ray() {
-    for (const { proc, port } of allV2rayProcs) {
+function cleanupSingbox() {
+    for (const { proc, port } of singboxProcs) {
         try { proc.kill('SIGTERM'); } catch (e) { }
-        try { fs.unlinkSync(path.join(process.cwd(), `v2ray-rustix-${port}.json`)); } catch (e) { }
+        try { fs.unlinkSync(path.join(process.cwd(), `singbox-rustix-${port}.json`)); } catch (e) { }
     }
-    allV2rayProcs.length = 0;
+    singboxProcs.length = 0;
 }
 
-process.on('exit', () => cleanupV2ray());
-process.on('SIGINT', () => { cleanupV2ray(); process.exit(0); });
-process.on('SIGTERM', () => { cleanupV2ray(); process.exit(0); });
-
-// 测试代理是否能连通目标网站
-async function testProxy(proxyUrl, testUrl = 'https://rustix.me', timeout = 10000) {
-    try {
-        const url = new URL(proxyUrl);
-        const axiosConfig = {
-            proxy: { protocol: 'http', host: url.hostname, port: parseInt(url.port || '80', 10) },
-            timeout,
-            httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }),
-        };
-        await axios.get(testUrl, axiosConfig);
-        console.log(`[代理] 代理连通性测试通过: ${proxyUrl}`);
-        return true;
-    } catch (e) {
-        console.warn(`[代理] 代理连通性测试失败: ${e.message}`);
-        return false;
-    }
-}
+process.on('exit', () => cleanupSingbox());
+process.on('SIGINT', () => { cleanupSingbox(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupSingbox(); process.exit(0); });
 
 // ===== 解析用户代理配置 =====
 async function resolveProxyForUser(user) {
     const v2Link = user.V2 || user.v2;
     if (v2Link) {
-        console.log(`[代理] 用户有 V2 链接，启动独立 v2ray...`);
-        const result = await startV2rayForLink(v2Link);
-        if (result) {
-            // 测试代理连通性
-            const ok = await testProxy(result.url);
-            if (ok) return result;
-            console.warn('[代理] V2 代理连通性测试失败，回退');
-            // 关闭失败的 v2ray
-            const idx = allV2rayProcs.findIndex(p => p.port === result.port);
-            if (idx >= 0) {
-                try { allV2rayProcs[idx].proc.kill('SIGTERM'); } catch (e) {}
-                allV2rayProcs.splice(idx, 1);
-            }
-        } else {
-            console.warn('[代理] 独立 v2ray 启动失败，回退');
-        }
+        console.log(`[代理] 用户有 V2 链接，启动独立 sing-box...`);
+        const result = await startSingboxForLink(v2Link);
+        if (result) return result;
+        console.warn('[代理] sing-box 启动失败，回退');
     }
     if (HTTP_PROXY) {
-        const ok = await testProxy(HTTP_PROXY);
-        if (ok) {
-            console.log(`[代理] 使用全局 HTTP 代理: ${HTTP_PROXY}`);
-            return { port: null, url: HTTP_PROXY };
-        }
-        console.warn('[代理] 全局 HTTP 代理连通性测试失败，直连');
+        console.log(`[代理] 使用全局 HTTP 代理: ${HTTP_PROXY}`);
+        return { port: null, url: HTTP_PROXY };
     }
     console.log('[代理] 直连');
     return null;
@@ -393,7 +358,7 @@ async function processUser(user) {
     const targetUrl = user.serverUrl || `${BASE_URL}/me/services/18806`;
 
     // 解析该用户的代理
-    const v2rayInfo = await resolveProxyForUser(user);
+    const proxyInfo = await resolveProxyForUser(user);
 
     console.log(`[${user.username}] 启动 CloakBrowser...`);
     const { launchPersistentContext } = await import('cloakbrowser');
@@ -403,7 +368,7 @@ async function processUser(user) {
         geoip: true,
         userDataDir: `/tmp/rustix-profile-${safeUser}`,
     };
-    const proxyStr = v2rayInfo ? v2rayInfo.url : (HTTP_PROXY || '');
+    const proxyStr = proxyInfo ? proxyInfo.url : (HTTP_PROXY || '');
     if (proxyStr) {
         launchOpts.proxy = proxyStr;
         console.log(`[CloakBrowser] 使用代理: ${proxyStr}`);
@@ -618,7 +583,7 @@ async function processUser(user) {
         }
     }
 
-    cleanupV2ray();
+    cleanupSingbox();
     console.log(`\n=== 全部完成 === ${allSuccess ? '✅ 全部成功' : '⚠️ 部分失败'}`);
     process.exit(allSuccess ? 0 : 1);
 })();
