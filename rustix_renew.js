@@ -277,11 +277,19 @@ async function launchChrome() {
 function getUsers() {
     try {
         if (process.env.RUSTIX_USERS_JSON) {
-            const parsed = JSON.parse(process.env.RUSTIX_USERS_JSON);
-            return Array.isArray(parsed) ? parsed : (parsed.users || []);
+            const raw = process.env.RUSTIX_USERS_JSON.trim();
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed;
+            if (parsed.users) return parsed.users;
         }
     } catch (e) {
-        console.error('解析 RUSTIX_USERS_JSON 环境变量错误:', e);
+        console.error('解析 RUSTIX_USERS_JSON 环境变量错误:', e.message);
+    }
+    // 后备：单用户模式
+    if (process.env.RUSTIX_USER && process.env.RUSTIX_PASS) {
+        const obj = { username: process.env.RUSTIX_USER, password: process.env.RUSTIX_PASS };
+        if (process.env.RUSTIX_SERVER_URL) obj.serverUrl = process.env.RUSTIX_SERVER_URL;
+        return [obj];
     }
     return [];
 }
