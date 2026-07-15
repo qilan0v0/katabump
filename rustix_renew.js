@@ -308,22 +308,49 @@ async function waitForLoginForm(page, timeoutMs = 60000) {
     return false;
 }
 
-// 尝试通过 Turnstile API 获取 token
-async function tryGetTurnstileToken(page) {
-    const token = await page.evaluate(async () => {
-        if (typeof window.turnstile === 'undefined') return null;
-        let t = window.turnstile.getResponse();
-        if (t) return t;
+function _race(p, ms) {
+    return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
+}
+
+// Cloudflare Turnstile (iframe 内复选框) 的 CDP 点击绕过
+// 遍历页面所有 frame，读取注入脚本设置的 __turnstile_data，
+// 通过 iframeElement.boundingBox() 计算绝对坐标，用 CDP 发送真实鼠标事件
+async function attemptTurnstileCdp(page) {
+    const frames = page.frames();
+    for (const frame of frames) {
+        const fu = (frame.url() || '');
+        if (fu && !/cloudflare|turnstile|challenges|hcaptcha|^about:|^$/i.test(fu)) {
+            if (frame !== page.mainFrame()) continue;
+        }
         try {
-            t = await Promise.race([
-                window.turnstile.execute(),
-                new Promise(r => setTimeout(() => r('__TIMEOUT__'), 8000))
-            ]);
-            if (t && t !== '__TIMEOUT__') return t;
-        } catch (e) {}
-        return null;
-    });
-    return token;
+            const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
+            if (data) {
+                console.log('   >> 在 frame 中发现 Turnstile。比例:', data);
+                const iframeElement = await frame.frameElement();
+                if (!iframeElement) continue;
+                const box = await iframeElement.boundingBox();
+                if (!box) continue;
+                const clickX = box.x + (box.width * data.xRatio);
+                const clickY = box.y + (box.height * data.yRatio);
+                console.log(`   >> 计算点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
+                const client = await page.context().newCDPSession(page);
+                // mouseMoved (mouseover 前置事件)
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: clickX, y: clickY });
+                await new Promise(r => setTimeout(r, 100));
+                // mousePressed
+                await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                await new Promise(r => setTimeout(r, 80));
+                // mouseReleased
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                await client.detach();
+                console.log('   >> Turnstile CDP 点击已发送');
+                return true;
+            }
+        } catch (e) {
+            // 静默跳过不可访问的 frame
+        }
+    }
+    return false;
 }
 
 // 解析服务页面信息
@@ -427,16 +454,39 @@ async function processUser(user) {
             await page.locator('input[type="password"]').first().fill(user.password);
             await page.waitForTimeout(500);
 
-            console.log('   >> 尝试获取 Turnstile token...');
-            const token = await tryGetTurnstileToken(page);
-            if (token) {
-                console.log('   >> ✅ 获取到 Turnstile token');
-                await page.evaluate((t) => {
-                    const input = document.querySelector('input[name="cf-turnstile-response"]');
-                    if (input) input.value = t;
-                }, token);
+            console.log('   >> 正在处理 Cloudflare Turnstile 验证码 (CDP)...');
+            let cdpClicked = false;
+            for (let i = 0; i < 15; i++) {
+                if (await attemptTurnstileCdp(page)) {
+                    cdpClicked = true;
+                    break;
+                }
+                await page.waitForTimeout(1000);
+            }
+            if (cdpClicked) {
+                console.log('   >> ✅ CDP 已点击 Turnstile 复选框，等待 Cloudflare 校验...');
+                // 等待 Cloudflare 校验完成（Success 标志）
+                for (let waitSec = 0; waitSec < 10; waitSec++) {
+                    const frames2 = page.frames();
+                    let isSuccess = false;
+                    for (const f of frames2) {
+                        if (f.url().includes('cloudflare') || f.url().includes('challenges')) {
+                            try {
+                                if (await f.getByText('Success', { exact: false }).isVisible({ timeout: 500 }).catch(() => false)) {
+                                    isSuccess = true;
+                                    break;
+                                }
+                            } catch (e) { }
+                        }
+                    }
+                    if (isSuccess) {
+                        console.log('   >> ✅ Turnstile 验证成功');
+                        break;
+                    }
+                    await page.waitForTimeout(1000);
+                }
             } else {
-                console.log('   >> ⚠️ 未获取到 Turnstile token，直接点击按钮...');
+                console.log('   >> ⚠️ 未找到 Turnstile 复选框，继续尝试登录...');
             }
 
             console.log('   >> 点击 Войти...');
@@ -469,6 +519,20 @@ async function processUser(user) {
                     console.log(`   >> ✅ 登录成功! URL: ${currentUrl}`);
                     loggedIn = true;
                     break;
+                }
+                // 如果仍未跳转，尝试再次 CDP 点击 Turnstile (可能点击登录后才出现)
+                if (attempt % 3 === 0) {
+                    const retry = await attemptTurnstileCdp(page);
+                    if (retry) {
+                        console.log(`   >> Turnstile 复选框已点击 (第 ${attempt} 次等待后)`);
+                        await page.waitForTimeout(2000);
+                        // 再次点击登录按钮
+                        await page.evaluate(() => {
+                            const btns = Array.from(document.querySelectorAll('button'));
+                            const btn = btns.find(b => b.textContent.includes('Войти'));
+                            if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                        });
+                    }
                 }
             }
 
