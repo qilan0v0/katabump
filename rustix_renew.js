@@ -135,23 +135,52 @@ process.on('exit', () => cleanupV2ray());
 process.on('SIGINT', () => { cleanupV2ray(); process.exit(0); });
 process.on('SIGTERM', () => { cleanupV2ray(); process.exit(0); });
 
+// 测试代理是否能连通目标网站
+async function testProxy(proxyUrl, testUrl = 'https://rustix.me', timeout = 10000) {
+    try {
+        const url = new URL(proxyUrl);
+        const axiosConfig = {
+            proxy: { protocol: 'http', host: url.hostname, port: parseInt(url.port || '80', 10) },
+            timeout,
+            httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }),
+        };
+        await axios.get(testUrl, axiosConfig);
+        console.log(`[代理] 代理连通性测试通过: ${proxyUrl}`);
+        return true;
+    } catch (e) {
+        console.warn(`[代理] 代理连通性测试失败: ${e.message}`);
+        return false;
+    }
+}
+
 // ===== 解析用户代理配置 =====
 async function resolveProxyForUser(user) {
     const v2Link = user.V2 || user.v2;
     if (v2Link) {
         console.log(`[代理] 用户有 V2 链接，启动独立 v2ray...`);
         const result = await startV2rayForLink(v2Link);
-        if (result) return result;
-        console.warn('[代理] 独立 v2ray 启动失败，回退');
+        if (result) {
+            // 测试代理连通性
+            const ok = await testProxy(result.url);
+            if (ok) return result;
+            console.warn('[代理] V2 代理连通性测试失败，回退');
+            // 关闭失败的 v2ray
+            const idx = allV2rayProcs.findIndex(p => p.port === result.port);
+            if (idx >= 0) {
+                try { allV2rayProcs[idx].proc.kill('SIGTERM'); } catch (e) {}
+                allV2rayProcs.splice(idx, 1);
+            }
+        } else {
+            console.warn('[代理] 独立 v2ray 启动失败，回退');
+        }
     }
     if (HTTP_PROXY) {
-        try {
-            const url = new URL(HTTP_PROXY);
-            console.log(`[代理] 使用全局 HTTP 代理: ${url.hostname}:${url.port}`);
-            return null;
-        } catch (e) {
-            console.warn(`[代理] HTTP_PROXY 格式无效: ${HTTP_PROXY}`);
+        const ok = await testProxy(HTTP_PROXY);
+        if (ok) {
+            console.log(`[代理] 使用全局 HTTP 代理: ${HTTP_PROXY}`);
+            return { port: null, url: HTTP_PROXY };
         }
+        console.warn('[代理] 全局 HTTP 代理连通性测试失败，直连');
     }
     console.log('[代理] 直连');
     return null;
