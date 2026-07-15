@@ -1,5 +1,5 @@
 // Rustix.me 每月续期脚本 —— 专用于 GitHub Actions (Linux/Headless)
-// 流程: 登录页输邮箱密码 → 过 Turnstile → 导航到服务页 → 点击「Продлить」续期
+// 流程: 优先使用 KV cookie 免登录 → 失败则尝试登录 → 导航到服务页 → 点击「Продлить」续期
 // 账号来源: Secret RUSTIX_USERS_JSON =
 //   [{"username":"xxx@gmail.com","password":"xxx","serverUrl":"https://rustix.me/me/services/18806"}]
 // cookie 通过 KV Admin Worker 存取，key = rustix_cookie_<username>
@@ -31,7 +31,6 @@ async function sendTelegramMessage(message, imagePath = null) {
         : e.message;
     const threadArg = TG_THREAD_ID ? ` -F message_thread_id="${TG_THREAD_ID}"` : '';
 
-    // 只有失败时才发截图，成功只发纯文本
     if (imagePath && fs.existsSync(imagePath)) {
         const captionFile = `${imagePath}.caption.txt`;
         try { fs.writeFileSync(captionFile, text.slice(0, 1000)); } catch (e) { }
@@ -138,7 +137,6 @@ async function kvPut(key, value) {
     }
 }
 
-// 规范化 cookie 数组为 Playwright addCookies 接受的格式
 function normalizeCookies(arr) {
     if (!Array.isArray(arr)) return [];
     return arr.map(c => {
@@ -155,9 +153,20 @@ function normalizeCookies(arr) {
     }).filter(c => c.name && c.domain);
 }
 
-// 注入脚本：hook 子 frame 里的 attachShadow，定位 Cloudflare Turnstile 复选框
+// 注入脚本：隐藏自动化痕迹 + hook Turnstile 复选框
 const INJECTED_SCRIPT = `
 (function() {
+    try {
+        const dp = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver');
+        if (dp) {
+            Object.defineProperty(Navigator.prototype, 'webdriver', {
+                configurable: true, enumerable: true, get: () => undefined
+            });
+        }
+    } catch (e) { }
+    try {
+        const origQuery = iframe => { const p = iframe.contentWindow.navigator.plugins; return p; };
+    } catch(e) { }
     if (window.self === window.top) return;
     try {
         function getRandomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
@@ -167,31 +176,29 @@ const INJECTED_SCRIPT = `
         Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
     } catch (e) { }
     try {
-        const originalAttachShadow = Element.prototype.attachShadow;
+        const orig = Element.prototype.attachShadow;
         Element.prototype.attachShadow = function(init) {
-            const shadowRoot = originalAttachShadow.call(this, init);
-            if (shadowRoot) {
-                const checkAndReport = () => {
-                    const checkbox = shadowRoot.querySelector('input[type="checkbox"]');
-                    if (checkbox) {
-                        const rect = checkbox.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
-                            const xRatio = (rect.left + rect.width / 2) / window.innerWidth;
-                            const yRatio = (rect.top + rect.height / 2) / window.innerHeight;
-                            window.__turnstile_data = { xRatio, yRatio };
+            const sr = orig.call(this, init);
+            if (sr) {
+                const check = () => {
+                    const cb = sr.querySelector('input[type="checkbox"]');
+                    if (cb) {
+                        const r = cb.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
+                            window.__turnstile_data = { xRatio: (r.left + r.width/2) / window.innerWidth, yRatio: (r.top + r.height/2) / window.innerHeight };
                             return true;
                         }
                     }
                     return false;
                 };
-                if (!checkAndReport()) {
-                    const observer = new MutationObserver(() => { if (checkAndReport()) observer.disconnect(); });
-                    observer.observe(shadowRoot, { childList: true, subtree: true });
+                if (!check()) {
+                    const mo = new MutationObserver(() => { if (check()) mo.disconnect(); });
+                    mo.observe(sr, { childList: true, subtree: true });
                 }
             }
-            return shadowRoot;
+            return sr;
         };
-    } catch (e) { console.error('[注入] Hook attachShadow 失败:', e); }
+    } catch (e) { }
 })();
 `;
 
@@ -246,6 +253,7 @@ async function launchChrome() {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
         '--user-data-dir=/tmp/chrome_user_data'
     ];
     if (PROXY_CONFIG) {
@@ -285,7 +293,6 @@ function getUsers() {
     } catch (e) {
         console.error('解析 RUSTIX_USERS_JSON 环境变量错误:', e.message);
     }
-    // 后备：单用户模式
     if (process.env.RUSTIX_USER && process.env.RUSTIX_PASS) {
         const obj = { username: process.env.RUSTIX_USER, password: process.env.RUSTIX_PASS };
         if (process.env.RUSTIX_SERVER_URL) obj.serverUrl = process.env.RUSTIX_SERVER_URL;
@@ -333,126 +340,24 @@ function _race(p, ms) {
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
 }
 
-// Cloudflare Turnstile 的 CDP 点击绕过（仅用于登录后出现的挑战弹窗）
-async function attemptTurnstileCdp(page) {
-    const frames = page.frames();
-    for (const frame of frames) {
-        const fu = (frame.url() || '');
-        if (fu && !/cloudflare|turnstile|challenges|hcaptcha|^about:|^$/i.test(fu)) {
-            if (frame !== page.mainFrame()) continue;
-        }
+// 尝试通过 Turnstile API 获取 token
+async function tryGetTurnstileToken(page) {
+    const token = await page.evaluate(async () => {
+        if (typeof window.turnstile === 'undefined') return null;
+        // 先检查是否已有 token
+        let t = window.turnstile.getResponse();
+        if (t) return t;
+        // 尝试执行（等待最多 8 秒）
         try {
-            const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
-            if (data) {
-                console.log('>> 在 frame 中发现 Turnstile。比例:', data);
-                const iframeElement = await frame.frameElement();
-                if (!iframeElement) continue;
-                const box = await iframeElement.boundingBox();
-                if (!box) continue;
-                const clickX = box.x + (box.width * data.xRatio);
-                const clickY = box.y + (box.height * data.yRatio);
-                console.log(`>> 计算点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
-                const client = await page.context().newCDPSession(page);
-                await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: clickX, y: clickY });
-                await new Promise(r => setTimeout(r, 100));
-                await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                await new Promise(r => setTimeout(r, 80));
-                await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                await client.detach();
-                console.log('>> Turnstile CDP 点击已发送');
-                return true;
-            }
-        } catch (e) {
-            console.warn('   >> Turnstile 检查异常:', e.message);
-        }
-    }
-    return false;
-}
-
-// 登录单个账号
-// 注意：此页面的 Turnstile 是 invisible 类型（无可见复选框），
-// 不要预先点击 Turnstile，直接点击登录按钮即可。
-// Stealth 插件会使浏览器看起来像真实用户，让 Turnstile 自动验证。
-async function login(page, user) {
-    console.log('   >> 打开登录页...');
-    await gotoWithRetry(page, LOGIN_URL);
-
-    console.log('   >> 等待登录表单渲染...');
-    const formReady = await waitForLoginForm(page);
-    if (!formReady) {
-        console.log('   >> ❌ 等待登录表单超时');
-        return false;
-    }
-    await page.waitForTimeout(2000);
-
-    console.log('   >> 填写邮箱...');
-    const emailInput = page.locator('input[type="email"]').first();
-    await emailInput.fill(user.username);
-    await page.waitForTimeout(500);
-
-    console.log('   >> 填写密码...');
-    const pwdInput = page.locator('input[type="password"]').first();
-    await pwdInput.fill(user.password);
-    await page.waitForTimeout(500);
-
-    // 直接点击登录按钮（不预先点 Turnstile，避免触发挑战覆盖层）
-    console.log('   >> 触发点击 Войти...');
-
-    // 方式1: JS dispatchEvent 直接触发 Vue 点击事件
-    await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const btn = btns.find(b => b.textContent.includes('Войти'));
-        if (btn) {
-            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        }
+            t = await Promise.race([
+                window.turnstile.execute(),
+                new Promise(r => setTimeout(() => r('__TIMEOUT__'), 8000))
+            ]);
+            if (t && t !== '__TIMEOUT__') return t;
+        } catch (e) {}
+        return null;
     });
-    await page.waitForTimeout(1000);
-
-    // 方式2: CDP 直接点击坐标（绕过 Playwright 可见性检查）
-    const loginBtn = page.locator('button:has-text("Войти")');
-    try {
-        const box = await loginBtn.boundingBox({ timeout: 3000 });
-        if (box) {
-            const client = await page.context().newCDPSession(page);
-            const cx = box.x + box.width / 2;
-            const cy = box.y + box.height / 2;
-            await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
-            await new Promise(r => setTimeout(r, 50));
-            await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
-            await client.detach();
-            console.log('   >> CDP 坐标点击已发送');
-        }
-    } catch (e) {
-        console.log('   >> CDP 坐标点击跳过:', e.message);
-    }
-
-    // 等待登录跳转
-    for (let attempt = 1; attempt <= 30; attempt++) {
-        await page.waitForTimeout(2000);
-        const currentUrl = page.url();
-        if (!currentUrl.includes('/auth/signin') && !currentUrl.includes('/auth/login')) {
-            console.log(`   >> ✅ 登录成功! URL: ${currentUrl}`);
-            return true;
-        }
-        // 如果 Turnstile 挑战弹窗出现，尝试点击其复选框
-        const clicked = await attemptTurnstileCdp(page);
-        if (clicked) {
-            console.log(`   >> Turnstile 复选框已点击 (等待 ${attempt} 次后)`);
-            await page.waitForTimeout(2000);
-        }
-        // 每 5 轮重新触发一次按钮点击
-        if (attempt % 5 === 0) {
-            console.log(`   >> 重新触发按钮点击 (第 ${attempt} 次)`);
-            await page.evaluate(() => {
-                const btns = Array.from(document.querySelectorAll('button'));
-                const btn = btns.find(b => b.textContent.includes('Войти'));
-                if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-            });
-        }
-    }
-
-    console.log(`   >> ❌ 登录超时，最终 URL: ${page.url()}`);
-    return false;
+    return token;
 }
 
 // 解析服务页面信息
@@ -460,28 +365,17 @@ async function parseServiceInfo(page) {
     try {
         const pageText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
         const info = {};
-
-        // 服务名
         const nameMatch = pageText.match(/(.+?)\s*#\d+/);
         if (nameMatch) info.serverName = nameMatch[1].trim();
-
-        // 续订方式
         if (pageText.includes('Ежемесячно') || pageText.includes('ежемесячно')) {
             info.renewalMode = 'Ежемесячно (每月)';
         }
-
-        // 创建日期
         const createdMatch = pageText.match(/Создан:\s*(.+?)(?:\n|$)/);
         if (createdMatch) info.createdDate = createdMatch[1].trim();
-
-        // 到期日期
         const expiresMatch = pageText.match(/Истекает:\s*(.+?)(?:\n|$)/);
         if (expiresMatch) info.expiresDate = expiresMatch[1].trim();
-
-        // 剩余天数
         const remainingMatch = pageText.match(/Осталось:\s*(.+?)(?:\n|$)/);
         if (remainingMatch) info.remainingTime = remainingMatch[1].trim();
-
         return info;
     } catch (e) {
         console.warn('   >> 解析服务信息失败:', e.message);
@@ -545,7 +439,6 @@ async function parseServiceInfo(page) {
                 page = await context.newPage();
                 await page.addInitScript(INJECTED_SCRIPT);
             }
-            // 清除上一用户的会话 cookie
             try { await context.clearCookies(); } catch (e) { }
 
             const cookieKey = `rustix_cookie_${safeUser}`;
@@ -564,7 +457,6 @@ async function parseServiceInfo(page) {
                 } catch (e) { console.warn('   >> cookie 解析失败:', e.message); }
             }
 
-            // 用 cookie 直接打开服务页，判断是否有效
             if (saved) {
                 await gotoWithRetry(page, targetUrl);
                 await page.waitForTimeout(2500);
@@ -572,27 +464,96 @@ async function parseServiceInfo(page) {
                 console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (当前: ${page.url()})`);
             }
 
-            // ===== Step 2: cookie 失效 → 完整登录 =====
+            // ===== Step 2: cookie 失效 → 尝试登录 =====
             if (!loggedIn) {
-                console.log('   >> 需要完整登录...');
-                loggedIn = await login(page, user);
-                if (!loggedIn) {
+                console.log('   >> 需要完整登录 (使用 stealth 插件绕过 Cloudflare)...');
+                await gotoWithRetry(page, LOGIN_URL);
+                const formReady = await waitForLoginForm(page);
+                if (!formReady) {
+                    console.log('   >> ❌ 等待登录表单超时');
                     const shot = path.join(photoDir, `rustix_${safeUser}_loginfail.png`);
                     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                    console.log(`   >> ❌ 登录失败`);
-                    await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n无法登录到 Rustix.me`, shot);
+                    await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n页面加载超时，可能被 Cloudflare 拦截`, shot);
                     continue;
                 }
-                console.log(`   >> ✅ 登录成功: ${page.url()}`);
+                await page.waitForTimeout(2000);
 
-                // 保存新 cookie 到 KV
+                // 填表
+                await page.locator('input[type="email"]').first().fill(user.username);
+                await page.waitForTimeout(400);
+                await page.locator('input[type="password"]').first().fill(user.password);
+                await page.waitForTimeout(500);
+
+                // 尝试获取 Turnstile token（stealth 插件可能已让浏览器通过验证）
+                console.log('   >> 尝试获取 Turnstile token...');
+                const token = await tryGetTurnstileToken(page);
+                if (token) {
+                    console.log('   >> ✅ 获取到 Turnstile token，设置到表单');
+                    await page.evaluate((t) => {
+                        const input = document.querySelector('input[name="cf-turnstile-response"]');
+                        if (input) input.value = t;
+                    }, token);
+                } else {
+                    console.log('   >> ⚠️ 未获取到 Turnstile token，直接点击按钮尝试...');
+                }
+
+                // 点击登录按钮
+                console.log('   >> 点击 Войти...');
+                await page.evaluate(() => {
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    const btn = btns.find(b => b.textContent.includes('Войти'));
+                    if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                });
+                await page.waitForTimeout(1000);
+
+                // CDP 点击兜底
+                try {
+                    const btnLoc = page.locator('button:has-text("Войти")');
+                    const box = await btnLoc.boundingBox({ timeout: 3000 });
+                    if (box) {
+                        const client = await page.context().newCDPSession(page);
+                        const cx = box.x + box.width / 2;
+                        const cy = box.y + box.height / 2;
+                        await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
+                        await new Promise(r => setTimeout(r, 50));
+                        await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
+                        await client.detach();
+                    }
+                } catch (e) {}
+
+                // 等待登录跳转（最多 60 秒）
+                console.log('   >> 等待登录结果...');
+                for (let attempt = 1; attempt <= 30; attempt++) {
+                    await page.waitForTimeout(2000);
+                    const currentUrl = page.url();
+                    if (!currentUrl.includes('/auth/signin') && !currentUrl.includes('/auth/login')) {
+                        console.log(`   >> ✅ 登录成功! URL: ${currentUrl}`);
+                        loggedIn = true;
+                        break;
+                    }
+                }
+
+                if (!loggedIn) {
+                    console.log('   >> ❌ 登录失败 — 此页面使用 Cloudflare Turnstile 高级保护，');
+                    console.log('   >>    自动化登录可能被拦截。请手动登录后上传 cookie 到 KV。');
+                    const shot = path.join(photoDir, `rustix_${safeUser}_loginfail.png`);
+                    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+                    await sendTelegramMessage(
+                        `❌ *登录失败 — 需要手动更新 Cookie*\n用户: ${user.username}\n\n`
+                        + `Rustix.me 使用 Cloudflare Turnstile 高级保护，自动化登录被拦截。\n\n`
+                        + `请手动在浏览器登录后，将 cookie 上传到 KV Admin (key: \`${cookieKey}\`)`,
+                        shot
+                    );
+                    continue;
+                }
+
+                // 保存新 cookie
                 try {
                     const cookies = await context.cookies();
                     await kvPut(cookieKey, JSON.stringify(cookies));
                     console.log('   >> 新 cookie 已保存到 KV');
                 } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
 
-                // 导航到服务页
                 await gotoWithRetry(page, targetUrl);
                 await page.waitForTimeout(2000);
             }
@@ -601,7 +562,7 @@ async function parseServiceInfo(page) {
             const serviceInfo = await parseServiceInfo(page);
             console.log('   >> 服务信息:', JSON.stringify(serviceInfo));
 
-            // ===== Step 4: 点击「Продлить」(续期) 按钮 =====
+            // ===== Step 4: 点击续期 =====
             console.log('   >> 点击「Продлить」按钮...');
             const renewBtn = page.locator('button:has-text("Продлить")').first();
             try {
@@ -619,9 +580,8 @@ async function parseServiceInfo(page) {
                 continue;
             }
 
-            // ===== Step 5: 等待续期弹窗出现，点击确认「Продлить」=====
+            // ===== Step 5: 确认续期弹窗 =====
             await page.waitForTimeout(1500);
-
             console.log('   >> 等待续期弹窗...');
             const confirmBtn = page.locator('.fixed button:has-text("Продлить"), [class*="modal"] button:has-text("Продлить"), button:has-text("Продлить")').last();
             let confirmed = false;
@@ -631,21 +591,18 @@ async function parseServiceInfo(page) {
                 const costMatch = dialogText.match(/Будет стоить\s*(.+?)(?:\n|$)/);
                 const extendMatch = dialogText.match(/Продлеваем\s*(.+?)(?:\n|$)/);
                 const untilMatch = dialogText.match(/Будет продлено до\s*(.+?)(?:\n|$)/);
-
-                console.log(`   >> 续期弹窗信息: 费用=${costMatch ? costMatch[1] : 'N/A'}, 期限=${extendMatch ? extendMatch[1] : 'N/A'}, 新到期=${untilMatch ? untilMatch[1] : 'N/A'}`);
-
+                console.log(`   >> 续期弹窗: 费用=${costMatch ? costMatch[1] : 'N/A'}, 新到期=${untilMatch ? untilMatch[1] : 'N/A'}`);
                 await confirmBtn.click();
-                console.log('   >> ✅ 已点击确认「Продлить」');
+                console.log('   >> ✅ 已确认续期');
                 confirmed = true;
                 await page.waitForTimeout(3000);
             } catch (e) {
-                console.log('   >> ⚠️ 未找到续期确认弹窗或按钮:', e.message);
+                console.log('   >> ⚠️ 未找到续期确认弹窗:', e.message);
             }
 
-            // ===== Step 6: 截图并发送结果 =====
+            // ===== Step 6: 发送结果 =====
             const shot = path.join(photoDir, `rustix_${safeUser}.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-
             await page.waitForTimeout(1500);
             const updatedInfo = await parseServiceInfo(page);
 
