@@ -396,23 +396,21 @@ async function processUser(user) {
     const v2rayInfo = await resolveProxyForUser(user);
 
     console.log(`[${user.username}] 启动 CloakBrowser...`);
-    const { launch } = await import('cloakbrowser');
+    const { launchPersistentContext } = await import('cloakbrowser');
     const launchOpts = {
         headless: true,
         humanize: true,
+        geoip: true,
+        userDataDir: `/tmp/rustix-profile-${safeUser}`,
     };
     const proxyStr = v2rayInfo ? v2rayInfo.url : (HTTP_PROXY || '');
     if (proxyStr) {
         launchOpts.proxy = proxyStr;
         console.log(`[CloakBrowser] 使用代理: ${proxyStr}`);
     }
-    const browser = await launch(launchOpts);
+    console.log('[CloakBrowser] 正在启动...');
+    const context = await launchPersistentContext(launchOpts);
     console.log('[CloakBrowser] 启动成功');
-
-    const context = await browser.newContext({
-        viewport: { width: 1280, height: 720 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    });
     const page = await context.newPage();
     page.setDefaultTimeout(60000);
 
@@ -447,7 +445,17 @@ async function processUser(user) {
             if (!formReady) {
                 throw new Error('等待登录表单超时，可能被 Cloudflare 拦截');
             }
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(3000);
+
+            // 调试：打印页面状态
+            const pageDebug = await page.evaluate(() => ({
+                url: window.location.href,
+                title: document.title,
+                hasTurnstile: typeof window.turnstile !== 'undefined',
+                hasEmailInput: !!document.querySelector('input[type="email"]'),
+                bodyPreview: (document.body?.innerText || '').substring(0, 200),
+            }));
+            console.log('   >> 页面状态:', JSON.stringify(pageDebug));
 
             await page.locator('input[type="email"]').first().fill(user.username);
             await page.waitForTimeout(400);
@@ -585,7 +593,7 @@ async function processUser(user) {
         await sendTelegramMessage(`❌ *处理异常*\n用户: ${user.username}\n错误: ${err.message}`, shotPath);
         throw err;
     } finally {
-        await browser.close();
+        await context.close();
     }
 }
 
