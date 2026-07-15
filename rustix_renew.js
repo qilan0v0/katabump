@@ -398,27 +398,87 @@ async function login(page, user) {
     await pwdInput.fill(user.password);
     await page.waitForTimeout(500);
 
+    // --- 先处理 Turnstile（如果有复选框）---
+    console.log('   >> 正在检查 Turnstile (使用 CDP 绕过)...');
+    let turnstileClicked = false;
+    for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
+        const clicked = await attemptTurnstileCdp(page);
+        if (clicked) {
+            console.log(`   >> Turnstile 已点击 (第 ${findAttempt + 1} 次)`);
+            turnstileClicked = true;
+            // 等待 Cloudflare 返回 Success
+            for (let waitSec = 0; waitSec < 10; waitSec++) {
+                const frames = page.frames();
+                let isSuccess = false;
+                for (const f of frames) {
+                    if (f.url().includes('cloudflare') || f.url().includes('challenges')) {
+                        try {
+                            if (await f.getByText('Success', { exact: false }).isVisible({ timeout: 500 }).catch(() => false)) {
+                                isSuccess = true;
+                                break;
+                            }
+                        } catch (e) { }
+                    }
+                }
+                if (isSuccess) {
+                    console.log('   >> ✅ Turnstile 验证成功');
+                    break;
+                }
+                await page.waitForTimeout(1000);
+            }
+            break;
+        }
+        await page.waitForTimeout(1000);
+    }
+
+    if (!turnstileClicked) {
+        console.log('   >> 未检测到 Turnstile 复选框，直接点击登录按钮...');
+    }
+
+    // --- 点击 Войти ---
     console.log('   >> 点击 Войти...');
     const loginBtn = page.locator('button:has-text("Войти")');
-    await loginBtn.click();
+    try {
+        await loginBtn.click({ timeout: 15000, force: true });
+    } catch (e) {
+        console.warn('   >> 常规点击失败，改用 CDP 点击:', e.message);
+        const box = await loginBtn.boundingBox();
+        if (box) {
+            const client = await page.context().newCDPSession(page);
+            const cx = box.x + box.width / 2;
+            const cy = box.y + box.height / 2;
+            await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy });
+            await new Promise(r => setTimeout(r, 100));
+            await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
+            await new Promise(r => setTimeout(r, 80));
+            await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
+            await client.detach();
+            console.log('   >> CDP 点击已发送');
+        }
+    }
 
-    // 处理 Turnstile（如果出现）
-    for (let attempt = 1; attempt <= 20; attempt++) {
-        await page.waitForTimeout(1500);
+    // --- 等待登录跳转 ---
+    for (let attempt = 1; attempt <= 25; attempt++) {
+        await page.waitForTimeout(2000);
         const currentUrl = page.url();
         if (!currentUrl.includes('/auth/signin') && !currentUrl.includes('/auth/login')) {
             console.log(`   >> ✅ 登录成功! URL: ${currentUrl}`);
             return true;
         }
-        // 尝试 Turnstile
-        const clicked = await attemptTurnstileCdp(page);
-        if (clicked) {
-            console.log(`   >> Turnstile 已点击 (第 ${attempt} 次)`);
-            await page.waitForTimeout(2000);
-            await loginBtn.click().catch(() => {});
-        } else {
+        // 如果 Turnstile 之前没点击过，现在再试一次
+        if (!turnstileClicked && attempt <= 10) {
+            const clicked = await attemptTurnstileCdp(page);
+            if (clicked) {
+                console.log(`   >> Turnstile 已点击 (等待 ${attempt} 次后)`);
+                turnstileClicked = true;
+                await page.waitForTimeout(1500);
+                await loginBtn.click({ timeout: 5000, force: true }).catch(() => {});
+            }
+        }
+        // 再次点击登录按钮
+        if (attempt % 3 === 0) {
             console.log(`   >> 再次点击登录按钮 (第 ${attempt} 次)`);
-            await loginBtn.click().catch(() => {});
+            await loginBtn.click({ timeout: 5000, force: true }).catch(() => {});
         }
     }
 
