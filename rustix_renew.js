@@ -308,7 +308,6 @@ async function gotoWithRetry(page, url, retries = 3) {
 }
 
 async function waitForLoginForm(page, timeoutMs = 60000) {
-    // 等待页面渲染出登录表单（可能被 Cloudflare Turnstile 拖慢）
     const emailInput = page.locator('input[type="email"]');
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -316,13 +315,11 @@ async function waitForLoginForm(page, timeoutMs = 60000) {
             const visible = await emailInput.isVisible({ timeout: 5000 }).catch(() => false);
             if (visible) return true;
         } catch (e) {}
-        // 检查页面是否卡在 Cloudflare 挑战上
         const bodyText = await page.locator('body').innerText().catch(() => '');
         if (bodyText.includes('Just a moment') || bodyText.includes('Checking your browser')) {
             console.log('   >> ⏳ 正在等待 Cloudflare 验证通过...');
         }
         await page.waitForTimeout(3000);
-        // 如果页面没动过，reload 一下
         if (Date.now() - start > 15000 && !bodyText.includes('Введите email')) {
             console.log('   >> ⚠️ 登录页似乎未加载，尝试刷新...');
             try { await page.reload({ waitUntil: 'load', timeout: 30000 }).catch(() => {}); } catch (e) {}
@@ -336,7 +333,7 @@ function _race(p, ms) {
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
 }
 
-// Cloudflare Turnstile (iframe 内复选框) 的 CDP 点击绕过
+// Cloudflare Turnstile 的 CDP 点击绕过（仅用于登录后出现的挑战弹窗）
 async function attemptTurnstileCdp(page) {
     const frames = page.frames();
     for (const frame of frames) {
@@ -356,13 +353,10 @@ async function attemptTurnstileCdp(page) {
                 const clickY = box.y + (box.height * data.yRatio);
                 console.log(`>> 计算点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
                 const client = await page.context().newCDPSession(page);
-                // mouseMoved (mouseover 前置事件)
                 await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: clickX, y: clickY });
                 await new Promise(r => setTimeout(r, 100));
-                // mousePressed
                 await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
                 await new Promise(r => setTimeout(r, 80));
-                // mouseReleased
                 await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
                 await client.detach();
                 console.log('>> Turnstile CDP 点击已发送');
@@ -375,12 +369,15 @@ async function attemptTurnstileCdp(page) {
     return false;
 }
 
-// 登录单个账号：填写邮箱密码，处理 Turnstile，点击登录
+// 登录单个账号
+// 注意：此页面的 Turnstile 是 invisible 类型（无可见复选框），
+// 不要预先点击 Turnstile，直接点击登录按钮即可。
+// Stealth 插件会使浏览器看起来像真实用户，让 Turnstile 自动验证。
 async function login(page, user) {
     console.log('   >> 打开登录页...');
     await gotoWithRetry(page, LOGIN_URL);
 
-    console.log('   >> 等待登录表单渲染（Cloudflare 验证）...');
+    console.log('   >> 等待登录表单渲染...');
     const formReady = await waitForLoginForm(page);
     if (!formReady) {
         console.log('   >> ❌ 等待登录表单超时');
@@ -398,87 +395,59 @@ async function login(page, user) {
     await pwdInput.fill(user.password);
     await page.waitForTimeout(500);
 
-    // --- 先处理 Turnstile（如果有复选框）---
-    console.log('   >> 正在检查 Turnstile (使用 CDP 绕过)...');
-    let turnstileClicked = false;
-    for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
-        const clicked = await attemptTurnstileCdp(page);
-        if (clicked) {
-            console.log(`   >> Turnstile 已点击 (第 ${findAttempt + 1} 次)`);
-            turnstileClicked = true;
-            // 等待 Cloudflare 返回 Success
-            for (let waitSec = 0; waitSec < 10; waitSec++) {
-                const frames = page.frames();
-                let isSuccess = false;
-                for (const f of frames) {
-                    if (f.url().includes('cloudflare') || f.url().includes('challenges')) {
-                        try {
-                            if (await f.getByText('Success', { exact: false }).isVisible({ timeout: 500 }).catch(() => false)) {
-                                isSuccess = true;
-                                break;
-                            }
-                        } catch (e) { }
-                    }
-                }
-                if (isSuccess) {
-                    console.log('   >> ✅ Turnstile 验证成功');
-                    break;
-                }
-                await page.waitForTimeout(1000);
-            }
-            break;
+    // 直接点击登录按钮（不预先点 Turnstile，避免触发挑战覆盖层）
+    console.log('   >> 触发点击 Войти...');
+
+    // 方式1: JS dispatchEvent 直接触发 Vue 点击事件
+    await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const btn = btns.find(b => b.textContent.includes('Войти'));
+        if (btn) {
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         }
-        await page.waitForTimeout(1000);
-    }
+    });
+    await page.waitForTimeout(1000);
 
-    if (!turnstileClicked) {
-        console.log('   >> 未检测到 Turnstile 复选框，直接点击登录按钮...');
-    }
-
-    // --- 点击 Войти ---
-    console.log('   >> 点击 Войти...');
+    // 方式2: CDP 直接点击坐标（绕过 Playwright 可见性检查）
     const loginBtn = page.locator('button:has-text("Войти")');
     try {
-        await loginBtn.click({ timeout: 15000, force: true });
-    } catch (e) {
-        console.warn('   >> 常规点击失败，改用 CDP 点击:', e.message);
-        const box = await loginBtn.boundingBox();
+        const box = await loginBtn.boundingBox({ timeout: 3000 });
         if (box) {
             const client = await page.context().newCDPSession(page);
             const cx = box.x + box.width / 2;
             const cy = box.y + box.height / 2;
-            await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy });
-            await new Promise(r => setTimeout(r, 100));
             await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
-            await new Promise(r => setTimeout(r, 80));
+            await new Promise(r => setTimeout(r, 50));
             await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
             await client.detach();
-            console.log('   >> CDP 点击已发送');
+            console.log('   >> CDP 坐标点击已发送');
         }
+    } catch (e) {
+        console.log('   >> CDP 坐标点击跳过:', e.message);
     }
 
-    // --- 等待登录跳转 ---
-    for (let attempt = 1; attempt <= 25; attempt++) {
+    // 等待登录跳转
+    for (let attempt = 1; attempt <= 30; attempt++) {
         await page.waitForTimeout(2000);
         const currentUrl = page.url();
         if (!currentUrl.includes('/auth/signin') && !currentUrl.includes('/auth/login')) {
             console.log(`   >> ✅ 登录成功! URL: ${currentUrl}`);
             return true;
         }
-        // 如果 Turnstile 之前没点击过，现在再试一次
-        if (!turnstileClicked && attempt <= 10) {
-            const clicked = await attemptTurnstileCdp(page);
-            if (clicked) {
-                console.log(`   >> Turnstile 已点击 (等待 ${attempt} 次后)`);
-                turnstileClicked = true;
-                await page.waitForTimeout(1500);
-                await loginBtn.click({ timeout: 5000, force: true }).catch(() => {});
-            }
+        // 如果 Turnstile 挑战弹窗出现，尝试点击其复选框
+        const clicked = await attemptTurnstileCdp(page);
+        if (clicked) {
+            console.log(`   >> Turnstile 复选框已点击 (等待 ${attempt} 次后)`);
+            await page.waitForTimeout(2000);
         }
-        // 再次点击登录按钮
-        if (attempt % 3 === 0) {
-            console.log(`   >> 再次点击登录按钮 (第 ${attempt} 次)`);
-            await loginBtn.click({ timeout: 5000, force: true }).catch(() => {});
+        // 每 5 轮重新触发一次按钮点击
+        if (attempt % 5 === 0) {
+            console.log(`   >> 重新触发按钮点击 (第 ${attempt} 次)`);
+            await page.evaluate(() => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                const btn = btns.find(b => b.textContent.includes('Войти'));
+                if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            });
         }
     }
 
@@ -641,7 +610,6 @@ async function parseServiceInfo(page) {
                 console.log('   >> ✅ 已点击「Продлить」');
             } catch (e) {
                 console.log('   >> ⚠️ 未找到「Продлить」按钮，可能未到续期时间');
-                // 发送当前状态信息（纯文本，不截图）
                 let msg = `ℹ️ *服务状态*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
                 if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
                 if (serviceInfo.createdDate) msg += `\n创建日期: ${serviceInfo.createdDate}`;
@@ -654,13 +622,11 @@ async function parseServiceInfo(page) {
             // ===== Step 5: 等待续期弹窗出现，点击确认「Продлить」=====
             await page.waitForTimeout(1500);
 
-            // 查找续期弹窗中的确认按钮
             console.log('   >> 等待续期弹窗...');
             const confirmBtn = page.locator('.fixed button:has-text("Продлить"), [class*="modal"] button:has-text("Продлить"), button:has-text("Продлить")').last();
             let confirmed = false;
             try {
                 await confirmBtn.waitFor({ state: 'visible', timeout: 5000 });
-                // 获取弹窗中的续期信息
                 const dialogText = await page.locator('.fixed').innerText().catch(() => '');
                 const costMatch = dialogText.match(/Будет стоить\s*(.+?)(?:\n|$)/);
                 const extendMatch = dialogText.match(/Продлеваем\s*(.+?)(?:\n|$)/);
@@ -680,12 +646,10 @@ async function parseServiceInfo(page) {
             const shot = path.join(photoDir, `rustix_${safeUser}.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
 
-            // 续期后重新读取页面信息
             await page.waitForTimeout(1500);
             const updatedInfo = await parseServiceInfo(page);
 
             if (confirmed) {
-                // 成功 — 只发纯文本，不传截图
                 let msg = `✅ *续期成功*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
                 if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
                 if (serviceInfo.createdDate) msg += `\n创建日期: ${serviceInfo.createdDate}`;
@@ -694,7 +658,6 @@ async function parseServiceInfo(page) {
                 await sendTelegramMessage(msg);
                 console.log('   >> ✅ 续期成功！');
             } else {
-                // 失败 — 带截图
                 let msg = `❌ *续期可能失败*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
                 if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
                 if (updatedInfo.expiresDate) msg += `\n有效期至: ${updatedInfo.expiresDate}`;
