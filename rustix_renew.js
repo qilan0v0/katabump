@@ -1,10 +1,9 @@
 // Rustix.me 每月续期脚本 —— 专用于 GitHub Actions (Linux/Headless)
 // 流程: 优先使用 KV cookie 免登录 → 失败则尝试登录 → 导航到服务页 → 点击「Продлить」续期
+// 支持每个账号独立 V2Ray 代理：user.V2 = "vless://..."
 // 账号来源: Secret RUSTIX_USERS_JSON =
-//   [{"username":"xxx@gmail.com","password":"xxx","serverUrl":"https://rustix.me/me/services/18806"}]
+//   [{"username":"xxx@gmail.com","password":"xxx","serverUrl":"https://rustix.me/me/services/18806","V2":"vless://..."}]
 // cookie 通过 KV Admin Worker 存取，key = rustix_cookie_<username>
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -18,6 +17,16 @@ const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const TG_THREAD_ID = process.env.TG_THREAD_ID;
 const PROJECT = process.env.PROJECT_NAME || 'Rustix';
+
+// 全局 HTTP 代理 (由 workflow 启动的 v2ray 全局代理，或用户设置的 HTTP_PROXY)
+const HTTP_PROXY = process.env.HTTP_PROXY;
+
+// v2ray 二进制路径
+const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
+
+// 管理所有启动的 v2ray 子进程
+const allV2rayProcs = [];
+let nextV2rayPort = 10810;
 
 // ===== Telegram 通知 =====
 async function sendTelegramMessage(message, imagePath = null) {
@@ -72,28 +81,80 @@ async function sendTelegramMessage(message, imagePath = null) {
     }
 }
 
-chromium.use(stealth);
-
-const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
-const DEBUG_PORT = 9222;
-process.env.NO_PROXY = 'localhost,127.0.0.1';
-
-// --- Proxy Configuration ---
-const HTTP_PROXY = process.env.HTTP_PROXY;
-let PROXY_CONFIG = null;
-if (HTTP_PROXY) {
-    try {
-        const proxyUrl = new URL(HTTP_PROXY);
-        PROXY_CONFIG = {
-            server: `${proxyUrl.protocol}//${proxyUrl.hostname}:${proxyUrl.port}`,
-            username: proxyUrl.username ? decodeURIComponent(proxyUrl.username) : undefined,
-            password: proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined
-        };
-        console.log(`[代理] 检测到配置: 服务器=${PROXY_CONFIG.server}, 认证=${PROXY_CONFIG.username ? '是' : '否'}`);
-    } catch (e) {
-        console.error('[代理] HTTP_PROXY 格式无效。期望: http://user:pass@host:port 或 http://host:port');
-        process.exit(1);
+// ===== v2ray 管理 =====
+async function startV2rayForLink(link) {
+    if (!fs.existsSync(V2RAY_BIN)) {
+        console.error(`[v2ray] 未找到 v2ray 二进制 (${V2RAY_BIN})`);
+        return null;
     }
+    const port = nextV2rayPort++;
+    let cfgPath;
+    try {
+        const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
+        const cfg = buildConfig(link, port);
+        cfgPath = path.join(process.cwd(), `v2ray-rustix-${port}.json`);
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+    } catch (e) {
+        console.error(`[v2ray] 解析 V2 链接失败: ${e.message}`);
+        return null;
+    }
+    console.log(`[v2ray] 启动实例 (HTTP 127.0.0.1:${port})...`);
+    const proc = spawn(V2RAY_BIN, ['run', '-config', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
+    allV2rayProcs.push({ proc, port });
+
+    const ready = await new Promise((resolve) => {
+        let n = 0;
+        const tick = () => {
+            const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 3000 }, () => resolve(true));
+            req.on('error', () => { if (++n >= 15) return resolve(false); setTimeout(tick, 2000); });
+            req.on('timeout', () => { req.destroy(); if (++n >= 15) return resolve(false); else setTimeout(tick, 2000); });
+            req.end();
+        };
+        tick();
+    });
+    if (!ready) {
+        console.error(`[v2ray] 端口 ${port} 未就绪。stderr:\n${stderr.slice(-400)}`);
+        return null;
+    }
+    console.log(`[v2ray] 代理就绪 → http://127.0.0.1:${port}`);
+    return { port, url: `http://127.0.0.1:${port}` };
+}
+
+function cleanupV2ray() {
+    for (const { proc, port } of allV2rayProcs) {
+        try { proc.kill('SIGTERM'); } catch (e) { }
+        try { fs.unlinkSync(path.join(process.cwd(), `v2ray-rustix-${port}.json`)); } catch (e) { }
+    }
+    allV2rayProcs.length = 0;
+}
+
+process.on('exit', () => cleanupV2ray());
+process.on('SIGINT', () => { cleanupV2ray(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupV2ray(); process.exit(0); });
+
+// ===== 解析用户代理配置 =====
+async function resolveProxyForUser(user) {
+    const v2Link = user.V2 || user.v2;
+    if (v2Link) {
+        console.log(`[代理] 用户有 V2 链接，启动独立 v2ray...`);
+        const result = await startV2rayForLink(v2Link);
+        if (result) return result;
+        console.warn('[代理] 独立 v2ray 启动失败，回退');
+    }
+    if (HTTP_PROXY) {
+        try {
+            const url = new URL(HTTP_PROXY);
+            console.log(`[代理] 使用全局 HTTP 代理: ${url.hostname}:${url.port}`);
+            return null;
+        } catch (e) {
+            console.warn(`[代理] HTTP_PROXY 格式无效: ${HTTP_PROXY}`);
+        }
+    }
+    console.log('[代理] 直连');
+    return null;
 }
 
 // --- KV Cookie Admin Worker ---
@@ -164,9 +225,6 @@ const INJECTED_SCRIPT = `
             });
         }
     } catch (e) { }
-    try {
-        const origQuery = iframe => { const p = iframe.contentWindow.navigator.plugins; return p; };
-    } catch(e) { }
     if (window.self === window.top) return;
     try {
         function getRandomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
@@ -201,86 +259,6 @@ const INJECTED_SCRIPT = `
     } catch (e) { }
 })();
 `;
-
-async function checkProxy() {
-    if (!PROXY_CONFIG) return true;
-    console.log('[代理] 正在验证代理连接...');
-    try {
-        const axiosConfig = {
-            proxy: {
-                protocol: 'http',
-                host: new URL(PROXY_CONFIG.server).hostname,
-                port: new URL(PROXY_CONFIG.server).port,
-            },
-            timeout: 10000
-        };
-        if (PROXY_CONFIG.username && PROXY_CONFIG.password) {
-            axiosConfig.proxy.auth = { username: PROXY_CONFIG.username, password: PROXY_CONFIG.password };
-        }
-        await axios.get('https://www.google.com', axiosConfig);
-        try {
-            const ipResp = await axios.get('https://api.ipify.org?format=json', axiosConfig);
-            const exitIp = ipResp.data && ipResp.data.ip ? ipResp.data.ip : '未知';
-            console.log(`[代理] 连接成功！出口 IP: ${exitIp}`);
-        } catch (e) {
-            console.log('[代理] 连接成功！(出口 IP 获取失败，但代理可用)');
-        }
-        return true;
-    } catch (error) {
-        console.error(`[代理] 连接失败: ${error.message}`);
-        return false;
-    }
-}
-
-function checkPort(port) {
-    return new Promise((resolve) => {
-        const req = http.get(`http://localhost:${port}/json/version`, () => resolve(true));
-        req.on('error', () => resolve(false));
-        req.end();
-    });
-}
-
-async function launchChrome() {
-    console.log('检查 Chrome 是否已在端口 ' + DEBUG_PORT + ' 上运行...');
-    if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已开启。'); return; }
-    const args = [
-        `--remote-debugging-port=${DEBUG_PORT}`,
-        '--remote-debugging-address=127.0.0.1',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-gpu',
-        '--window-size=1280,720',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--user-data-dir=/tmp/chrome_user_data'
-    ];
-    if (PROXY_CONFIG) {
-        args.push(`--proxy-server=${PROXY_CONFIG.server}`);
-        args.push('--proxy-bypass-list=<-loopback>');
-    }
-
-    for (let attempt = 1; attempt <= 2; attempt++) {
-        console.log(`正在启动 Chrome (路径: ${CHROME_PATH}, 第 ${attempt} 次)...`);
-        let stderr = '';
-        const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
-        if (chrome.stderr) chrome.stderr.on('data', d => { stderr += d.toString(); });
-        chrome.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
-        chrome.unref();
-
-        console.log('正在等待 Chrome 初始化...');
-        for (let i = 0; i < 40; i++) {
-            if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已就绪。'); return; }
-            await new Promise(r => setTimeout(r, 1000));
-        }
-        console.error(`Chrome 第 ${attempt} 次未在端口 ${DEBUG_PORT} 起来。Chrome stderr 末尾:\n` + stderr.slice(-800));
-        try { process.kill(-chrome.pid); } catch (e) { }
-        try { fs.rmSync('/tmp/chrome_user_data', { recursive: true, force: true }); } catch (e) { }
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    throw new Error('Chrome 启动失败');
-}
 
 function getUsers() {
     try {
@@ -336,18 +314,12 @@ async function waitForLoginForm(page, timeoutMs = 60000) {
     return false;
 }
 
-function _race(p, ms) {
-    return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
-}
-
 // 尝试通过 Turnstile API 获取 token
 async function tryGetTurnstileToken(page) {
     const token = await page.evaluate(async () => {
         if (typeof window.turnstile === 'undefined') return null;
-        // 先检查是否已有 token
         let t = window.turnstile.getResponse();
         if (t) return t;
-        // 尝试执行（等待最多 8 秒）
         try {
             t = await Promise.race([
                 window.turnstile.execute(),
@@ -383,6 +355,211 @@ async function parseServiceInfo(page) {
     }
 }
 
+// 处理单个用户
+async function processUser(user) {
+    const photoDir = 'screenshots';
+    if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
+    const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
+    const cookieKey = `rustix_cookie_${safeUser}`;
+    const targetUrl = user.serverUrl || `${BASE_URL}/me/services/18806`;
+
+    // 解析该用户的代理
+    const v2rayInfo = await resolveProxyForUser(user);
+
+    console.log(`[${user.username}] 启动 CloakBrowser...`);
+    const { launch } = await import('cloakbrowser');
+    const launchOpts = {
+        headless: true,
+        humanize: true,
+    };
+    const proxyStr = v2rayInfo ? v2rayInfo.url : (HTTP_PROXY || '');
+    if (proxyStr) {
+        launchOpts.proxy = proxyStr;
+        console.log(`[CloakBrowser] 使用代理: ${proxyStr}`);
+    }
+    const browser = await launch(launchOpts);
+    console.log('[CloakBrowser] 启动成功');
+
+    const context = await browser.newContext({
+        viewport: { width: 1280, height: 720 },
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(60000);
+
+    try {
+        await page.addInitScript(INJECTED_SCRIPT);
+        console.log(`[${user.username}] 注入脚本已添加`);
+
+        // ===== Step 1: 尝试 KV 缓存的 cookie 免登录 =====
+        let loggedIn = false;
+        const saved = await kvGet(cookieKey);
+        if (saved) {
+            console.log(`[${user.username}] 尝试注入缓存的 cookie...`);
+            try {
+                const cks = normalizeCookies(JSON.parse(saved));
+                if (cks.length) {
+                    await context.addCookies(cks);
+                    console.log(`   >> 已注入 ${cks.length} 条 cookie`);
+                }
+            } catch (e) { console.warn('   >> cookie 解析失败:', e.message); }
+
+            await gotoWithRetry(page, targetUrl);
+            await page.waitForTimeout(2500);
+            loggedIn = !page.url().includes('/auth/signin') && !page.url().includes('/auth/login');
+            console.log(`   >> cookie ${loggedIn ? '有效' : '无效/已过期'}`);
+        }
+
+        // ===== Step 2: cookie 失效 → 尝试登录 =====
+        if (!loggedIn) {
+            console.log(`[${user.username}] 需要完整登录...`);
+            await gotoWithRetry(page, LOGIN_URL);
+            const formReady = await waitForLoginForm(page);
+            if (!formReady) {
+                throw new Error('等待登录表单超时，可能被 Cloudflare 拦截');
+            }
+            await page.waitForTimeout(2000);
+
+            await page.locator('input[type="email"]').first().fill(user.username);
+            await page.waitForTimeout(400);
+            await page.locator('input[type="password"]').first().fill(user.password);
+            await page.waitForTimeout(500);
+
+            console.log('   >> 尝试获取 Turnstile token...');
+            const token = await tryGetTurnstileToken(page);
+            if (token) {
+                console.log('   >> ✅ 获取到 Turnstile token');
+                await page.evaluate((t) => {
+                    const input = document.querySelector('input[name="cf-turnstile-response"]');
+                    if (input) input.value = t;
+                }, token);
+            } else {
+                console.log('   >> ⚠️ 未获取到 Turnstile token，直接点击按钮...');
+            }
+
+            console.log('   >> 点击 Войти...');
+            await page.evaluate(() => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                const btn = btns.find(b => b.textContent.includes('Войти'));
+                if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            });
+            await page.waitForTimeout(1000);
+
+            try {
+                const btnLoc = page.locator('button:has-text("Войти")');
+                const box = await btnLoc.boundingBox({ timeout: 3000 });
+                if (box) {
+                    const client = await page.context().newCDPSession(page);
+                    const cx = box.x + box.width / 2;
+                    const cy = box.y + box.height / 2;
+                    await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
+                    await new Promise(r => setTimeout(r, 50));
+                    await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
+                    await client.detach();
+                }
+            } catch (e) {}
+
+            console.log('   >> 等待登录结果...');
+            for (let attempt = 1; attempt <= 30; attempt++) {
+                await page.waitForTimeout(2000);
+                const currentUrl = page.url();
+                if (!currentUrl.includes('/auth/signin') && !currentUrl.includes('/auth/login')) {
+                    console.log(`   >> ✅ 登录成功! URL: ${currentUrl}`);
+                    loggedIn = true;
+                    break;
+                }
+            }
+
+            if (!loggedIn) {
+                throw new Error('登录失败 — Cloudflare Turnstile 拦截，请手动上传 cookie 到 KV');
+            }
+
+            try {
+                const cookies = await context.cookies();
+                await kvPut(cookieKey, JSON.stringify(cookies));
+                console.log('   >> 新 cookie 已保存到 KV');
+            } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
+
+            await gotoWithRetry(page, targetUrl);
+            await page.waitForTimeout(2000);
+        }
+
+        // ===== Step 3: 解析服务信息 =====
+        const serviceInfo = await parseServiceInfo(page);
+        console.log('   >> 服务信息:', JSON.stringify(serviceInfo));
+
+        // ===== Step 4: 点击续期 =====
+        console.log('   >> 点击「Продлить」按钮...');
+        const renewBtn = page.locator('button:has-text("Продлить")').first();
+        try {
+            await renewBtn.waitFor({ state: 'visible', timeout: 8000 });
+            await renewBtn.click();
+            console.log('   >> ✅ 已点击「Продлить」');
+        } catch (e) {
+            console.log('   >> ⚠️ 未找到「Продлить」按钮，可能未到续期时间');
+            let msg = `ℹ️ *服务状态*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
+            if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
+            if (serviceInfo.createdDate) msg += `\n创建日期: ${serviceInfo.createdDate}`;
+            if (serviceInfo.expiresDate) msg += `\n有效期至: ${serviceInfo.expiresDate}`;
+            if (serviceInfo.remainingTime) msg += `\n剩余: ${serviceInfo.remainingTime}`;
+            await sendTelegramMessage(msg);
+            return;
+        }
+
+        // ===== Step 5: 确认续期弹窗 =====
+        await page.waitForTimeout(1500);
+        console.log('   >> 等待续期弹窗...');
+        const confirmBtn = page.locator('.fixed button:has-text("Продлить"), [class*="modal"] button:has-text("Продлить"), button:has-text("Продлить")').last();
+        let confirmed = false;
+        try {
+            await confirmBtn.waitFor({ state: 'visible', timeout: 5000 });
+            const dialogText = await page.locator('.fixed').innerText().catch(() => '');
+            const costMatch = dialogText.match(/Будет стоить\s*(.+?)(?:\n|$)/);
+            const untilMatch = dialogText.match(/Будет продлено до\s*(.+?)(?:\n|$)/);
+            console.log(`   >> 续期弹窗: 费用=${costMatch ? costMatch[1] : 'N/A'}, 新到期=${untilMatch ? untilMatch[1] : 'N/A'}`);
+            await confirmBtn.click();
+            console.log('   >> ✅ 已确认续期');
+            confirmed = true;
+            await page.waitForTimeout(3000);
+        } catch (e) {
+            console.log('   >> ⚠️ 未找到续期确认弹窗:', e.message);
+        }
+
+        // ===== Step 6: 发送结果 =====
+        const shot = path.join(photoDir, `rustix_${safeUser}.png`);
+        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
+        await page.waitForTimeout(1500);
+        const updatedInfo = await parseServiceInfo(page);
+
+        if (confirmed) {
+            let msg = `✅ *续期成功*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
+            if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
+            if (serviceInfo.createdDate) msg += `\n创建日期: ${serviceInfo.createdDate}`;
+            if (updatedInfo.expiresDate) msg += `\n有效期至: ${updatedInfo.expiresDate}`;
+            if (updatedInfo.remainingTime) msg += `\n剩余: ${updatedInfo.remainingTime}`;
+            await sendTelegramMessage(msg);
+            console.log('   >> ✅ 续期成功！');
+        } else {
+            let msg = `❌ *续期可能失败*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
+            if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
+            if (updatedInfo.expiresDate) msg += `\n有效期至: ${updatedInfo.expiresDate}`;
+            if (updatedInfo.remainingTime) msg += `\n剩余: ${updatedInfo.remainingTime}`;
+            msg += '\n续期确认按钮未能点击，详情见截图';
+            await sendTelegramMessage(msg, shot);
+            console.log('   >> ❌ 续期确认可能失败');
+        }
+
+    } catch (err) {
+        console.error(`[${user.username}] 出错:`, err.message);
+        const shotPath = path.join(photoDir, `rustix_${safeUser}_error.png`);
+        try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) { }
+        await sendTelegramMessage(`❌ *处理异常*\n用户: ${user.username}\n错误: ${err.message}`, shotPath);
+        throw err;
+    } finally {
+        await browser.close();
+    }
+}
+
 // === 主流程 ===
 (async () => {
     const users = getUsers();
@@ -391,249 +568,20 @@ async function parseServiceInfo(page) {
         process.exit(1);
     }
 
-    if (PROXY_CONFIG) {
-        const ok = await checkProxy();
-        if (!ok) { console.error('[代理] 代理无效，终止运行。'); process.exit(1); }
-    }
-
-    await launchChrome();
-
-    console.log('正在连接 Chrome...');
-    let browser;
-    for (let k = 0; k < 5; k++) {
-        try {
-            browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
-            console.log('连接成功！');
-            break;
-        } catch (e) {
-            console.log(`连接尝试 ${k + 1} 失败。2秒后重试...`);
-            await new Promise(r => setTimeout(r, 2000));
-        }
-    }
-    if (!browser) { console.error('连接失败。退出。'); process.exit(1); }
-
-    const context = browser.contexts()[0];
-    let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
-    page.setDefaultTimeout(60000);
-
-    if (PROXY_CONFIG && PROXY_CONFIG.username) {
-        console.log('[代理] 正在设置认证...');
-        await context.setHTTPCredentials({ username: PROXY_CONFIG.username, password: PROXY_CONFIG.password });
-    } else {
-        await context.setHTTPCredentials(null);
-    }
-
-    await page.addInitScript(INJECTED_SCRIPT);
-    console.log('注入脚本已添加到页面上下文。');
-
-    const photoDir = path.join(process.cwd(), 'screenshots');
-    if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
-
+    let allSuccess = true;
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
-        const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
-        console.log(`\n=== 正在处理用户 ${i + 1}/${users.length}: ${user.username} ===`);
-
+        console.log(`\n=== 处理用户 ${i + 1}/${users.length}: ${user.username} ===`);
         try {
-            if (page.isClosed()) {
-                page = await context.newPage();
-                await page.addInitScript(INJECTED_SCRIPT);
-            }
-            try { await context.clearCookies(); } catch (e) { }
-
-            const cookieKey = `rustix_cookie_${safeUser}`;
-            const targetUrl = user.serverUrl || `${BASE_URL}/me/services/18806`;
-
-            // ===== Step 1: 尝试 KV 缓存的 cookie 免登录 =====
-            let loggedIn = false;
-            const saved = await kvGet(cookieKey);
-            if (saved) {
-                try {
-                    const cks = normalizeCookies(JSON.parse(saved));
-                    if (cks.length) {
-                        await context.addCookies(cks);
-                        console.log(`   >> 已注入 KV cookie (${cks.length} 条)`);
-                    }
-                } catch (e) { console.warn('   >> cookie 解析失败:', e.message); }
-            }
-
-            if (saved) {
-                await gotoWithRetry(page, targetUrl);
-                await page.waitForTimeout(2500);
-                loggedIn = !page.url().includes('/auth/signin') && !page.url().includes('/auth/login');
-                console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (当前: ${page.url()})`);
-            }
-
-            // ===== Step 2: cookie 失效 → 尝试登录 =====
-            if (!loggedIn) {
-                console.log('   >> 需要完整登录 (使用 stealth 插件绕过 Cloudflare)...');
-                await gotoWithRetry(page, LOGIN_URL);
-                const formReady = await waitForLoginForm(page);
-                if (!formReady) {
-                    console.log('   >> ❌ 等待登录表单超时');
-                    const shot = path.join(photoDir, `rustix_${safeUser}_loginfail.png`);
-                    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                    await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n页面加载超时，可能被 Cloudflare 拦截`, shot);
-                    continue;
-                }
-                await page.waitForTimeout(2000);
-
-                // 填表
-                await page.locator('input[type="email"]').first().fill(user.username);
-                await page.waitForTimeout(400);
-                await page.locator('input[type="password"]').first().fill(user.password);
-                await page.waitForTimeout(500);
-
-                // 尝试获取 Turnstile token（stealth 插件可能已让浏览器通过验证）
-                console.log('   >> 尝试获取 Turnstile token...');
-                const token = await tryGetTurnstileToken(page);
-                if (token) {
-                    console.log('   >> ✅ 获取到 Turnstile token，设置到表单');
-                    await page.evaluate((t) => {
-                        const input = document.querySelector('input[name="cf-turnstile-response"]');
-                        if (input) input.value = t;
-                    }, token);
-                } else {
-                    console.log('   >> ⚠️ 未获取到 Turnstile token，直接点击按钮尝试...');
-                }
-
-                // 点击登录按钮
-                console.log('   >> 点击 Войти...');
-                await page.evaluate(() => {
-                    const btns = Array.from(document.querySelectorAll('button'));
-                    const btn = btns.find(b => b.textContent.includes('Войти'));
-                    if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                });
-                await page.waitForTimeout(1000);
-
-                // CDP 点击兜底
-                try {
-                    const btnLoc = page.locator('button:has-text("Войти")');
-                    const box = await btnLoc.boundingBox({ timeout: 3000 });
-                    if (box) {
-                        const client = await page.context().newCDPSession(page);
-                        const cx = box.x + box.width / 2;
-                        const cy = box.y + box.height / 2;
-                        await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
-                        await new Promise(r => setTimeout(r, 50));
-                        await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
-                        await client.detach();
-                    }
-                } catch (e) {}
-
-                // 等待登录跳转（最多 60 秒）
-                console.log('   >> 等待登录结果...');
-                for (let attempt = 1; attempt <= 30; attempt++) {
-                    await page.waitForTimeout(2000);
-                    const currentUrl = page.url();
-                    if (!currentUrl.includes('/auth/signin') && !currentUrl.includes('/auth/login')) {
-                        console.log(`   >> ✅ 登录成功! URL: ${currentUrl}`);
-                        loggedIn = true;
-                        break;
-                    }
-                }
-
-                if (!loggedIn) {
-                    console.log('   >> ❌ 登录失败 — 此页面使用 Cloudflare Turnstile 高级保护，');
-                    console.log('   >>    自动化登录可能被拦截。请手动登录后上传 cookie 到 KV。');
-                    const shot = path.join(photoDir, `rustix_${safeUser}_loginfail.png`);
-                    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                    await sendTelegramMessage(
-                        `❌ *登录失败 — 需要手动更新 Cookie*\n用户: ${user.username}\n\n`
-                        + `Rustix.me 使用 Cloudflare Turnstile 高级保护，自动化登录被拦截。\n\n`
-                        + `请手动在浏览器登录后，将 cookie 上传到 KV Admin (key: \`${cookieKey}\`)`,
-                        shot
-                    );
-                    continue;
-                }
-
-                // 保存新 cookie
-                try {
-                    const cookies = await context.cookies();
-                    await kvPut(cookieKey, JSON.stringify(cookies));
-                    console.log('   >> 新 cookie 已保存到 KV');
-                } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
-
-                await gotoWithRetry(page, targetUrl);
-                await page.waitForTimeout(2000);
-            }
-
-            // ===== Step 3: 解析服务信息 =====
-            const serviceInfo = await parseServiceInfo(page);
-            console.log('   >> 服务信息:', JSON.stringify(serviceInfo));
-
-            // ===== Step 4: 点击续期 =====
-            console.log('   >> 点击「Продлить」按钮...');
-            const renewBtn = page.locator('button:has-text("Продлить")').first();
-            try {
-                await renewBtn.waitFor({ state: 'visible', timeout: 8000 });
-                await renewBtn.click();
-                console.log('   >> ✅ 已点击「Продлить」');
-            } catch (e) {
-                console.log('   >> ⚠️ 未找到「Продлить」按钮，可能未到续期时间');
-                let msg = `ℹ️ *服务状态*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
-                if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
-                if (serviceInfo.createdDate) msg += `\n创建日期: ${serviceInfo.createdDate}`;
-                if (serviceInfo.expiresDate) msg += `\n有效期至: ${serviceInfo.expiresDate}`;
-                if (serviceInfo.remainingTime) msg += `\n剩余: ${serviceInfo.remainingTime}`;
-                await sendTelegramMessage(msg);
-                continue;
-            }
-
-            // ===== Step 5: 确认续期弹窗 =====
-            await page.waitForTimeout(1500);
-            console.log('   >> 等待续期弹窗...');
-            const confirmBtn = page.locator('.fixed button:has-text("Продлить"), [class*="modal"] button:has-text("Продлить"), button:has-text("Продлить")').last();
-            let confirmed = false;
-            try {
-                await confirmBtn.waitFor({ state: 'visible', timeout: 5000 });
-                const dialogText = await page.locator('.fixed').innerText().catch(() => '');
-                const costMatch = dialogText.match(/Будет стоить\s*(.+?)(?:\n|$)/);
-                const extendMatch = dialogText.match(/Продлеваем\s*(.+?)(?:\n|$)/);
-                const untilMatch = dialogText.match(/Будет продлено до\s*(.+?)(?:\n|$)/);
-                console.log(`   >> 续期弹窗: 费用=${costMatch ? costMatch[1] : 'N/A'}, 新到期=${untilMatch ? untilMatch[1] : 'N/A'}`);
-                await confirmBtn.click();
-                console.log('   >> ✅ 已确认续期');
-                confirmed = true;
-                await page.waitForTimeout(3000);
-            } catch (e) {
-                console.log('   >> ⚠️ 未找到续期确认弹窗:', e.message);
-            }
-
-            // ===== Step 6: 发送结果 =====
-            const shot = path.join(photoDir, `rustix_${safeUser}.png`);
-            try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-            await page.waitForTimeout(1500);
-            const updatedInfo = await parseServiceInfo(page);
-
-            if (confirmed) {
-                let msg = `✅ *续期成功*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
-                if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
-                if (serviceInfo.createdDate) msg += `\n创建日期: ${serviceInfo.createdDate}`;
-                if (updatedInfo.expiresDate) msg += `\n有效期至: ${updatedInfo.expiresDate}`;
-                if (updatedInfo.remainingTime) msg += `\n剩余: ${updatedInfo.remainingTime}`;
-                await sendTelegramMessage(msg);
-                console.log('   >> ✅ 续期成功！');
-            } else {
-                let msg = `❌ *续期可能失败*\n用户: ${user.username}\n服务: ${serviceInfo.serverName || '#' + targetUrl.split('/').pop()}`;
-                if (serviceInfo.renewalMode) msg += `\n续订方式: ${serviceInfo.renewalMode}`;
-                if (updatedInfo.expiresDate) msg += `\n有效期至: ${updatedInfo.expiresDate}`;
-                if (updatedInfo.remainingTime) msg += `\n剩余: ${updatedInfo.remainingTime}`;
-                msg += '\n续期确认按钮未能点击，详情见截图';
-                await sendTelegramMessage(msg, shot);
-                console.log('   >> ❌ 续期确认可能失败');
-            }
-
+            await processUser(user);
+            console.log(`[${user.username}] 完成`);
         } catch (err) {
-            console.error('处理用户出错:', err.message);
-            const shotPath = path.join(photoDir, `rustix_${safeUser}_error.png`);
-            try { await page.screenshot({ path: shotPath, fullPage: true }); } catch (e) { }
-            await sendTelegramMessage(`❌ *处理异常*\n用户: ${user.username}\n错误: ${err.message}`, shotPath);
+            console.error(`[${user.username}] 失败: ${err.message}`);
+            allSuccess = false;
         }
-        console.log('用户处理完成');
     }
 
-    console.log('\n=== 完成 ===');
-    await browser.close();
-    process.exit(0);
+    cleanupV2ray();
+    console.log(`\n=== 全部完成 === ${allSuccess ? '✅ 全部成功' : '⚠️ 部分失败'}`);
+    process.exit(allSuccess ? 0 : 1);
 })();
