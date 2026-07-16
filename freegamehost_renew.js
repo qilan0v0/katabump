@@ -85,19 +85,21 @@ function parseProxyUrl(urlStr) {
 // 解析每个用户应使用的代理:
 //   user.V2 → 启动 per-user v2ray, 覆盖全局 HTTP_PROXY
 //   不带 V2 → 回退到全局 HTTP_PROXY
-async function resolveUserProxy(user) {
+async function resolveUserProxy(user, skipV2 = false) {
     // 清理上一用户的 v2ray
     cleanupV2ray(v2rayProcs);
 
-    if (user.V2 || user.v2) {
+    if (!skipV2 && (user.V2 || user.v2)) {
         const link = (user.V2 || user.v2).trim();
         console.log(`   >> 检测到用户专属 V2 链接，启动独立 v2ray...`);
         const localUrl = await startV2rayForLink(link);
         if (localUrl) {
             const cfg = parseProxyUrl(localUrl.url);
-            return { config: cfg, label: `v2ray (${localUrl})` };
+            return { config: cfg, label: `v2ray (${localUrl.url})` };
         }
         console.warn('   >> 专属 v2ray 启动失败，回退到全局代理。');
+    } else if (skipV2 && (user.V2 || user.v2)) {
+        console.log('   >> 跳过 V2 (已降级)，回退到全局代理/直连。');
     }
 
     // 回退到全局 HTTP_PROXY
@@ -851,15 +853,23 @@ async function clickRenewButton(page) {
         console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`);
 
         // 解析该用户的代理（支持独立 V2 链接）
-        const { config: proxyConfig, label: proxyLabel } = await resolveUserProxy(user);
+        let { config: proxyConfig, label: proxyLabel } = await resolveUserProxy(user);
         console.log(`   >> 使用代理: ${proxyLabel}`);
 
         // 代理配置变化时重启 Chrome
-        const proxyChanged = JSON.stringify(proxyConfig) !== JSON.stringify(lastProxyConfig);
+        let proxyChanged = JSON.stringify(proxyConfig) !== JSON.stringify(lastProxyConfig);
         if (proxyChanged) {
             await stopChrome();
+            // per-user V2 代理验证失败时，降级到全局代理/直连，而非跳过用户
             if (proxyConfig) {
-                const ok = await checkProxy(proxyConfig);
+                let ok = await checkProxy(proxyConfig);
+                if (!ok && (user.V2 || user.v2)) {
+                    console.warn('[代理] 用户专属 V2 代理无效，降级到全局代理/直连...');
+                    cleanupV2ray(v2rayProcs);
+                    ({ config: proxyConfig, label: proxyLabel } = await resolveUserProxy(user, true));
+                    console.log(`   >> 降级后使用代理: ${proxyLabel}`);
+                    ok = proxyConfig ? await checkProxy(proxyConfig) : true;
+                }
                 if (!ok) {
                     console.error('[代理] 代理无效，跳过该用户。');
                     await sendTelegramMessage(`❌ *代理无效*\n用户: ${user.username}\n代理: ${proxyLabel}`);
