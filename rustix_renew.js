@@ -599,10 +599,64 @@ async function processUser(user) {
             }
 
             // 点击登录按钮
-            if (turnstileResolved) console.log('   >> Turnstile 已就绪，点击 Войти...');
-            else console.log('   >> 未确认 Turnstile，直接尝试点击 Войти...');
-            await page.locator('button:has-text("Войти")').click({ force: true, timeout: 5000 }).catch(() => {});
-            await page.waitForTimeout(1000);
+            if (turnstileResolved) {
+                console.log('   >> Turnstile 已就绪，提交登录...');
+                // 先用 form-urlencoded 格式 fetch 提交（模拟真实表单提交）
+                const submitResult = await page.evaluate(async (email, password) => {
+                    const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                    const token = inp ? inp.value : '';
+                    try {
+                        const formData = new URLSearchParams();
+                        formData.append('email', email);
+                        formData.append('password', password);
+                        formData.append('cf-turnstile-response', token);
+                        
+                        const resp = await fetch('/auth/signin', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: formData,
+                            redirect: 'manual',
+                        });
+                        return {
+                            status: resp.status,
+                            statusText: resp.statusText,
+                            type: resp.type,
+                            redirected: resp.redirected,
+                            url: resp.url,
+                            headers: Object.fromEntries(resp.headers.entries()),
+                        };
+                    } catch (e) {
+                        return { error: e.message };
+                    }
+                }, user.username, user.password);
+                console.log('   >> 提交结果:', JSON.stringify(submitResult));
+                
+                // 检查是否成功（302 跳转到 /me 或其他页面）
+                if (submitResult.status === 302 || submitResult.status === 301 || submitResult.redirected) {
+                    const location = submitResult.headers?.['location'] || submitResult.url;
+                    console.log('   >> ✅ 登录成功！跳转到:', location);
+                    await page.goto(location || 'https://rustix.me/me', { waitUntil: 'load', timeout: 30000 });
+                    await page.waitForTimeout(2000);
+                    loggedIn = !page.url().includes('/auth/signin');
+                } else {
+                    console.log('   >> 提交未跳转，尝试按钮点击...');
+                    // 先设置 token 到隐藏字段
+                    await page.evaluate(() => {
+                        const btns = Array.from(document.querySelectorAll('button'));
+                        const btn = btns.find(b => b.textContent.includes('Войти'));
+                        if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                    });
+                    await page.waitForTimeout(1000);
+                }
+            } else {
+                console.log('   >> 未确认 Turnstile，直接尝试点击 Войти...');
+                await page.evaluate(() => {
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    const btn = btns.find(b => b.textContent.includes('Войти'));
+                    if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                });
+                await page.waitForTimeout(1000);
+            }
 
             // 等待登录结果
             console.log('   >> 等待登录结果...');
