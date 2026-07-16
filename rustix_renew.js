@@ -397,11 +397,6 @@ async function solveTurnstileViaCaptcha(page, clientKey) {
                 const token = data.solution?.token;
                 if (token) {
                     console.log('   >> ✅ YesCaptcha 获取到 token');
-                    // 设置 token 到页面
-                    await page.evaluate((t) => {
-                        const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                        if (inp) inp.value = t;
-                    }, token);
                     return token;
                 }
             }
@@ -520,45 +515,47 @@ async function processUser(user) {
             await page.waitForTimeout(500);
 
             // ===== Turnstile 处理 =====
-            // rustix.me 使用 invisible Turnstile。
-            // 用户测试表明：在纯净荷兰代理下，Turnstile 会自动过（可能需要 10-30s 加载）。
-            // 策略: 先等待 Turnstile 自动验证 → 不行再 fallback 到 render()。
-            console.log('   >> 正在等待 Turnstile 自动验证（最多 40 秒）...');
-            let turnstileResolved = false;
+            // rustix.me 使用 Turnstile (flexible 模式)。
+            // Vue 组件 <VueTurnstile v-model="turnstile_token"> 通过 v-model 绑定 token，
+            // 提交时发送 JSON {email, password, turnstile_token} 到 POST /api/auth/signin。
+            // 策略: 先等待自动验证 → render() → CDP 点击 → YesCaptcha 打码。
+            // 获取 token 后直接通过页面内 fetch 调用 API（绕过 Vue 的 v-model 限制）。
+            const TURNSTILE_SITEKEY = '0x4AAAAAAAfEZEkKcZVdYD02';
+            const API_BASE = 'https://rustix.me/api';
+            let turnstileToken = null;
 
-            // 等待 Turnstile 自动验证（轮询 token，每 3 秒检查一次）
-            for (let waitSec = 0; waitSec < 40; waitSec += 3) {
-                const tok = await page.evaluate(() => {
+            // 辅助函数：从页面获取 token（检查 hidden input 和 turnstile.getResponse()）
+            async function getPageToken() {
+                return await page.evaluate(() => {
+                    // 1. 检查 hidden input（VueTurnstile 组件内部设置的）
                     const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                    return (inp && inp.value && inp.value.length > 20) ? inp.value : null;
+                    if (inp && inp.value && inp.value.length > 20) return inp.value;
+                    // 2. 检查 turnstile.getResponse()
+                    if (typeof window.turnstile !== 'undefined') {
+                        try {
+                            const t = window.turnstile.getResponse();
+                            if (t && t.length > 20) return t;
+                        } catch (e) {}
+                    }
+                    return null;
                 }).catch(() => null);
+            }
+
+            console.log('   >> 正在等待 Turnstile 自动验证（最多 40 秒）...');
+            for (let waitSec = 0; waitSec < 40; waitSec += 3) {
+                const tok = await getPageToken();
                 if (tok) {
                     console.log(`   >> ✅ Turnstile 自动验证成功 (等待 ${waitSec}s)`);
-                    turnstileResolved = true;
-                    break;
-                }
-                // 如果 Turnstile API 已有 token
-                const apiToken = await page.evaluate(() => {
-                    if (typeof window.turnstile === 'undefined') return null;
-                    const t = window.turnstile.getResponse();
-                    return (t && t.length > 20) ? t : null;
-                }).catch(() => null);
-                if (apiToken) {
-                    console.log(`   >> ✅ Turnstile API 已有 token (等待 ${waitSec}s)`);
-                    await page.evaluate((t) => {
-                        const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                        if (inp) inp.value = t;
-                    }, apiToken);
-                    turnstileResolved = true;
+                    turnstileToken = tok;
                     break;
                 }
                 await page.waitForTimeout(3000);
             }
 
             // Fallback 1: turnstile.render() + callback
-            if (!turnstileResolved) {
+            if (!turnstileToken) {
                 console.log('   >> 自动验证超时，尝试 turnstile.render()...');
-                const renderToken = await page.evaluate(async () => {
+                const renderToken = await page.evaluate(async (sk) => {
                     if (typeof window.turnstile === 'undefined') return null;
                     const container = document.querySelector('.turnstile-full > div') || document.querySelector('.turnstile-full');
                     if (!container) return null;
@@ -566,119 +563,118 @@ async function processUser(user) {
                         const to = setTimeout(() => resolve(null), 25000);
                         try {
                             window.turnstile.render(container, {
-                                sitekey: '0x4AAAAAAAfEZEkKcZVdYD02',
-                                callback: (token) => {
-                                    clearTimeout(to);
-                                    const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                                    if (inp) inp.value = token;
-                                    resolve(token);
-                                },
+                                sitekey: sk,
+                                callback: (token) => { clearTimeout(to); resolve(token); },
                                 'error-callback': () => { clearTimeout(to); resolve(null); },
                                 theme: 'dark',
                             });
                         } catch(e) { clearTimeout(to); resolve(null); }
                     });
-                }).catch(() => null);
+                }, TURNSTILE_SITEKEY).catch(() => null);
                 if (renderToken) {
                     console.log('   >> ✅ turnstile.render() 获取到 token');
-                    turnstileResolved = true;
+                    turnstileToken = renderToken;
                 } else {
                     console.log('   >> ⚠️ turnstile.render() 未获取到 token');
                 }
             }
 
             // Fallback 1.5: CDP 真实点击 Turnstile iframe 复选框
-            if (!turnstileResolved) {
+            if (!turnstileToken) {
                 console.log('   >> 尝试 CDP 点击 Turnstile...');
                 const clicked = await attemptTurnstileCdp(page).catch(() => false);
                 if (clicked) {
-                    // 等待 CDP 点击触发自动验证写入 token
                     for (let cdpWait = 0; cdpWait < 10; cdpWait++) {
                         await page.waitForTimeout(1000);
-                        const tok = await page.evaluate(() => {
-                            const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                            return (inp && inp.value && inp.value.length > 20) ? inp.value : null;
-                        }).catch(() => null);
+                        const tok = await getPageToken();
                         if (tok) {
                             console.log('   >> ✅ CDP 点击后获取到 token');
-                            turnstileResolved = true;
+                            turnstileToken = tok;
                             break;
                         }
                     }
-                    if (!turnstileResolved) {
-                        console.log('   >> ⚠️ CDP 点击未产生 token');
-                    }
+                    if (!turnstileToken) console.log('   >> ⚠️ CDP 点击未产生 token');
                 }
             }
 
             // Fallback 2: YesCaptcha 打码
-            if (!turnstileResolved) {
+            if (!turnstileToken) {
                 const captchaToken = await solveTurnstileViaCaptcha(page, user.YC_CLIENT_KEY || user.yc_client_key || YC_CLIENT_KEY_DEFAULT);
                 if (captchaToken) {
                     console.log('   >> ✅ YesCaptcha 获取到 token');
-                    turnstileResolved = true;
+                    turnstileToken = captchaToken;
                 } else {
                     console.log('   >> ⚠️ YesCaptcha 未获取到 token');
                 }
             }
 
-            // 点击登录按钮（使用 Playwright 真实点击，发送 isTrusted 事件）
-            if (turnstileResolved) {
-                console.log('   >> Turnstile 已就绪，点击登录按钮...');
+            // ===== 提交登录 =====
+            // Vue 组件通过 v-model 绑定 turnstile_token，提交时发送 JSON body。
+            // 我们直接在页面内用 fetch 调用 /api/auth/signin，格式与 Vue 完全一致。
+            if (turnstileToken) {
+                console.log('   >> Turnstile token 已就绪，提交登录 (POST /api/auth/signin)...');
+                const submitResult = await page.evaluate(async (creds) => {
+                    try {
+                        const resp = await fetch('https://rustix.me/api/auth/signin', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({
+                                email: creds.email,
+                                password: creds.password,
+                                turnstile_token: creds.turnstileToken,
+                            }),
+                        });
+                        const data = await resp.json().catch(() => ({}));
+                        return { status: resp.status, ok: resp.ok, data, url: resp.url };
+                    } catch (e) {
+                        return { error: e.message };
+                    }
+                }, { email: user.username, password: user.password, turnstileToken });
+
+                console.log('   >> 提交结果:', JSON.stringify(submitResult).substring(0, 500));
+
+                if (submitResult.data && submitResult.data.token) {
+                    console.log('   >> ✅ 登录成功！获取到 auth token');
+                    // 设置 auth token 到 localStorage（Nuxt auth 模式）
+                    await page.evaluate((token) => {
+                        try { localStorage.setItem('auth_token', token); } catch(e) {}
+                        try { localStorage.setItem('token', token); } catch(e) {}
+                    }, submitResult.data.token).catch(() => {});
+                    // 跳转到 /me
+                    await page.goto('https://rustix.me/me', { waitUntil: 'load', timeout: 30000 });
+                    await page.waitForTimeout(2000);
+                    loggedIn = !page.url().includes('/auth/signin') && !page.url().includes('/auth/login');
+                    if (loggedIn) {
+                        console.log(`   >> ✅ 已进入用户面板: ${page.url()}`);
+                    }
+                } else if (submitResult.data && submitResult.data.message === '2fa code sent') {
+                    console.log('   >> ⚠️ 账号需要 2FA 验证，暂不支持自动处理');
+                    throw new Error('登录需要 2FA 验证码，请手动处理');
+                } else {
+                    const errMsg = submitResult.data?.message || submitResult.error || '未知错误';
+                    console.log(`   >> ❌ 登录被拒: ${errMsg}`);
+                }
+            } else {
+                console.log('   >> ❌ 未能获取 Turnstile token');
+            }
+
+            // 如果直接 API 提交未成功，尝试通过按钮点击触发 Vue 提交（兜底）
+            if (!loggedIn && turnstileToken) {
+                console.log('   >> API 提交未成功，尝试注入 token 到 Vue 并点击按钮...');
+                await page.evaluate((t) => {
+                    const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                    if (inp) {
+                        inp.value = t;
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }, turnstileToken).catch(() => {});
                 const loginBtn = page.locator('button:has-text("Войти")').first();
                 await loginBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
                 await loginBtn.click().catch(() => {});
-                await page.waitForTimeout(1500);
-            } else {
-                console.log('   >> 未确认 Turnstile，直接点击 Войти...');
-                const loginBtn = page.locator('button:has-text("Войти")').first();
-                await loginBtn.click().catch(() => {});
-                await page.waitForTimeout(1000);
-            }
-
-            // 等待登录结果
-            console.log('   >> 等待登录结果...');
-            for (let attempt = 1; attempt <= 30; attempt++) {
-                await page.waitForTimeout(2000);
-                const currentUrl = page.url();
-                if (!currentUrl.includes('/auth/signin') && !currentUrl.includes('/auth/login')) {
-                    console.log(`   >> ✅ 登录成功! URL: ${currentUrl}`);
-                    loggedIn = true;
-                    break;
-                }
-                // 每 5 轮重试 render
-                if (attempt % 5 === 0 && !turnstileResolved) {
-                    console.log(`   >> 第 ${attempt} 次重试获取 token...`);
-                    const retryToken = await page.evaluate(async () => {
-                        if (typeof window.turnstile === 'undefined') return null;
-                        let t = window.turnstile.getResponse();
-                        if (t) return t;
-                        const container = document.querySelector('.turnstile-full > div') || document.querySelector('.turnstile-full');
-                        if (!container) return null;
-                        return new Promise((resolve) => {
-                            const to = setTimeout(() => resolve(null), 15000);
-                            try {
-                                window.turnstile.render(container, {
-                                    sitekey: '0x4AAAAAAAfEZEkKcZVdYD02',
-                                    callback: (token) => {
-                                        clearTimeout(to);
-                                        const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                                        if (inp) inp.value = token;
-                                        resolve(token);
-                                    },
-                                    'error-callback': () => { clearTimeout(to); resolve(null); },
-                                    theme: 'dark',
-                                });
-                            } catch(e) { clearTimeout(to); resolve(null); }
-                        });
-                    }).catch(() => null);
-                    if (retryToken) {
-                        console.log('   >> ✅ 重试获取到 token，重新点击登录');
-                        const loginBtn = page.locator('button:has-text("Войти")').first();
-                        await loginBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-                        await loginBtn.click().catch(() => {});
-                    }
-                }
+                await page.waitForTimeout(3000);
+                loggedIn = !page.url().includes('/auth/signin') && !page.url().includes('/auth/login');
             }
 
             if (!loggedIn) {
