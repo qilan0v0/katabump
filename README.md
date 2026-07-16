@@ -365,3 +365,47 @@ node renew.js
      或用浏览器打开 KV Cookie 管理面板 → 新增 → 选择 Weirdhost → 填写标识 → 粘贴 cookie JSON → 保存。
 - **代理 / Telegram**：复用同一套 `V2RAY_VMESS` / `HTTP_PROXY` / `TG_*` Secret。
 - **触发**：每天北京时间凌晨 1 点，或手动 "Run workflow" (选 `Weirdhost Auto Renew`)。截图在 `weirdhost-screenshots` artifact。
+
+---
+
+## 🎰 hcnsec (iamhc) 每日签到续期 (附加)
+
+`api.hcnsec.cn` 是基于 [NewAPI](https://github.com/songquanpeng/new-api) 的 OpenAI API 代理面板，每日签到可获取免费额度。此脚本**批量处理多账户**自动签到，每日续额度。
+
+### 📦 配置 Secret
+
+在仓库 **Settings → Secrets and variables → Actions** 中添加：
+
+| Secret | 说明 |
+|--------|------|
+| `hcnsec_USERS_JSON` | 多账户 JSON 数组（必填，格式见下方） |
+| `TG_BOT_TOKEN` | Telegram Bot Token（可选，用于推送通知） |
+| `TG_CHAT_ID` | Telegram Chat ID（可选，全局推送汇总结果） |
+
+### 📝 hcnsec_USERS_JSON 格式
+
+```json
+[
+  {"email": "user1@example.com", "password": "pass123"},
+  {"email": "user2@example.com", "password": "pass456"},
+  {"email": "user3@example.com", "password": "pass789", "tg_chat_id": "独立推送ID"}
+]
+```
+
+- **`email`** / **`password`**：登录凭据（必填）
+- **`tg_chat_id`**：（可选）为该账户单独推送签到结果，优先级高于全局 `TG_CHAT_ID`
+
+### ⚙️ 工作流说明
+
+- **Workflow 名称**：`hcnsec Multi-User Renewal`
+- **触发时间**：每天 **北京时间 06:00 (UTC 22:00)**（与 Katabump 主续期错开时段）
+- **手动触发**：Actions 页面 → `hcnsec Multi-User Renewal` → **Run workflow**
+- **脚本**：`checkin_multi.py`（基于 `requests`，轻量无浏览器依赖）
+- **清理**：自动删除 2 次前的旧运行记录，保持 Actions 列表整洁
+
+### 工作流程
+
+1. 读取 `hcnsec_USERS_JSON` 解析多组账户
+2. 对每个账户：登录 → 查看余额 → 执行签到 → 查看签到后余额
+3. 汇总所有结果，通过 Telegram 推送通知（全局 + 独立推送）
+4. 账户间间隔 3 秒避免触发风控
