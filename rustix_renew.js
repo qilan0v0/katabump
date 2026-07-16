@@ -394,6 +394,9 @@ async function processUser(user) {
         humanize: true,
         geoip: true,
         userDataDir: `/tmp/rustix-profile-${safeUser}`,
+        args: [
+            '--disable-features=SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure',
+        ],
     };
     const proxyStr = proxyInfo ? proxyInfo.url : (HTTP_PROXY || '');
     if (proxyStr) {
@@ -455,37 +458,50 @@ async function processUser(user) {
             await page.waitForTimeout(500);
 
             // ===== Turnstile 处理 =====
-            // rustix.me 使用 invisible Turnstile，无可见 iframe。
-            // 策略: 用 turnstile.render() + callback 获取 token，设置到隐藏字段后点击登录。
-            // 同时保留 CDP 点击作为后备（应对可见模式）。
-            console.log('   >> 正在处理 Cloudflare Turnstile...');
+            // rustix.me 使用 invisible Turnstile。
+            // 用户测试表明：在纯净荷兰代理下，Turnstile 会自动过（可能需要 10-30s 加载）。
+            // 策略: 先等待 Turnstile 自动验证 → 不行再 fallback 到 render()。
+            console.log('   >> 正在等待 Turnstile 自动验证（最多 40 秒）...');
             let turnstileResolved = false;
 
-            // 策略 1: 检查是否已有 token（页面可能自动完成了）
-            const existingToken = await page.evaluate(() => {
-                const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                return (inp && inp.value && inp.value.length > 20) ? inp.value : null;
-            }).catch(() => null);
-            if (existingToken) {
-                console.log('   >> ✅ Turnstile token 已存在');
-                turnstileResolved = true;
+            // 等待 Turnstile 自动验证（轮询 token，每 3 秒检查一次）
+            for (let waitSec = 0; waitSec < 40; waitSec += 3) {
+                const tok = await page.evaluate(() => {
+                    const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                    return (inp && inp.value && inp.value.length > 20) ? inp.value : null;
+                }).catch(() => null);
+                if (tok) {
+                    console.log(`   >> ✅ Turnstile 自动验证成功 (等待 ${waitSec}s)`);
+                    turnstileResolved = true;
+                    break;
+                }
+                // 如果 Turnstile API 已有 token
+                const apiToken = await page.evaluate(() => {
+                    if (typeof window.turnstile === 'undefined') return null;
+                    const t = window.turnstile.getResponse();
+                    return (t && t.length > 20) ? t : null;
+                }).catch(() => null);
+                if (apiToken) {
+                    console.log(`   >> ✅ Turnstile API 已有 token (等待 ${waitSec}s)`);
+                    await page.evaluate((t) => {
+                        const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                        if (inp) inp.value = t;
+                    }, apiToken);
+                    turnstileResolved = true;
+                    break;
+                }
+                await page.waitForTimeout(3000);
             }
 
-            // 策略 2: 用 turnstile.render() + callback 获取 token
+            // Fallback: turnstile.render() + callback
             if (!turnstileResolved) {
-                console.log('   >> 尝试 turnstile.render() 获取 token...');
+                console.log('   >> 自动验证超时，尝试 turnstile.render()...');
                 const renderToken = await page.evaluate(async () => {
                     if (typeof window.turnstile === 'undefined') return null;
-                    // 先尝试 getResponse
-                    let t = window.turnstile.getResponse();
-                    if (t) return t;
-                    // 用 render + callback
                     const container = document.querySelector('.turnstile-full > div') || document.querySelector('.turnstile-full');
                     if (!container) return null;
-                    // 清空容器
-                    container.innerHTML = '';
                     return new Promise((resolve) => {
-                        const to = setTimeout(() => resolve(null), 15000);
+                        const to = setTimeout(() => resolve(null), 25000);
                         try {
                             window.turnstile.render(container, {
                                 sitekey: '0x4AAAAAAAfEZEkKcZVdYD02',
@@ -505,51 +521,15 @@ async function processUser(user) {
                     console.log('   >> ✅ turnstile.render() 获取到 token');
                     turnstileResolved = true;
                 } else {
-                    console.log('   >> ⚠️ render() 未获取到 token');
-                }
-            }
-
-            // 策略 3: CDP 点击（后备，应对可见复选框模式）
-            if (!turnstileResolved) {
-                console.log('   >> 尝试 CDP 点击 Turnstile 复选框...');
-                for (let i = 0; i < 10; i++) {
-                    if (await attemptTurnstileCdp(page)) {
-                        console.log('   >> CDP 点击已发送');
-                        await page.waitForTimeout(3000);
-                        // 检查 token 是否出现
-                        const tok = await page.evaluate(() => {
-                            const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                            return (inp && inp.value && inp.value.length > 20) ? inp.value : null;
-                        }).catch(() => null);
-                        if (tok) {
-                            console.log('   >> ✅ CDP 点击后获取到 token');
-                            turnstileResolved = true;
-                            break;
-                        }
-                    }
-                    await page.waitForTimeout(1000);
+                    console.log('   >> ⚠️ turnstile.render() 未获取到 token');
                 }
             }
 
             // 点击登录按钮
-            console.log('   >> 点击 Войти...');
+            if (turnstileResolved) console.log('   >> Turnstile 已就绪，点击 Войти...');
+            else console.log('   >> 未确认 Turnstile，直接尝试点击 Войти...');
             await page.locator('button:has-text("Войти")').click({ force: true, timeout: 5000 }).catch(() => {});
             await page.waitForTimeout(1000);
-
-            // CDP 点击兑底
-            try {
-                const btnLoc = page.locator('button:has-text("Войти")');
-                const box = await btnLoc.boundingBox({ timeout: 3000 });
-                if (box) {
-                    const client = await page.context().newCDPSession(page);
-                    const cx = box.x + box.width / 2;
-                    const cy = box.y + box.height / 2;
-                    await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
-                    await new Promise(r => setTimeout(r, 50));
-                    await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
-                    await client.detach();
-                }
-            } catch (e) {}
 
             // 等待登录结果
             console.log('   >> 等待登录结果...');
@@ -561,8 +541,8 @@ async function processUser(user) {
                     loggedIn = true;
                     break;
                 }
-                // 每 5 轮重试获取 token 并重新点击
-                if (attempt % 5 === 0) {
+                // 每 5 轮重试 render
+                if (attempt % 5 === 0 && !turnstileResolved) {
                     console.log(`   >> 第 ${attempt} 次重试获取 token...`);
                     const retryToken = await page.evaluate(async () => {
                         if (typeof window.turnstile === 'undefined') return null;
@@ -570,9 +550,8 @@ async function processUser(user) {
                         if (t) return t;
                         const container = document.querySelector('.turnstile-full > div') || document.querySelector('.turnstile-full');
                         if (!container) return null;
-                        container.innerHTML = '';
                         return new Promise((resolve) => {
-                            const to = setTimeout(() => resolve(null), 10000);
+                            const to = setTimeout(() => resolve(null), 15000);
                             try {
                                 window.turnstile.render(container, {
                                     sitekey: '0x4AAAAAAAfEZEkKcZVdYD02',
