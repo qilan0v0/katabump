@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 多账户批量签到续期脚本
-从 hcnsec_USERS_JSON 环境变量读取多组账户信息，
+从 CHECKIN_USERS_JSON 或 hcnsec_USERS_JSON 环境变量读取多组账户信息，
 逐个登录并执行签到，汇总结果后推送 Telegram 通知。
+支持通过 BASE_URL 环境变量切换目标站点（默认 api.hcnsec.cn）。
 """
 
 import os, sys, time, json, requests
@@ -13,8 +14,9 @@ from urllib.parse import quote
 # 全局 Telegram 配置（可选，用于统一推送）
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""
 
-BASE_URL = "https://api.hcnsec.cn"
-QUOTA_PER_UNIT = 500000
+# 站点配置（可通过环境变量覆盖）
+BASE_URL = os.environ.get("BASE_URL") or "https://api.hcnsec.cn"
+QUOTA_PER_UNIT = int(os.environ.get("QUOTA_PER_UNIT") or "500000")
 TURNSTILE_TOKEN = ""
 
 
@@ -201,9 +203,9 @@ def process_user(email: str, password: str, tg_chat_id: str = "") -> dict:
 
 
 def main():
-    raw = os.environ.get("hcnsec_USERS_JSON") or os.environ.get("hcnsec_USERS_JSON") or ""
+    raw = os.environ.get("CHECKIN_USERS_JSON") or os.environ.get("hcnsec_USERS_JSON") or ""
     if not raw:
-        print("❌ 请设置 hcnsec_USERS_JSON 环境变量！")
+        print("❌ 请设置 CHECKIN_USERS_JSON 或 hcnsec_USERS_JSON 环境变量！")
         print("格式: [{\"email\":\"...\",\"password\":\"...\"}, ...]")
         print("可选字段: \"tg_chat_id\":\"...\" (每个账户独立推送)")
         sys.exit(1)
@@ -211,11 +213,11 @@ def main():
     try:
         users = json.loads(raw)
     except json.JSONDecodeError as e:
-        print(f"❌ hcnsec_USERS_JSON 格式错误: {e}")
+        print(f"❌ {os.environ.get('CHECKIN_USERS_JSON') and 'CHECKIN_USERS_JSON' or 'hcnsec_USERS_JSON'} 格式错误: {e}")
         sys.exit(1)
 
     if not isinstance(users, list):
-        print("❌ hcnsec_USERS_JSON 必须是一个 JSON 数组！")
+        print("❌ CHECKIN_USERS_JSON / hcnsec_USERS_JSON 必须是一个 JSON 数组！")
         sys.exit(1)
 
     print(f"📋 共 {len(users)} 个账户待签到\n" + "=" * 40)
@@ -269,7 +271,7 @@ def main():
         send_telegram(global_tg_chat_id, summary)
     else:
         print("未配置 TG_CHAT_ID，跳过全局 Telegram 推送")
-        print("（每个账户可在 hcnsec_USERS_JSON 中设置独立 tg_chat_id）")
+        print("（每个账户可在 CHECKIN_USERS_JSON 中设置独立 tg_chat_id）")
 
 
 if __name__ == "__main__":

@@ -191,6 +191,9 @@ node renew.js
 * `kv-admin/worker.js`: KV Cookie 管理面板（Cloudflare Worker），提供 `/api/get`、`/api/set`、`/api/list`、`/api/delete` 接口，用于所有脚本统一存取 cookie。
 * `kv-admin/wrangler.toml`: Worker 部署配置，绑定 KV 命名空间。
 * `.github/workflows/deploy-kv-admin.yml`: KV Admin Worker 部署 workflow（手动触发）。
+* `checkin_multi.py`: NewAPI 通用签到续期脚本（支持 hcnsec / pie-xian 等多站点，通过 `BASE_URL` 和 `CHECKIN_USERS_JSON` 环境变量切换）。
+* `.github/workflows/renewal.yml`: hcnsec (`api.hcnsec.cn`) 每日签到续期（每天北京时间 06:00）。
+* `.github/workflows/piexian.yml`: pie-xian (`api.pie-xian.com`) 每日签到续期（每天北京时间 05:30）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
 
 > **`action_renew.js` 已参数化**：默认面板是 katabump；设置环境变量 `DASH_BASE_URL`（如 `https://dash.aclclouds.com`）即可复用到同款面板。katabump 不设此变量，行为不变。
@@ -409,3 +412,35 @@ node renew.js
 2. 对每个账户：登录 → 查看余额 → 执行签到 → 查看签到后余额
 3. 汇总所有结果，通过 Telegram 推送通知（全局 + 独立推送）
 4. 账户间间隔 3 秒避免触发风控
+
+---
+
+## 🎰 pie-xian 每日签到续期 (附加)
+
+`api.pie-xian.com` 同样是基于 NewAPI 的面板，复用 `checkin_multi.py` 脚本，通过 `BASE_URL` 环境变量切换目标站点。
+
+### 📦 配置 Secret
+
+在仓库 **Settings → Secrets and variables → Actions** 中添加：
+
+| Secret | 说明 |
+|--------|------|
+| `PIEXIAN_USERS_JSON` | 多账户 JSON 数组（必填，格式同 hcnsec） |
+| `TG_BOT_TOKEN` | Telegram Bot Token（可选，用于推送通知） |
+| `TG_CHAT_ID` | Telegram Chat ID（可选，全局推送汇总结果） |
+
+### 📝 PIEXIAN_USERS_JSON 格式
+
+```json
+[
+  {"email": "user1@example.com", "password": "pass123"},
+  {"email": "user2@example.com", "password": "pass456", "tg_chat_id": "独立推送ID"}
+]
+```
+
+### ⚙️ 工作流说明
+
+- **Workflow 名称**：`pie-xian Daily Checkin`
+- **触发时间**：每天 **北京时间 05:30 (UTC 21:30)**（与 hcnsec 错开时段）
+- **手动触发**：Actions 页面 → `pie-xian Daily Checkin` → **Run workflow**
+- **脚本**：`checkin_multi.py`（同一脚本，`BASE_URL=https://api.pie-xian.com`）

@@ -1,13 +1,13 @@
-name: hcnsec Multi-User Renewal
+name: pie-xian Daily Checkin
 
 on:
   schedule:
-    # 每天 UTC 22:00 运行（即北京时间次日 06:00），与单账户签到错开
-    - cron: '0 22 * * *'
+    # 每天 UTC 21:30 运行（即北京时间次日 05:30），与 hcnsec 错开
+    - cron: '30 21 * * *'
   workflow_dispatch: # 支持手动触发
 
 jobs:
-  renew:
+  checkin:
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -25,10 +25,10 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run multi-user renewal (check-in)
+      - name: Run checkin
         env:
-          CHECKIN_USERS_JSON: ${{ secrets.hcnsec_USERS_JSON }}
-          BASE_URL: https://api.hcnsec.cn
+          CHECKIN_USERS_JSON: ${{ secrets.PIEXIAN_USERS_JSON }}
+          BASE_URL: https://api.pie-xian.com
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python checkin_multi.py
