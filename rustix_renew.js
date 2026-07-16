@@ -75,7 +75,7 @@ async function sendTelegramMessage(message, imagePath = null) {
 }
 
 // ===== sing-box 管理 =====
-const { buildSingboxConfig } = require('./.github/scripts/gen-singbox-config');
+const { buildConfig: buildSingboxConfig } = require('./.github/scripts/gen-singbox-config');
 const SINGBOX_BIN = process.env.SINGBOX_BIN || `${process.env.HOME}/sing-box/sing-box`;
 const singboxProcs = [];
 let nextSocksPort = 10810;
@@ -454,49 +454,89 @@ async function processUser(user) {
             await page.locator('input[type="password"]').first().fill(user.password);
             await page.waitForTimeout(500);
 
-            console.log('   >> 正在处理 Cloudflare Turnstile 验证码 (CDP)...');
-            let cdpClicked = false;
-            for (let i = 0; i < 15; i++) {
-                if (await attemptTurnstileCdp(page)) {
-                    cdpClicked = true;
-                    break;
-                }
-                await page.waitForTimeout(1000);
+            // ===== Turnstile 处理 =====
+            // rustix.me 使用 invisible Turnstile，无可见 iframe。
+            // 策略: 用 turnstile.render() + callback 获取 token，设置到隐藏字段后点击登录。
+            // 同时保留 CDP 点击作为后备（应对可见模式）。
+            console.log('   >> 正在处理 Cloudflare Turnstile...');
+            let turnstileResolved = false;
+
+            // 策略 1: 检查是否已有 token（页面可能自动完成了）
+            const existingToken = await page.evaluate(() => {
+                const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                return (inp && inp.value && inp.value.length > 20) ? inp.value : null;
+            }).catch(() => null);
+            if (existingToken) {
+                console.log('   >> ✅ Turnstile token 已存在');
+                turnstileResolved = true;
             }
-            if (cdpClicked) {
-                console.log('   >> ✅ CDP 已点击 Turnstile 复选框，等待 Cloudflare 校验...');
-                // 等待 Cloudflare 校验完成（Success 标志）
-                for (let waitSec = 0; waitSec < 10; waitSec++) {
-                    const frames2 = page.frames();
-                    let isSuccess = false;
-                    for (const f of frames2) {
-                        if (f.url().includes('cloudflare') || f.url().includes('challenges')) {
-                            try {
-                                if (await f.getByText('Success', { exact: false }).isVisible({ timeout: 500 }).catch(() => false)) {
-                                    isSuccess = true;
-                                    break;
-                                }
-                            } catch (e) { }
+
+            // 策略 2: 用 turnstile.render() + callback 获取 token
+            if (!turnstileResolved) {
+                console.log('   >> 尝试 turnstile.render() 获取 token...');
+                const renderToken = await page.evaluate(async () => {
+                    if (typeof window.turnstile === 'undefined') return null;
+                    // 先尝试 getResponse
+                    let t = window.turnstile.getResponse();
+                    if (t) return t;
+                    // 用 render + callback
+                    const container = document.querySelector('.turnstile-full > div') || document.querySelector('.turnstile-full');
+                    if (!container) return null;
+                    // 清空容器
+                    container.innerHTML = '';
+                    return new Promise((resolve) => {
+                        const to = setTimeout(() => resolve(null), 15000);
+                        try {
+                            window.turnstile.render(container, {
+                                sitekey: '0x4AAAAAAAfEZEkKcZVdYD02',
+                                callback: (token) => {
+                                    clearTimeout(to);
+                                    const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                                    if (inp) inp.value = token;
+                                    resolve(token);
+                                },
+                                'error-callback': () => { clearTimeout(to); resolve(null); },
+                                theme: 'dark',
+                            });
+                        } catch(e) { clearTimeout(to); resolve(null); }
+                    });
+                }).catch(() => null);
+                if (renderToken) {
+                    console.log('   >> ✅ turnstile.render() 获取到 token');
+                    turnstileResolved = true;
+                } else {
+                    console.log('   >> ⚠️ render() 未获取到 token');
+                }
+            }
+
+            // 策略 3: CDP 点击（后备，应对可见复选框模式）
+            if (!turnstileResolved) {
+                console.log('   >> 尝试 CDP 点击 Turnstile 复选框...');
+                for (let i = 0; i < 10; i++) {
+                    if (await attemptTurnstileCdp(page)) {
+                        console.log('   >> CDP 点击已发送');
+                        await page.waitForTimeout(3000);
+                        // 检查 token 是否出现
+                        const tok = await page.evaluate(() => {
+                            const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                            return (inp && inp.value && inp.value.length > 20) ? inp.value : null;
+                        }).catch(() => null);
+                        if (tok) {
+                            console.log('   >> ✅ CDP 点击后获取到 token');
+                            turnstileResolved = true;
+                            break;
                         }
-                    }
-                    if (isSuccess) {
-                        console.log('   >> ✅ Turnstile 验证成功');
-                        break;
                     }
                     await page.waitForTimeout(1000);
                 }
-            } else {
-                console.log('   >> ⚠️ 未找到 Turnstile 复选框，继续尝试登录...');
             }
 
+            // 点击登录按钮
             console.log('   >> 点击 Войти...');
-            await page.evaluate(() => {
-                const btns = Array.from(document.querySelectorAll('button'));
-                const btn = btns.find(b => b.textContent.includes('Войти'));
-                if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-            });
+            await page.locator('button:has-text("Войти")').click({ force: true, timeout: 5000 }).catch(() => {});
             await page.waitForTimeout(1000);
 
+            // CDP 点击兑底
             try {
                 const btnLoc = page.locator('button:has-text("Войти")');
                 const box = await btnLoc.boundingBox({ timeout: 3000 });
@@ -511,6 +551,7 @@ async function processUser(user) {
                 }
             } catch (e) {}
 
+            // 等待登录结果
             console.log('   >> 等待登录结果...');
             for (let attempt = 1; attempt <= 30; attempt++) {
                 await page.waitForTimeout(2000);
@@ -520,18 +561,36 @@ async function processUser(user) {
                     loggedIn = true;
                     break;
                 }
-                // 如果仍未跳转，尝试再次 CDP 点击 Turnstile (可能点击登录后才出现)
-                if (attempt % 3 === 0) {
-                    const retry = await attemptTurnstileCdp(page);
-                    if (retry) {
-                        console.log(`   >> Turnstile 复选框已点击 (第 ${attempt} 次等待后)`);
-                        await page.waitForTimeout(2000);
-                        // 再次点击登录按钮
-                        await page.evaluate(() => {
-                            const btns = Array.from(document.querySelectorAll('button'));
-                            const btn = btns.find(b => b.textContent.includes('Войти'));
-                            if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                // 每 5 轮重试获取 token 并重新点击
+                if (attempt % 5 === 0) {
+                    console.log(`   >> 第 ${attempt} 次重试获取 token...`);
+                    const retryToken = await page.evaluate(async () => {
+                        if (typeof window.turnstile === 'undefined') return null;
+                        let t = window.turnstile.getResponse();
+                        if (t) return t;
+                        const container = document.querySelector('.turnstile-full > div') || document.querySelector('.turnstile-full');
+                        if (!container) return null;
+                        container.innerHTML = '';
+                        return new Promise((resolve) => {
+                            const to = setTimeout(() => resolve(null), 10000);
+                            try {
+                                window.turnstile.render(container, {
+                                    sitekey: '0x4AAAAAAAfEZEkKcZVdYD02',
+                                    callback: (token) => {
+                                        clearTimeout(to);
+                                        const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                                        if (inp) inp.value = token;
+                                        resolve(token);
+                                    },
+                                    'error-callback': () => { clearTimeout(to); resolve(null); },
+                                    theme: 'dark',
+                                });
+                            } catch(e) { clearTimeout(to); resolve(null); }
                         });
+                    }).catch(() => null);
+                    if (retryToken) {
+                        console.log('   >> ✅ 重试获取到 token，重新点击登录');
+                        await page.locator('button:has-text("Войти")').click({ force: true, timeout: 5000 }).catch(() => {});
                     }
                 }
             }
