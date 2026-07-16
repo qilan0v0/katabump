@@ -587,6 +587,30 @@ async function processUser(user) {
                 }
             }
 
+            // Fallback 1.5: CDP 真实点击 Turnstile iframe 复选框
+            if (!turnstileResolved) {
+                console.log('   >> 尝试 CDP 点击 Turnstile...');
+                const clicked = await attemptTurnstileCdp(page).catch(() => false);
+                if (clicked) {
+                    // 等待 CDP 点击触发自动验证写入 token
+                    for (let cdpWait = 0; cdpWait < 10; cdpWait++) {
+                        await page.waitForTimeout(1000);
+                        const tok = await page.evaluate(() => {
+                            const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                            return (inp && inp.value && inp.value.length > 20) ? inp.value : null;
+                        }).catch(() => null);
+                        if (tok) {
+                            console.log('   >> ✅ CDP 点击后获取到 token');
+                            turnstileResolved = true;
+                            break;
+                        }
+                    }
+                    if (!turnstileResolved) {
+                        console.log('   >> ⚠️ CDP 点击未产生 token');
+                    }
+                }
+            }
+
             // Fallback 2: YesCaptcha 打码
             if (!turnstileResolved) {
                 const captchaToken = await solveTurnstileViaCaptcha(page, user.YC_CLIENT_KEY || user.yc_client_key || YC_CLIENT_KEY_DEFAULT);
@@ -598,63 +622,17 @@ async function processUser(user) {
                 }
             }
 
-            // 点击登录按钮
+            // 点击登录按钮（使用 Playwright 真实点击，发送 isTrusted 事件）
             if (turnstileResolved) {
-                console.log('   >> Turnstile 已就绪，提交登录...');
-                // 先用 form-urlencoded 格式 fetch 提交（模拟真实表单提交）
-                const submitResult = await page.evaluate(async (creds) => {
-                    const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                    const token = inp ? inp.value : '';
-                    try {
-                        const formData = new URLSearchParams();
-                        formData.append('email', creds.email);
-                        formData.append('password', creds.password);
-                        formData.append('cf-turnstile-response', token);
-                        
-                        const resp = await fetch('/auth/signin', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                            body: formData,
-                            redirect: 'manual',
-                        });
-                        return {
-                            status: resp.status,
-                            statusText: resp.statusText,
-                            type: resp.type,
-                            redirected: resp.redirected,
-                            url: resp.url,
-                            headers: Object.fromEntries(resp.headers.entries()),
-                        };
-                    } catch (e) {
-                        return { error: e.message };
-                    }
-                }, { email: user.username, password: user.password });
-                console.log('   >> 提交结果:', JSON.stringify(submitResult));
-                
-                // 检查是否成功（302 跳转到 /me 或其他页面）
-                if (submitResult.status === 302 || submitResult.status === 301 || submitResult.redirected) {
-                    const location = submitResult.headers?.['location'] || submitResult.url;
-                    console.log('   >> ✅ 登录成功！跳转到:', location);
-                    await page.goto(location || 'https://rustix.me/me', { waitUntil: 'load', timeout: 30000 });
-                    await page.waitForTimeout(2000);
-                    loggedIn = !page.url().includes('/auth/signin');
-                } else {
-                    console.log('   >> 提交未跳转，尝试按钮点击...');
-                    // 先设置 token 到隐藏字段
-                    await page.evaluate(() => {
-                        const btns = Array.from(document.querySelectorAll('button'));
-                        const btn = btns.find(b => b.textContent.includes('Войти'));
-                        if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                    });
-                    await page.waitForTimeout(1000);
-                }
+                console.log('   >> Turnstile 已就绪，点击登录按钮...');
+                const loginBtn = page.locator('button:has-text("Войти")').first();
+                await loginBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+                await loginBtn.click().catch(() => {});
+                await page.waitForTimeout(1500);
             } else {
-                console.log('   >> 未确认 Turnstile，直接尝试点击 Войти...');
-                await page.evaluate(() => {
-                    const btns = Array.from(document.querySelectorAll('button'));
-                    const btn = btns.find(b => b.textContent.includes('Войти'));
-                    if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                });
+                console.log('   >> 未确认 Turnstile，直接点击 Войти...');
+                const loginBtn = page.locator('button:has-text("Войти")').first();
+                await loginBtn.click().catch(() => {});
                 await page.waitForTimeout(1000);
             }
 
@@ -696,7 +674,9 @@ async function processUser(user) {
                     }).catch(() => null);
                     if (retryToken) {
                         console.log('   >> ✅ 重试获取到 token，重新点击登录');
-                        await page.locator('button:has-text("Войти")').click({ force: true, timeout: 5000 }).catch(() => {});
+                        const loginBtn = page.locator('button:has-text("Войти")').first();
+                        await loginBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+                        await loginBtn.click().catch(() => {});
                     }
                 }
             }
