@@ -636,17 +636,34 @@ async function processUser(user) {
 
                 if (submitResult.data && submitResult.data.token) {
                     console.log('   >> ✅ 登录成功！获取到 auth token');
-                    // 设置 auth token 到 localStorage（Nuxt auth 模式）
-                    await page.evaluate((token) => {
-                        try { localStorage.setItem('auth_token', token); } catch(e) {}
-                        try { localStorage.setItem('token', token); } catch(e) {}
-                    }, submitResult.data.token).catch(() => {});
-                    // 跳转到 /me
+                    // Nuxt auth 模块使用名为 user_token 的 cookie 存储认证 token
+                    // (kr("user_token", {maxAge:2592000, path:"/", sameSite:"lax", secure:true}))
+                    // 同时用 document.cookie 和 Playwright context.addCookies 双保险设置
+                    const authToken = submitResult.data.token;
+                    // 1. 通过 document.cookie 设置（与 Nuxt 的 kr() 一致）
+                    await page.evaluate((t) => {
+                        const maxAge = 60 * 60 * 24 * 30; // 30 天
+                        document.cookie = `user_token=${encodeURIComponent(t)}; max-age=${maxAge}; path=/; SameSite=Lax; Secure`;
+                    }, authToken).catch(() => {});
+                    // 2. 通过 Playwright context.addCookies 设置（确保 cookie 被浏览器持久化）
+                    await context.addCookies([{
+                        name: 'user_token',
+                        value: authToken,
+                        domain: 'rustix.me',
+                        path: '/',
+                        httpOnly: false,
+                        secure: true,
+                        sameSite: 'Lax',
+                        expires: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
+                    }]).catch(() => {});
+                    // 跳转到 /me（带 token cookie，中间件会放行）
                     await page.goto('https://rustix.me/me', { waitUntil: 'load', timeout: 30000 });
-                    await page.waitForTimeout(2000);
+                    await page.waitForTimeout(3000);
                     loggedIn = !page.url().includes('/auth/signin') && !page.url().includes('/auth/login');
                     if (loggedIn) {
                         console.log(`   >> ✅ 已进入用户面板: ${page.url()}`);
+                    } else {
+                        console.log(`   >> ⚠️ 跳转后仍在登录页: ${page.url()}`);
                     }
                 } else if (submitResult.data && submitResult.data.message === '2fa code sent') {
                     console.log('   >> ⚠️ 账号需要 2FA 验证，暂不支持自动处理');
@@ -659,22 +676,40 @@ async function processUser(user) {
                 console.log('   >> ❌ 未能获取 Turnstile token');
             }
 
-            // 如果直接 API 提交未成功，尝试通过按钮点击触发 Vue 提交（兜底）
+            // ===== 兜底：如果直接 API 提交未成功但 token 存在，重试一次 =====
             if (!loggedIn && turnstileToken) {
-                console.log('   >> API 提交未成功，尝试注入 token 到 Vue 并点击按钮...');
-                await page.evaluate((t) => {
-                    const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                    if (inp) {
-                        inp.value = t;
-                        inp.dispatchEvent(new Event('input', { bubbles: true }));
-                        inp.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }, turnstileToken).catch(() => {});
-                const loginBtn = page.locator('button:has-text("Войти")').first();
-                await loginBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-                await loginBtn.click().catch(() => {});
-                await page.waitForTimeout(3000);
-                loggedIn = !page.url().includes('/auth/signin') && !page.url().includes('/auth/login');
+                console.log('   >> API 提交未成功，重试提交...');
+                const retryResult = await page.evaluate(async (creds) => {
+                    try {
+                        const resp = await fetch('https://rustix.me/api/auth/signin', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({
+                                email: creds.email,
+                                password: creds.password,
+                                turnstile_token: creds.turnstileToken,
+                            }),
+                        });
+                        const data = await resp.json().catch(() => ({}));
+                        return { ok: resp.ok, data };
+                    } catch (e) { return { error: e.message }; }
+                }, { email: user.username, password: user.password, turnstileToken });
+                if (retryResult.data && retryResult.data.token) {
+                    console.log('   >> ✅ 重试登录成功');
+                    const authToken = retryResult.data.token;
+                    await page.evaluate((t) => {
+                        document.cookie = `user_token=${encodeURIComponent(t)}; max-age=${60*60*24*30}; path=/; SameSite=Lax; Secure`;
+                    }, authToken).catch(() => {});
+                    await context.addCookies([{
+                        name: 'user_token', value: authToken, domain: 'rustix.me', path: '/',
+                        httpOnly: false, secure: true, sameSite: 'Lax',
+                        expires: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
+                    }]).catch(() => {});
+                    await page.goto('https://rustix.me/me', { waitUntil: 'load', timeout: 30000 });
+                    await page.waitForTimeout(3000);
+                    loggedIn = !page.url().includes('/auth/signin') && !page.url().includes('/auth/login');
+                }
             }
 
             if (!loggedIn) {
