@@ -24,9 +24,11 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y xvfb
+        sudo apt-get install -y xvfb ffmpeg python3 python3-pip
         npm install
         npx playwright install-deps chrome
+        # reCAPTCHA 音频绕过所需 Python 依赖 (sarperavci/GoogleRecaptchaBypass 移植)
+        pip3 install --break-system-packages pydub SpeechRecognition
 
     - name: Install v2ray
       if: env.HAS_V2RAY == 'true'

@@ -8,8 +8,9 @@ const stealth = require('puppeteer-extra-plugin-stealth')();
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { spawn, exec, execFile } = require('child_process');
 const http = require('http');
+const os = require('os');
 
 const LOGIN_URL = 'https://panel.freegamehost.xyz/auth/login';
 
@@ -491,6 +492,192 @@ async function attemptTurnstileCdp(page) {
     return false;
 }
 
+// --- reCAPTCHA 音频绕过 (移植自 sarperavci/GoogleRecaptchaBypass) ---
+// Python 子进程路径：优先用 python3，回退到 python
+const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
+const RECAPTCHA_SOLVER_PY = path.join(__dirname, 'recaptcha_solver.py');
+
+// 调用 recaptcha_solver.py 识别音频文件，返回识别文本
+async function recognizeAudio(mp3Path) {
+    return new Promise((resolve) => {
+        execFile(PYTHON_BIN, [RECAPTCHA_SOLVER_PY, mp3Path], { timeout: 30000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
+            if (err) {
+                console.warn(`   >> [reCAPTCHA] 语音识别子进程失败: ${err.message}`);
+                if (stderr) console.warn(`   >> [reCAPTCHA] stderr: ${stderr.slice(0, 300)}`);
+                return resolve(null);
+            }
+            const text = (stdout || '').trim();
+            if (!text) {
+                console.warn('   >> [reCAPTCHA] 语音识别返回空结果');
+                return resolve(null);
+            }
+            console.log(`   >> [reCAPTCHA] 识别结果: "${text}"`);
+            resolve(text);
+        });
+    });
+}
+
+// 判断 reCAPTCHA anchor iframe 是否已通过 (checkbox 勾选)
+async function isRecaptchaSolved(page) {
+    for (const frame of page.frames()) {
+        try {
+            const url = frame.url();
+            if (!/recaptcha\/api2\/anchor/i.test(url)) continue;
+            const checked = await frame.evaluate(() => {
+                const el = document.getElementById('recaptcha-anchor');
+                if (!el) return false;
+                return el.getAttribute('aria-checked') === 'true';
+            }).catch(() => false);
+            if (checked) return true;
+        } catch (e) { }
+    }
+    return false;
+}
+
+// 判断是否被 Google 检测为机器人 ("Try again later")
+async function isRecaptchaDetected(page) {
+    for (const frame of page.frames()) {
+        try {
+            const url = frame.url();
+            if (!/recaptcha\/api2\/bframe/i.test(url)) continue;
+            const detected = await frame.evaluate(() => {
+                const all = document.body ? document.body.innerText : '';
+                return /try again later/i.test(all);
+            }).catch(() => false);
+            if (detected) return true;
+        } catch (e) { }
+    }
+    return false;
+}
+
+// 查找 reCAPTCHA anchor iframe 并点击 checkbox
+async function clickRecaptchaCheckbox(page) {
+    for (const frame of page.frames()) {
+        try {
+            const url = frame.url();
+            if (!/recaptcha\/api2\/anchor/i.test(url)) continue;
+            const anchor = await frame.locator('#recaptcha-anchor').first();
+            const visible = await anchor.isVisible().catch(() => false);
+            if (!visible) continue;
+            await anchor.click({ timeout: 5000 }).catch(() => { });
+            console.log('   >> [reCAPTCHA] 已点击 checkbox');
+            return true;
+        } catch (e) { }
+    }
+    return false;
+}
+
+// 切换到音频挑战并下载音频 URL
+async function getAudioChallengeUrl(page) {
+    for (const frame of page.frames()) {
+        try {
+            const url = frame.url();
+            if (!/recaptcha\/api2\/bframe/i.test(url)) continue;
+            const audioBtn = frame.locator('#recaptcha-audio-button').first();
+            const visible = await audioBtn.isVisible({ timeout: 7000 }).catch(() => false);
+            if (!visible) continue;
+            await audioBtn.click({ timeout: 5000 }).catch(() => { });
+            console.log('   >> [reCAPTCHA] 已切换到音频挑战');
+            await page.waitForTimeout(800);
+            // 等待 audio-source 出现
+            const audioSrc = await frame.locator('#audio-source').first().getAttribute('src', { timeout: 10000 }).catch(() => null);
+            if (audioSrc) return { frame, audioSrc };
+        } catch (e) { }
+    }
+    return null;
+}
+
+// 完整的 reCAPTCHA 解决流程 (音频绕过)，返回 true/false
+async function solveRecaptcha(page, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        console.log(`   >> [reCAPTCHA] 第 ${attempt}/${maxRetries} 次尝试...`);
+
+        // 1. 点击 checkbox
+        const clicked = await clickRecaptchaCheckbox(page);
+        if (!clicked) {
+            console.warn('   >> [reCAPTCHA] 未找到 anchor checkbox，可能不是 reCAPTCHA v2');
+            return false;
+        }
+        await page.waitForTimeout(2000);
+
+        // 2. 检查是否已直接通过
+        if (await isRecaptchaSolved(page)) {
+            console.log('   >> [reCAPTCHA] ✅ 仅点击 checkbox 即通过');
+            return true;
+        }
+
+        // 3. 切换音频挑战
+        const challenge = await getAudioChallengeUrl(page);
+        if (!challenge) {
+            console.warn('   >> [reCAPTCHA] 无法切换到音频挑战');
+            await page.waitForTimeout(1500);
+            continue;
+        }
+
+        // 4. 检查是否被检测为机器人
+        if (await isRecaptchaDetected(page)) {
+            console.warn('   >> [reCAPTCHA] ❌ 被检测为机器人 (Try again later)');
+            return false;
+        }
+
+        // 5. 下载音频到临时文件
+        const tmpFile = path.join(os.tmpdir(), `recaptcha_${Date.now()}.mp3`);
+        let recognized = null;
+        try {
+            const resp = await axios.get(challenge.audioSrc, { responseType: 'arraybuffer', timeout: 20000, proxy: false });
+            fs.writeFileSync(tmpFile, resp.data);
+            console.log(`   >> [reCAPTCHA] 音频已下载 (${resp.data.length} bytes)`);
+
+            // 6. 调用 Python 子进程识别
+            recognized = await recognizeAudio(tmpFile);
+        } catch (e) {
+            console.warn(`   >> [reCAPTCHA] 下载/识别失败: ${e.message}`);
+        } finally {
+            try { fs.unlinkSync(tmpFile); } catch (e) { }
+        }
+
+        if (!recognized) {
+            await page.waitForTimeout(1500);
+            continue;
+        }
+
+        // 7. 填入答案并验证
+        try {
+            const bframe = challenge.frame;
+            const responseInput = bframe.locator('#audio-response').first();
+            await responseInput.waitFor({ state: 'visible', timeout: 5000 });
+            await responseInput.fill(recognized);
+            await page.waitForTimeout(300);
+            await bframe.locator('#recaptcha-verify-button').first().click({ timeout: 5000 });
+            console.log('   >> [reCAPTCHA] 已提交答案，等待验证...');
+            await page.waitForTimeout(2500);
+
+            if (await isRecaptchaSolved(page)) {
+                console.log('   >> [reCAPTCHA] ✅ 验证通过');
+                return true;
+            }
+            console.warn('   >> [reCAPTCHA] 答案错误，重试...');
+        } catch (e) {
+            console.warn(`   >> [reCAPTCHA] 提交答案失败: ${e.message}`);
+        }
+    }
+    return false;
+}
+
+// 检测页面上是否存在 reCAPTCHA (anchor iframe)
+async function hasRecaptcha(page) {
+    try {
+        for (const frame of page.frames()) {
+            if (/recaptcha\/api2\/anchor/i.test(frame.url())) return true;
+        }
+        // 回退：检测页面 DOM 中是否有 g-recaptcha 容器
+        const found = await page.locator('.g-recaptcha, iframe[title*="reCAPTCHA" i]').first().isVisible({ timeout: 1500 }).catch(() => false);
+        return !!found;
+    } catch (e) {
+        return false;
+    }
+}
+
 // 登录单个账号：返回 true/false
 async function loginOnce(page, user) {
     await gotoWithRetry(page, LOGIN_URL);
@@ -511,13 +698,31 @@ async function loginOnce(page, user) {
         .first();
     await loginBtn.click();
 
-    // 等待离开登录页 = 登录成功
+    // 等待离开登录页 = 登录成功；期间检测并处理 reCAPTCHA
+    let captchaSolved = false;
     for (let s = 0; s < 30; s++) {
         await page.waitForTimeout(1000);
         if (!/\/auth\/login/i.test(page.url())) return true;
         const err = await page.getByText(/invalid|incorrect|wrong|failed|error|not found/i)
             .first().isVisible().catch(() => false);
         if (err) return false;
+
+        // 检测 reCAPTCHA（Google 图片验证）并尝试音频绕过
+        if (!captchaSolved && await hasRecaptcha(page)) {
+            console.log('   >> 检测到 reCAPTCHA，启动音频绕过...');
+            const ok = await solveRecaptcha(page, 3);
+            captchaSolved = true; // 避免重复触发
+            if (ok) {
+                console.log('   >> reCAPTCHA 已通过，等待登录跳转...');
+                // 部分表单可能需要重新点击登录，因为 reCAPTCHA 通过后才会提交 token
+                await page.waitForTimeout(1500);
+                if (!/\/auth\/login/i.test(page.url())) return true;
+                // 仍停留在登录页，尝试再次点击 Login 提交带 token 的表单
+                try { await loginBtn.click({ timeout: 5000 }); } catch (e) { }
+            } else {
+                console.warn('   >> reCAPTCHA 绕过失败');
+            }
+        }
     }
     return !/\/auth\/login/i.test(page.url());
 }
