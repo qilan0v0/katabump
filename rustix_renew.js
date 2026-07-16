@@ -2,7 +2,7 @@
 // 流程: 优先使用 KV cookie 免登录 → 失败则尝试登录 → 导航到服务页 → 点击「Продлить」续期
 // 支持每个账号独立 V2Ray 代理：user.V2 = "vless://..."
 // 账号来源: Secret RUSTIX_USERS_JSON =
-//   [{"username":"xxx@gmail.com","password":"xxx","serverUrl":"https://rustix.me/me/services/18806","V2":"vless://..."}]
+//   [{"username":"xxx@gmail.com","password":"xxx","serverUrl":"https://rustix.me/me/services/18806","V2":"vless://...","YC_CLIENT_KEY":"..."}]
 // cookie 通过 KV Admin Worker 存取，key = rustix_cookie_<username>
 const axios = require('axios');
 const fs = require('fs');
@@ -12,6 +12,10 @@ const http = require('http');
 
 const BASE_URL = 'https://rustix.me';
 const LOGIN_URL = BASE_URL + '/auth/signin';
+
+// YesCaptcha 配置（优先从 RUSTIX_USERS_JSON 的每个账号读取，回退到环境变量）
+const YC_CLIENT_KEY_DEFAULT = process.env.YC_CLIENT_KEY || '';
+const YC_API = 'https://api.yescaptcha.com';
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
@@ -353,6 +357,64 @@ async function attemptTurnstileCdp(page) {
     return false;
 }
 
+// YesCaptcha 打码 —— 通过外部 API 获取 Turnstile token
+async function solveTurnstileViaCaptcha(page, clientKey) {
+    if (!clientKey) {
+        console.log('   >> 未配置 YC_CLIENT_KEY，跳过打码');
+        return null;
+    }
+    console.log('   >> 正在通过 YesCaptcha 获取 Turnstile token...');
+    try {
+        // 创建任务
+        const createResp = await axios.post(YC_API + '/createTask', {
+            clientKey: clientKey,
+            task: {
+                type: 'TurnstileTaskProxyless',
+                websiteURL: 'https://rustix.me/auth/signin',
+                websiteKey: '0x4AAAAAAAfEZEkKcZVdYD02',
+            },
+        }, { timeout: 30000 });
+        if (createResp.data.errorId !== 0 || !createResp.data.taskId) {
+            console.warn('   >> YesCaptcha 创建任务失败:', createResp.data.errorDescription || JSON.stringify(createResp.data));
+            return null;
+        }
+        const taskId = createResp.data.taskId;
+        console.log(`   >> YesCaptcha 任务已创建: ${taskId}`);
+
+        // 轮询结果
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            const resultResp = await axios.post(YC_API + '/getTaskResult', {
+                clientKey: clientKey,
+                taskId,
+            }, { timeout: 15000 });
+            const data = resultResp.data;
+            if (data.errorId !== 0) {
+                console.warn('   >> YesCaptcha 查询失败:', data.errorDescription);
+                return null;
+            }
+            if (data.status === 'ready') {
+                const token = data.solution?.token;
+                if (token) {
+                    console.log('   >> ✅ YesCaptcha 获取到 token');
+                    // 设置 token 到页面
+                    await page.evaluate((t) => {
+                        const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                        if (inp) inp.value = t;
+                    }, token);
+                    return token;
+                }
+            }
+            console.log(`   >> YesCaptcha 处理中... (${i + 1}/30)`);
+        }
+        console.warn('   >> YesCaptcha 超时');
+        return null;
+    } catch (e) {
+        console.warn('   >> YesCaptcha 异常:', e.message);
+        return null;
+    }
+}
+
 // 解析服务页面信息
 async function parseServiceInfo(page) {
     try {
@@ -493,7 +555,7 @@ async function processUser(user) {
                 await page.waitForTimeout(3000);
             }
 
-            // Fallback: turnstile.render() + callback
+            // Fallback 1: turnstile.render() + callback
             if (!turnstileResolved) {
                 console.log('   >> 自动验证超时，尝试 turnstile.render()...');
                 const renderToken = await page.evaluate(async () => {
@@ -522,6 +584,17 @@ async function processUser(user) {
                     turnstileResolved = true;
                 } else {
                     console.log('   >> ⚠️ turnstile.render() 未获取到 token');
+                }
+            }
+
+            // Fallback 2: YesCaptcha 打码
+            if (!turnstileResolved) {
+                const captchaToken = await solveTurnstileViaCaptcha(page, user.YC_CLIENT_KEY || user.yc_client_key || YC_CLIENT_KEY_DEFAULT);
+                if (captchaToken) {
+                    console.log('   >> ✅ YesCaptcha 获取到 token');
+                    turnstileResolved = true;
+                } else {
+                    console.log('   >> ⚠️ YesCaptcha 未获取到 token');
                 }
             }
 
