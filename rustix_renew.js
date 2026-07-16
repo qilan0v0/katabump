@@ -602,13 +602,13 @@ async function processUser(user) {
             if (turnstileResolved) {
                 console.log('   >> Turnstile 已就绪，提交登录...');
                 // 先用 form-urlencoded 格式 fetch 提交（模拟真实表单提交）
-                const submitResult = await page.evaluate(async (email, password) => {
+                const submitResult = await page.evaluate(async (creds) => {
                     const inp = document.querySelector('input[name="cf-turnstile-response"]');
                     const token = inp ? inp.value : '';
                     try {
                         const formData = new URLSearchParams();
-                        formData.append('email', email);
-                        formData.append('password', password);
+                        formData.append('email', creds.email);
+                        formData.append('password', creds.password);
                         formData.append('cf-turnstile-response', token);
                         
                         const resp = await fetch('/auth/signin', {
@@ -628,7 +628,7 @@ async function processUser(user) {
                     } catch (e) {
                         return { error: e.message };
                     }
-                }, user.username, user.password);
+                }, { email: user.username, password: user.password });
                 console.log('   >> 提交结果:', JSON.stringify(submitResult));
                 
                 // 检查是否成功（302 跳转到 /me 或其他页面）
