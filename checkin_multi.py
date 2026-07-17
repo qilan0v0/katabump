@@ -41,9 +41,22 @@ def login(session: requests.Session, email: str, password: str):
 
     if resp.status_code != 200:
         print(f"  ❌ 登录请求失败: {resp.status_code} (BASE_URL={BASE_URL})")
+        print(f"     响应内容(前200字): {resp.text[:200]}")
         return None
 
-    data = resp.json()
+    # 检查 Content-Type 是否为 JSON
+    content_type = resp.headers.get("Content-Type", "")
+    if "json" not in content_type:
+        print(f"  ❌ 响应不是 JSON (Content-Type: {content_type}) (BASE_URL={BASE_URL})")
+        print(f"     响应内容(前200字): {resp.text[:200]}")
+        return None
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        print(f"  ❌ JSON 解析失败: {e} (BASE_URL={BASE_URL})")
+        print(f"     响应内容(前200字): {resp.text[:200]}")
+        return None
     if not data.get("success"):
         print(f"  ❌ 登录失败: {data.get('message', '')} (BASE_URL={BASE_URL})")
         return None
