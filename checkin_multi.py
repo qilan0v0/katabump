@@ -40,12 +40,12 @@ def login(session: requests.Session, email: str, password: str):
     )
 
     if resp.status_code != 200:
-        print(f"  ❌ 登录请求失败: {resp.status_code}")
+        print(f"  ❌ 登录请求失败: {resp.status_code} (BASE_URL={BASE_URL})")
         return None
 
     data = resp.json()
     if not data.get("success"):
-        print(f"  ❌ 登录失败: {data.get('message', '')}")
+        print(f"  ❌ 登录失败: {data.get('message', '')} (BASE_URL={BASE_URL})")
         return None
 
     user_data = data.get("data", {})
