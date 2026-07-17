@@ -716,7 +716,6 @@ async function loginOnce(page, user) {
             captchaSolved = true; // 避免重复触发
             if (ok) {
                 console.log('   >> reCAPTCHA 已通过，等待登录跳转...');
-                // 部分表单可能需要重新点击登录，因为 reCAPTCHA 通过后才会提交 token
                 await page.waitForTimeout(1500);
                 if (!/\/auth\/login/i.test(page.url())) return true;
                 // 仍停留在登录页，尝试再次点击 Login 提交带 token 的表单
@@ -729,7 +728,6 @@ async function loginOnce(page, user) {
     return !/\/auth\/login/i.test(page.url());
 }
 
-// 尝试点击 +8 Hours 续期按钮，处理可能出现的 Turnstile 验证
 async function clickRenewButton(page) {
     // 先检查是否是冷却状态（按钮显示 "XX:XX:XXrenewal cooldown"）
     const cooldownInfo = await page.evaluate(() => {
@@ -767,39 +765,41 @@ async function clickRenewButton(page) {
     await page.waitForTimeout(2000);
 
     // 检测是否弹出 Turnstile 安全验证
+    // 先给 Turnstile 一些时间渲染
+    await page.waitForTimeout(3000);
     let turnstileAttempts = 0;
-    while (turnstileAttempts < 15) {
+    while (turnstileAttempts < 20) {
         const hasTurnstile = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
         if (hasTurnstile) {
-            console.log('   >> 检测到 Turnstile 安全验证，尝试自动通过...');
-            const clicked = await attemptTurnstileCdp(page);
-            if (clicked) {
-                console.log('   >> Turnstile 点击完成，等待验证结果...');
-                await page.waitForTimeout(3000);
-                // 检查是否还有 Turnstile
-                const stillThere = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
-                if (!stillThere) break;
-            }
-            // 如果第一次没点到或还有，尝试定位到 Cancel 按钮，或者尝试不同的 iframe
-            // 尝试直接点击 iframe 中的 checkbox
-            const frames = page.frames();
-            for (const f of frames) {
+            console.log(`   >> 检测到 Turnstile 安全验证 (第 ${turnstileAttempts + 1} 次)`);
+
+            // 方式1: CDP 点击
+            await attemptTurnstileCdp(page);
+
+            // 方式2: 在各 iframe 中直接点击 checkbox
+            for (const f of page.frames()) {
                 try {
-                    const cb = await f.locator('input[type="checkbox"]').isVisible().catch(() => false);
-                    if (cb) {
-                        await f.locator('input[type="checkbox"]').click({ force: true });
-                        console.log('   >> 直接点击了 Turnstile checkbox');
-                        await page.waitForTimeout(3000);
+                    const cb = f.locator('input[type="checkbox"]').first();
+                    if (await cb.isVisible().catch(() => false)) {
+                        await cb.click({ force: true, timeout: 3000 });
+                        console.log('   >> 直接点击了 checkbox');
+                        await page.waitForTimeout(2000);
                         break;
                     }
                 } catch (e) { }
             }
+
+            // 检查是否已通过
+            const stillThere = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
+            if (!stillThere) {
+                console.log('   >> ✅ Turnstile 已通过');
+                break;
+            }
         } else {
-            // Turnstile 可能已通过或未出现
             break;
         }
         turnstileAttempts++;
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(1500);
     }
 
     await page.waitForTimeout(3000);
