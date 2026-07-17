@@ -769,41 +769,78 @@ async function clickRenewButton(page) {
     let turnstileResolved = false;
 
     if (hasTurnstileModal) {
-        console.log('   >> 检测到 Turnstile 安全验证，等待 checkbox 加载...');
+        console.log('   >> 检测到 Turnstile 安全验证...');
 
-        // 等待 Turnstile iframe 中的 checkbox 真正出现（最多等 30 秒）
-        let checkboxReady = false;
+        // 等待 Turnstile 渲染完成——通过 injected script 检测 __turnstile_data
+        // （Turnstile checkbox 在 iframe 的 shadow DOM 中，普通 locator 找不到）
+        let turnstileReady = false;
         for (let w = 0; w < 30; w++) {
             for (const f of page.frames()) {
                 try {
-                    const cb = f.locator('input[type="checkbox"]').first();
-                    if (await cb.isVisible().catch(() => false)) {
-                        checkboxReady = true;
+                    const data = await f.evaluate(() => window.__turnstile_data).catch(() => null);
+                    if (data && data.xRatio && data.yRatio) {
+                        turnstileReady = true;
                         break;
                     }
                 } catch (e) { }
             }
-            if (checkboxReady) break;
+            if (turnstileReady) break;
             await page.waitForTimeout(1000);
         }
 
-        if (checkboxReady) {
-            console.log('   >> Turnstile checkbox 已就绪，尝试点击...');
+        if (turnstileReady) {
+            console.log('   >> Turnstile 已就绪，尝试点击 checkbox...');
 
-            // 尝试 10 次点击
             for (let attempt = 0; attempt < 10; attempt++) {
-                // CDP 点击
-                await attemptTurnstileCdp(page);
-
-                // 直接点击 checkbox
+                // 方式1: 在 iframe 中通过 evaluate 找到 shadow DOM 内的 checkbox 并直接 click()
+                let directClicked = false;
                 for (const f of page.frames()) {
                     try {
-                        const cb = f.locator('input[type="checkbox"]').first();
-                        if (await cb.isVisible().catch(() => false)) {
-                            await cb.click({ force: true, timeout: 3000 });
+                        const clicked = await f.evaluate(() => {
+                            // 遍历所有 shadow roots 查找 checkbox
+                            const walkShadow = (root) => {
+                                if (!root) return null;
+                                const cb = root.querySelector('input[type="checkbox"]');
+                                if (cb) return cb;
+                                // 遍历所有 shadow hosts
+                                const all = root.querySelectorAll('*');
+                                for (const el of all) {
+                                    if (el.shadowRoot) {
+                                        const found = walkShadow(el.shadowRoot);
+                                        if (found) return found;
+                                    }
+                                }
+                                return null;
+                            };
+                            const checkbox = walkShadow(document);
+                            if (checkbox) {
+                                checkbox.click();
+                                return true;
+                            }
+                            // 也尝试直接通过 __turnstile_data 关联的元素
+                            if (window.__turnstile_data) {
+                                // 某些情况下 checkbox 在 attachShadow hook 中已被缓存
+                                const all = document.querySelectorAll('*');
+                                for (const el of all) {
+                                    if (el.shadowRoot) {
+                                        const cb = el.shadowRoot.querySelector('input[type="checkbox"]');
+                                        if (cb) { cb.click(); return true; }
+                                    }
+                                }
+                            }
+                            return false;
+                        }).catch(() => false);
+                        if (clicked) {
+                            console.log('   >> 已通过 evaluate 点击 checkbox');
+                            directClicked = true;
                             break;
                         }
                     } catch (e) { }
+                }
+
+                // 方式2: CDP 坐标点击（备选）
+                if (!directClicked) {
+                    await attemptTurnstileCdp(page);
                 }
 
                 await page.waitForTimeout(2000);
@@ -815,14 +852,14 @@ async function clickRenewButton(page) {
                     turnstileResolved = true;
                     break;
                 }
-                console.log(`   >> Turnstile 点击 ${attempt + 1}/10，验证框仍在`);
+                console.log(`   >> 尝试 ${attempt + 1}/10，验证框仍在`);
             }
         } else {
-            console.log('   >> ⚠️ Turnstile checkbox 未能在 30 秒内加载');
+            console.log('   >> ⚠️ Turnstile 未能在 30 秒内就绪');
         }
 
         if (!turnstileResolved) {
-            console.log('   >> ⚠️ Turnstile 验证未通过，但已点击续期按钮');
+            console.log('   >> ⚠️ Turnstile 验证未通过，但续期按钮已点击');
         }
     }
 
