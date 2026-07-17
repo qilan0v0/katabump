@@ -765,41 +765,65 @@ async function clickRenewButton(page) {
     await page.waitForTimeout(2000);
 
     // 检测是否弹出 Turnstile 安全验证
-    // 先给 Turnstile 一些时间渲染
-    await page.waitForTimeout(3000);
-    let turnstileAttempts = 0;
-    while (turnstileAttempts < 20) {
-        const hasTurnstile = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
-        if (hasTurnstile) {
-            console.log(`   >> 检测到 Turnstile 安全验证 (第 ${turnstileAttempts + 1} 次)`);
+    const hasTurnstileModal = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
+    let turnstileResolved = false;
 
-            // 方式1: CDP 点击
-            await attemptTurnstileCdp(page);
+    if (hasTurnstileModal) {
+        console.log('   >> 检测到 Turnstile 安全验证，等待 checkbox 加载...');
 
-            // 方式2: 在各 iframe 中直接点击 checkbox
+        // 等待 Turnstile iframe 中的 checkbox 真正出现（最多等 30 秒）
+        let checkboxReady = false;
+        for (let w = 0; w < 30; w++) {
             for (const f of page.frames()) {
                 try {
                     const cb = f.locator('input[type="checkbox"]').first();
                     if (await cb.isVisible().catch(() => false)) {
-                        await cb.click({ force: true, timeout: 3000 });
-                        console.log('   >> 直接点击了 checkbox');
-                        await page.waitForTimeout(2000);
+                        checkboxReady = true;
                         break;
                     }
                 } catch (e) { }
             }
+            if (checkboxReady) break;
+            await page.waitForTimeout(1000);
+        }
 
-            // 检查是否已通过
-            const stillThere = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
-            if (!stillThere) {
-                console.log('   >> ✅ Turnstile 已通过');
-                break;
+        if (checkboxReady) {
+            console.log('   >> Turnstile checkbox 已就绪，尝试点击...');
+
+            // 尝试 10 次点击
+            for (let attempt = 0; attempt < 10; attempt++) {
+                // CDP 点击
+                await attemptTurnstileCdp(page);
+
+                // 直接点击 checkbox
+                for (const f of page.frames()) {
+                    try {
+                        const cb = f.locator('input[type="checkbox"]').first();
+                        if (await cb.isVisible().catch(() => false)) {
+                            await cb.click({ force: true, timeout: 3000 });
+                            break;
+                        }
+                    } catch (e) { }
+                }
+
+                await page.waitForTimeout(2000);
+
+                // 检查是否已通过
+                const stillThere = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
+                if (!stillThere) {
+                    console.log('   >> ✅ Turnstile 已通过');
+                    turnstileResolved = true;
+                    break;
+                }
+                console.log(`   >> Turnstile 点击 ${attempt + 1}/10，验证框仍在`);
             }
         } else {
-            break;
+            console.log('   >> ⚠️ Turnstile checkbox 未能在 30 秒内加载');
         }
-        turnstileAttempts++;
-        await page.waitForTimeout(1500);
+
+        if (!turnstileResolved) {
+            console.log('   >> ⚠️ Turnstile 验证未通过，但已点击续期按钮');
+        }
     }
 
     await page.waitForTimeout(3000);
