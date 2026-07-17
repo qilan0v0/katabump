@@ -194,6 +194,8 @@ node renew.js
 * `checkin_multi.py`: NewAPI 通用签到续期脚本（支持 hcnsec / pie-xian 等多站点，通过 `BASE_URL` 和 `CHECKIN_USERS_JSON` 环境变量切换）。
 * `.github/workflows/renewal.yml`: hcnsec (`api.hcnsec.cn`) 每日签到续期（每天北京时间 06:00）。
 * `.github/workflows/piexian.yml`: pie-xian (`api.pie-xian.com`) 每日签到续期（每天北京时间 05:30）。
+* `checkin_agentrouter.py`: Agent Router (`agentrouter.org`) 登录即签到脚本（无独立 checkin API）。
+* `.github/workflows/agentrouter.yml`: Agent Router 每日登录签到（仅手动触发）。
 * `login.json`: (需手动创建) 存放本地运行的账号信息。
 
 > **`action_renew.js` 已参数化**：默认面板是 katabump；设置环境变量 `DASH_BASE_URL`（如 `https://dash.aclclouds.com`）即可复用到同款面板。katabump 不设此变量，行为不变。
@@ -444,3 +446,34 @@ node renew.js
 - **触发时间**：每天 **北京时间 05:30 (UTC 21:30)**（与 hcnsec 错开时段）
 - **手动触发**：Actions 页面 → `pie-xian Daily Checkin` → **Run workflow**
 - **脚本**：`checkin_multi.py`（同一脚本，`BASE_URL=https://api.pie-xian.com`）
+
+---
+
+## 🎰 Agent Router 每日登录签到 (附加)
+
+`agentrouter.org` 同样是基于 NewAPI 的面板，但**无独立的签到 API**。每次成功登录即视为当日签到。使用独立脚本 `checkin_agentrouter.py`。
+
+### 📦 配置 Secret
+
+在仓库 **Settings → Secrets and variables → Actions** 中添加：
+
+| Secret | 说明 |
+|--------|------|
+| `AGENTROUTER_USERS_JSON` | 多账户 JSON 数组（必填） |
+| `TG_BOT_TOKEN` | Telegram Bot Token（可选） |
+| `TG_CHAT_ID` | Telegram Chat ID（可选，全局推送汇总结果） |
+
+### 📝 AGENTROUTER_USERS_JSON 格式
+
+```json
+[
+  {"email": "user1@example.com", "password": "pass123"},
+  {"email": "user2@example.com", "password": "pass456", "tg_chat_id": "独立推送ID"}
+]
+```
+
+### ⚙️ 工作流说明
+
+- **Workflow 名称**：`Agent Router Daily Login`
+- **触发**：仅手动（Actions 页面 → `Agent Router Daily Login` → **Run workflow**）
+- **脚本**：`checkin_agentrouter.py`（登录即签到，无 checkin API）
