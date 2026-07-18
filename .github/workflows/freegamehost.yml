@@ -53,6 +53,7 @@ jobs:
     - name: 🚀 运行续期脚本
       env:
         FGH_ACCOUNT: ${{ secrets.FGH_ACCOUNT }}
+        FREEGAMEHOST_USERS_JSON: ${{ secrets.FREEGAMEHOST_USERS_JSON }}
         GOST_PROXY: ${{ secrets.GOST_PROXY }}
         TG_BOT: ${{ secrets.TG_BOT }}
       run: |
