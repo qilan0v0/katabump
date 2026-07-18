@@ -200,14 +200,15 @@ def main():
             headless=False,
             headed=True,
             browser='chrome',
-            window_size=(1440, 900),
+            window_size="1440,900",
             disable_csp=True,
             user_data_dir=f'/tmp/fgh_chrome_data_{user_idx}',
         )
 
-        # 如果使用代理，设置代理参数
+        # 如果使用代理，通过环境变量设置（SeleniumBase 会自动识别）
         if proxy_url:
-            driver_kwargs['proxy'] = proxy_url
+            os.environ['HTTP_PROXY'] = proxy_url
+            os.environ['HTTPS_PROXY'] = proxy_url
 
         # 清理旧用户数据
         import shutil
