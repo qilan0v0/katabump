@@ -202,7 +202,6 @@ def main():
             browser='chrome',
             window_size=(1440, 900),
             disable_csp=True,
-            disable_images=False,
             user_data_dir=f'/tmp/fgh_chrome_data_{user_idx}',
         )
 

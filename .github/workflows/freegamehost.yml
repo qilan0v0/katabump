@@ -37,6 +37,18 @@ jobs:
         echo "✅ GOST 已启动，测试连通性..."
         curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/\.[0-9]*$/.**/' && echo
 
+    - name: 📦 安装 v2ray
+      run: |
+        mkdir -p $HOME/v2ray
+        cd $HOME/v2ray
+        V2RAY_URL=$(curl -fsSL https://api.github.com/repos/v2fly/v2ray-core/releases/latest \
+          | grep "browser_download_url" | grep 'v2ray-linux-64\.zip"' | cut -d '"' -f 4)
+        echo "下载 v2ray: $V2RAY_URL"
+        curl -fsSL -o v2ray.zip "$V2RAY_URL"
+        unzip -o v2ray.zip
+        chmod +x v2ray
+        ./v2ray version
+
     - name: 🛠️ 安装系统依赖
       run: |
         sudo apt-get update -q
