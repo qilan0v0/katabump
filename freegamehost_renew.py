@@ -200,10 +200,9 @@ def main():
             user_data_dir=f'/tmp/fgh_chrome_data_{user_idx}',
         )
 
-        # 如果使用代理，通过环境变量设置（SeleniumBase 会自动识别）
+        # 代理通过 Chrome 参数设置，避免影响 WebDriver 连接
         if proxy_url:
-            os.environ['HTTP_PROXY'] = proxy_url
-            os.environ['HTTPS_PROXY'] = proxy_url
+            driver_kwargs['proxy'] = proxy_url
 
         # 清理旧用户数据
         import shutil
