@@ -256,9 +256,12 @@ async function resolveProxyForUser(user) {
  * 通过 Discord Token 授权登录 optiklink.net
  * 流程:
  *   1. 访问 /login 触发 Discord OAuth 重定向
- *   2. 从 URL 提取 state 参数
- *   3. 用 Discord API v10 进行 OAuth 授权
- *   4. 访问回调 URL 完成登录
+ *   2. 从 URL 提取 redirect_to 参数，获取 OAuth 上下文
+ *   3. 用 Discord API v10 直接授权（无需 state，参考 xsh_login.js）
+ *   4. 获取授权码后访问回调 URL 完成登录
+ *
+ * 注意: /login 重定向到 discord.com/login?redirect_to=...（而非 /oauth2/authorize），
+ * 因为浏览器未登录 Discord。我们从 redirect_to 提取 OAuth 参数，然后直接调用 API。
  */
 async function discordLogin(page, context, token) {
     log('[Discord] 通过 Discord OAuth 登录 optiklink.net...');
@@ -278,39 +281,24 @@ async function discordLogin(page, context, token) {
             return true;
         }
 
-        // 如果不在 Discord OAuth 页面，尝试重新导航
-        if (!currentUrl.includes('discord.com/oauth2/authorize')) {
-            log('  未跳转到 Discord，尝试再次导航...');
-            await gotoWithRetry(page, LOGIN_URL);
-            await page.waitForTimeout(3000);
-            currentUrl = page.url();
-            log(`  重试后 URL: ${currentUrl}`);
-            if (!currentUrl.includes('discord.com/oauth2/authorize')) {
-                log('  ❌ 无法触发 Discord OAuth 重定向');
-                return false;
-            }
+        // 从 URL 提取 redirect_to 参数（页面在 discord.com/login?redirect_to=...）
+        const redirectToMatch = currentUrl.match(/[?&]redirect_to=([^&]+)/);
+        if (redirectToMatch) {
+            const decoded = decodeURIComponent(redirectToMatch[1]);
+            log(`  提取到 redirect_to: ${decoded.substring(0, 120)}...`);
         }
 
-        // Step 2: 从 URL 提取 state
-        const stateMatch = currentUrl.match(/[?&]state=([^&]+)/);
-        let state = stateMatch ? decodeURIComponent(stateMatch[1]) : null;
-        if (!state) {
-            log('  ❌ 无法提取 state 参数');
-            return false;
-        }
-        log(`  ✅ 提取到 state: ${state.substring(0, 20)}...`);
-
-        // Step 3: 用 Discord Token 调用 OAuth2 authorize API
-        log('  调用 Discord API 授权...');
+        // 构建 Discord API 授权 URL（参考 xsh_login.js：v10 不需要 state）
         const queryParams = {
             client_id: DISCORD_CLIENT_ID,
             response_type: 'code',
             redirect_uri: REDIRECT_URI,
             scope: SCOPES,
-            state: state,
         };
         const authorizeUrl = `${DISCORD_API}?${new URLSearchParams(queryParams).toString()}`;
 
+        // Step 2: 用 Discord Token 调用 OAuth2 authorize API
+        log('  调用 Discord API 授权...');
         const axiosConfig = {
             headers: {
                 'Authorization': token,
@@ -323,28 +311,33 @@ async function discordLogin(page, context, token) {
         };
 
         const discordApiPayload = {
-            permissions: '0',
             authorize: true,
+            client_id: DISCORD_CLIENT_ID,
+            response_type: 'code',
+            redirect_uri: REDIRECT_URI,
+            scope: SCOPES,
+            permissions: '0',
             integration_type: 0,
-            location_context: {
-                guild_id: '10000',
-                channel_id: '10000',
-                channel_type: 10000,
-            },
         };
 
         let resp;
         try {
-            resp = await axios.post(authorizeUrl, discordApiPayload, { ...axiosConfig, proxy: false });
-            log('  Discord API 请求成功');
+            resp = await axios.post(authorizeUrl, discordApiPayload, {
+                ...axiosConfig,
+                maxRedirects: 0,
+                validateStatus: (s) => true,
+                proxy: false,
+            });
+            log(`  Discord API 响应: HTTP ${resp.status}`);
         } catch (directErr) {
             log(`  Discord API 直连失败: ${directErr.message.slice(0, 80)}`);
-            // 如果有 HTTP_PROXY 则尝试走代理
             if (process.env.HTTP_PROXY) {
                 try {
                     const proxyUrl = new URL(process.env.HTTP_PROXY);
                     resp = await axios.post(authorizeUrl, discordApiPayload, {
                         ...axiosConfig,
+                        maxRedirects: 0,
+                        validateStatus: (s) => true,
                         proxy: {
                             protocol: 'http',
                             host: proxyUrl.hostname,
@@ -352,7 +345,7 @@ async function discordLogin(page, context, token) {
                             ...(proxyUrl.username ? { auth: { username: decodeURIComponent(proxyUrl.username), password: decodeURIComponent(proxyUrl.password) } } : {}),
                         },
                     });
-                    log('  Discord API 请求（代理）成功');
+                    log(`  Discord API 响应（代理）: HTTP ${resp.status}`);
                 } catch (proxyErr) {
                     log(`  ❌ Discord 授权失败（直连和代理均失败）`);
                     return false;
@@ -362,35 +355,48 @@ async function discordLogin(page, context, token) {
             }
         }
 
-        if (resp.status !== 200) {
-            log(`  ❌ Discord 授权失败: HTTP ${resp.status}`);
-            return false;
-        }
-
-        const location = resp.data.location;
-        if (!location) {
-            log('  ❌ 授权响应中未找到 location 字段');
+        // 从响应中提取 location（可能来自 headers 或 data）
+        const location = resp.headers['location'] || (resp.data && resp.data.location) || '';
+        if (!location.includes('code=')) {
+            log(`  ❌ 授权响应中未找到 code: ${resp.status} ${JSON.stringify(resp.data || '').substring(0, 200)}`);
             return false;
         }
 
         const masked = location.replace(/code=[^&]+/, 'code=***');
         log(`  ✅ 拿到回调 URL: ${masked}`);
 
-        // Step 4: 访问回调 URL 完成登录
+        // Step 3: 访问回调 URL 完成登录
         log('  ↩️ 携带授权码打开回调链接...');
         await gotoWithRetry(page, location);
         await page.waitForTimeout(3000);
 
-        const finalUrl = page.url();
+        let finalUrl = page.url();
         log(`  回调后 URL: ${finalUrl}`);
 
         // 如果还在 Discord 页面，等自动跳转
         if (finalUrl.includes('discord.com')) {
             log('  等待 Discord 跳转...');
             await page.waitForTimeout(5000);
+            finalUrl = page.url();
+            log(`  等待后 URL: ${finalUrl}`);
         }
 
-        // 检查是否成功登录到 optiklink.net
+        // 如果还没到 optiklink.net，尝试手动导航到首页
+        if (!finalUrl.includes(OPTIKLINK_BASE)) {
+            log('  手动导航到 optiklink.net 首页...');
+            await gotoWithRetry(page, OPTIKLINK_BASE);
+            await page.waitForTimeout(3000);
+            finalUrl = page.url();
+            log(`  导航后 URL: ${finalUrl}`);
+        }
+
+        // 检查是否成功登录
+        if (finalUrl.includes(OPTIKLINK_BASE) && !finalUrl.includes('discord') && !finalUrl.includes('login')) {
+            log('  ✅ Discord OAuth 登录成功！');
+            return true;
+        }
+
+        // 轮询等待跳转
         for (let w = 0; w < 20; w++) {
             const url = page.url();
             if (url.includes(OPTIKLINK_BASE) && !url.includes('discord') && !url.includes('login')) {
@@ -411,9 +417,6 @@ async function discordLogin(page, context, token) {
 }
 
 // ========== 控制面板登录 (control.optiklink.net) ==========
-/**
- * 通过用户名/密码登录 control.optiklink.net
- */
 async function controlPanelLogin(page, context, username, password) {
     log('[控制面板] 登录 control.optiklink.net...');
 
