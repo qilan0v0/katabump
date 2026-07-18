@@ -188,6 +188,7 @@ async function sendTelegramMessage(message, imagePath = null) {
 chromium.use(stealth);
 
 const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+const CHROME_USER_DATA = '/tmp/chrome_user_data';
 const DEBUG_PORT = 9222;
 let chromeProcess = null; // 追踪 Chrome 进程以便按用户重启
 process.env.NO_PROXY = 'localhost,127.0.0.1';
@@ -404,7 +405,7 @@ async function launchChrome(proxyConfig) {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--user-data-dir=/tmp/chrome_user_data'
+        `--user-data-dir=${CHROME_USER_DATA}`
     ];
     if (proxyConfig) {
         args.push(`--proxy-server=${proxyConfig.server}`);
@@ -425,7 +426,7 @@ async function launchChrome(proxyConfig) {
         }
         console.error(`Chrome 第 ${attempt} 次未在端口 ${DEBUG_PORT} 起来。stderr 末尾:\n` + stderr.slice(-800));
         try { process.kill(-chrome.pid); } catch (e) { }
-        try { fs.rmSync('/tmp/chrome_user_data', { recursive: true, force: true }); } catch (e) { }
+        try { fs.rmSync(CHROME_USER_DATA, { recursive: true, force: true }); } catch (e) { }
         chromeProcess = null;
         await new Promise(r => setTimeout(r, 2000));
     }
