@@ -22,7 +22,7 @@ jobs:
         python-version: '3.x'
 
     - name: 🛡️ 启动 GOST 代理转发
-      if: ${{ secrets.GOST_PROXY != '' }}
+      if: ${{ env.GOST_PROXY != '' }}
       env:
         GOST_PROXY: ${{ secrets.GOST_PROXY }}
       run: |
