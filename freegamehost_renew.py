@@ -216,7 +216,20 @@ def main():
         try:
             # ==================== 登录 ====================
             print('[登录] 打开登录页...')
-            driver.get(LOGIN_URL)
+            try:
+                driver.get(LOGIN_URL)
+            except Exception as e:
+                if proxy_url:
+                    print(f'[代理] 代理连接失败 ({e}), 降级直连...')
+                    cleanup_v2ray()
+                    driver.quit()
+                    proxy_url = None
+                    driver_kwargs.pop('proxy', None)
+                    driver = Driver(**driver_kwargs)
+                    driver.implicitly_wait(10)
+                    driver.get(LOGIN_URL)
+                else:
+                    raise
             time.sleep(2)
 
             if '/auth/login' in driver.current_url:
