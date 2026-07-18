@@ -24,7 +24,7 @@ DASHBOARD_URL = 'https://panel.freegamehost.xyz/'
 BASE_SERVER_URL = 'https://panel.freegamehost.xyz/server/01647891'
 
 # 从环境变量读取（兼容两种变量名）
-RAW_ACCOUNT = os.environ.get('FGH_ACCOUNT') or os.environ.get('FREEGAMEHOST_USERS_JSON', '')
+RAW_ACCOUNT = os.environ.get('FREEGAMEHOST_USERS_JSON', '')
 TG_BOT = os.environ.get('TG_BOT', '')  # chat_id,bot_token
 GOST_PROXY = os.environ.get('GOST_PROXY', '')  # socks5://user:pass@host:port
 
@@ -67,21 +67,16 @@ def send_tg_message(msg, photo_path=None):
 
 # ==================== 账号解析 ====================
 def parse_account(account_str):
-    """解析账号: 支持 JSON 数组格式 或 邮箱,密码 格式"""
+    """解析 FREEGAMEHOST_USERS_JSON JSON 数组"""
     account_str = account_str.strip()
-    # 尝试 JSON 解析
-    if account_str.startswith('['):
-        try:
-            accounts = json.loads(account_str)
-            if isinstance(accounts, list) and len(accounts) > 0:
-                return accounts
-        except json.JSONDecodeError:
-            pass
-    # 尝试 邮箱,密码 格式
-    if ',' in account_str:
-        parts = account_str.split(',', 1)
-        return [{'username': parts[0].strip(), 'password': parts[1].strip(),
-                 'serverUrl': BASE_SERVER_URL}]
+    if not account_str.startswith('['):
+        return []
+    try:
+        accounts = json.loads(account_str)
+        if isinstance(accounts, list) and len(accounts) > 0:
+            return accounts
+    except json.JSONDecodeError:
+        pass
     return []
 
 
@@ -163,7 +158,7 @@ def main():
     # ==================== 解析账号 ====================
     users = parse_account(RAW_ACCOUNT)
     if not users:
-        print('[错误] 未找到有效账号，请设置 FGH_ACCOUNT 或 FREEGAMEHOST_USERS_JSON')
+        print('[错误] 未找到有效账号，请设置 FREEGAMEHOST_USERS_JSON')
         send_tg_message('❌ *配置错误*\n未设置账号信息')
         sys.exit(1)
 
