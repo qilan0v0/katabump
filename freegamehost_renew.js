@@ -296,6 +296,32 @@ async function gotoWithRetry(page, url, retries = 3) {
     }
 }
 
+// 代理连通性检测：用 axios 通过 HTTP 代理访问目标 URL，能在超时内拿到任意 HTTP 响应即视为可用
+async function checkProxyCanReach(proxyUrl, targetUrl) {
+    try {
+        const u = new URL(proxyUrl);
+        const resp = await axios.get(targetUrl, {
+            proxy: {
+                protocol: u.protocol,
+                host: u.hostname,
+                port: u.port,
+                auth: (u.username || u.password) ? { username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) } : undefined,
+            },
+            timeout: 15000,
+            // 只要有响应即可，不关心状态码 (401/403/200 都算代理可达)
+            validateStatus: () => true,
+            // 不跟随重定向，避免被登录跳转拖慢
+            maxRedirects: 0,
+        });
+        console.log(`   >> [代理检测] ${proxyUrl} → HTTP ${resp.status} (代理可用)`);
+        return true;
+    } catch (e) {
+        // ECONNREFUSED / ETIMEDOUT / ERR_CONNECTION_CLOSED 等都算不可用
+        console.warn(`   >> [代理检测] ${proxyUrl} 访问 ${targetUrl} 失败: ${e.code || e.message}`);
+        return false;
+    }
+}
+
 // 登录: 返回 true/false
 async function loginOnce(page, user) {
     await gotoWithRetry(page, LOGIN_URL);
@@ -484,8 +510,20 @@ async function renewServer(page, user, serverId) {
         console.log(`   >> serverId = ${serverId}`);
 
         // 解析代理
-        const { url: proxyUrl, label: proxyLabel } = await resolveUserProxy(user);
+        let { url: proxyUrl, label: proxyLabel } = await resolveUserProxy(user);
         console.log(`   >> 代理: ${proxyLabel}`);
+
+        // 代理连通性检测：通过代理访问目标面板，失败则降级直连（避免 ERR_CONNECTION_CLOSED）
+        if (proxyUrl) {
+            const proxyOk = await checkProxyCanReach(proxyUrl, BASE_URL + '/');
+            if (!proxyOk) {
+                console.warn(`   >> ⚠️ 代理无法访问面板，降级直连 (跳过代理 ${proxyUrl})`);
+                cleanupV2ray(v2rayProcs);
+                proxyUrl = null;
+                proxyLabel = '直连 (代理失效降级)';
+                console.log(`   >> 降级后代理: ${proxyLabel}`);
+            }
+        }
 
         // 启动 cloakbrowser (每用户独立 context，避免 cookie/代理串台)
         const launchOpts = { headless: true, humanize: true };
@@ -501,9 +539,11 @@ async function renewServer(page, user, serverId) {
             continue;
         }
 
-        const context = browser.contexts ? browser.contexts()[0] : (browser._contexts && browser._contexts[0]);
         const page = await browser.newPage();
         page.setDefaultTimeout(60000);
+        // CloakBrowser launch() 返回的是 Browser; context 通过 page.context() 获取
+        // (参照 gaming4free_extend.js，不可用 browser.contexts())
+        const context = page.context();
 
         try {
             // 1. KV cookie 免登录
