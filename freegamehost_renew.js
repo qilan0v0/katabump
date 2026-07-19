@@ -322,6 +322,99 @@ async function checkProxyCanReach(proxyUrl, targetUrl) {
     }
 }
 
+// 注入脚本：隐藏自动化痕迹 + hook Turnstile 复选框坐标 (移植自 rustix_renew.js)
+// 在 iframe 内劫持 attachShadow，找到 checkbox 后计算相对视口坐标比例，存入 window.__turnstile_data
+const INJECTED_SCRIPT = `
+(function() {
+    try {
+        const dp = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver');
+        if (dp) {
+            Object.defineProperty(Navigator.prototype, 'webdriver', {
+                configurable: true, enumerable: true, get: () => undefined
+            });
+        }
+    } catch (e) { }
+    if (window.self === window.top) return;
+    try {
+        function getRandomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+        let screenX = getRandomInt(800, 1200);
+        let screenY = getRandomInt(400, 600);
+        Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
+        Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
+    } catch (e) { }
+    try {
+        const orig = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function(init) {
+            const sr = orig.call(this, init);
+            if (sr) {
+                const check = () => {
+                    const cb = sr.querySelector('input[type="checkbox"]');
+                    if (cb) {
+                        const r = cb.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
+                            window.__turnstile_data = { xRatio: (r.left + r.width/2) / window.innerWidth, yRatio: (r.top + r.height/2) / window.innerHeight };
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                if (!check()) {
+                    const mo = new MutationObserver(() => { if (check()) mo.disconnect(); });
+                    mo.observe(sr, { childList: true, subtree: true });
+                }
+            }
+            return sr;
+        };
+    } catch (e) { }
+})();
+`;
+
+// Promise 超时辅助
+function _race(p, ms) {
+    return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
+}
+
+// Cloudflare Turnstile (iframe 内复选框) 的 CDP 点击绕过 (移植自 rustix_renew.js)
+// 遍历页面所有 frame，读取注入脚本设置的 __turnstile_data，
+// 通过 iframeElement.boundingBox() 计算绝对坐标，用 CDP 发送真实鼠标事件
+async function attemptTurnstileCdp(page) {
+    const frames = page.frames();
+    for (const frame of frames) {
+        const fu = (frame.url() || '');
+        if (fu && !/cloudflare|turnstile|challenges|hcaptcha|^about:|^$/i.test(fu)) {
+            if (frame !== page.mainFrame()) continue;
+        }
+        try {
+            const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
+            if (data) {
+                console.log('   >> 在 frame 中发现 Turnstile。比例:', data);
+                const iframeElement = await frame.frameElement();
+                if (!iframeElement) continue;
+                const box = await iframeElement.boundingBox();
+                if (!box) continue;
+                const clickX = box.x + (box.width * data.xRatio);
+                const clickY = box.y + (box.height * data.yRatio);
+                console.log(`   >> 计算点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
+                const client = await page.context().newCDPSession(page);
+                // mouseMoved (mouseover 前置事件，Cloudflare 需要)
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: clickX, y: clickY });
+                await new Promise(r => setTimeout(r, 100));
+                // mousePressed
+                await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                await new Promise(r => setTimeout(r, 80));
+                // mouseReleased
+                await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                await client.detach();
+                console.log('   >> Turnstile CDP 点击已发送');
+                return true;
+            }
+        } catch (e) {
+            // 静默跳过不可访问的 frame
+        }
+    }
+    return false;
+}
+
 // 登录: 返回 true/false
 async function loginOnce(page, user) {
     await gotoWithRetry(page, LOGIN_URL);
@@ -398,10 +491,10 @@ async function renewServer(page, user, serverId) {
     console.log('   >> 已点击 Renew +8 Hours，等待 Turnstile 弹出...');
     await page.waitForTimeout(1500);
 
-    // 等待 Turnstile 自动通过 (cloakbrowser 下 managed challenge 会自动过)
+    // 等待 Turnstile 自动通过 (cloakbrowser 下 managed challenge 可能自动过)
     let token = null;
-    console.log('   >> 等待 Turnstile 自动验证 (最多 45s)...');
-    for (let w = 0; w < 15; w++) {
+    console.log('   >> 等待 Turnstile 自动验证 (最多 15s)...');
+    for (let w = 0; w < 5; w++) {
         token = await getPageToken(page);
         if (token) {
             console.log(`   >> ✅ Turnstile 自动验证成功 (≈${w * 3}s)，token 长度 ${token.length}`);
@@ -410,9 +503,36 @@ async function renewServer(page, user, serverId) {
         await page.waitForTimeout(3000);
     }
 
-    // 兜底 1: 手动 turnstile.render() 触发 (用页面已有的 widget 容器)
+    // 兜底 1: CDP 真实点击 Turnstile 复选框 (移植自 rustix_renew.js，稳定方案)
+    // 通过注入的 INJECTED_SCRIPT 捕获 checkbox 坐标，用 CDP 发真实鼠标事件
     if (!token) {
-        console.log('   >> 自动验证超时，尝试 turnstile.render()...');
+        console.log('   >> 自动验证超时，尝试 CDP 点击 Turnstile (最多 10 次)...');
+        for (let attempt = 0; attempt < 10; attempt++) {
+            const clicked = await attemptTurnstileCdp(page);
+            if (clicked) {
+                console.log(`   >> CDP 点击已发送 (第 ${attempt + 1}/10 次)，等待验证...`);
+                // 点击后多次检查 token
+                for (let c = 0; c < 5; c++) {
+                    await page.waitForTimeout(1500);
+                    token = await getPageToken(page);
+                    if (token) {
+                        console.log(`   >> ✅ CDP 点击后获取到 token (长度 ${token.length})`);
+                        break;
+                    }
+                }
+                if (token) break;
+            } else {
+                await page.waitForTimeout(1500);
+            }
+            // 每轮也检查一次自动是否已过
+            token = await getPageToken(page);
+            if (token) { console.log('   >> ✅ CDP 循环中检测到 token'); break; }
+        }
+    }
+
+    // 兜底 2: 手动 turnstile.render() 触发 (用页面已有的 widget 容器)
+    if (!token) {
+        console.log('   >> 尝试 turnstile.render()...');
         token = await page.evaluate(async (sk) => {
             if (typeof window.turnstile === 'undefined') return null;
             // 找到 RenewBox 里的 150px 容器
@@ -442,7 +562,7 @@ async function renewServer(page, user, serverId) {
         else console.log('   >> ⚠️ turnstile.render() 未获取到 token');
     }
 
-    // 兜底 2: 直接用 window.turnstile.execute()
+    // 兜底 3: 直接用 window.turnstile.execute()
     if (!token) {
         console.log('   >> 尝试 turnstile.execute()...');
         token = await page.evaluate(() => {
@@ -541,6 +661,8 @@ async function renewServer(page, user, serverId) {
 
         const page = await browser.newPage();
         page.setDefaultTimeout(60000);
+        // 注入 Turnstile hook 脚本 (必须在导航前注入，以拦截 attachShadow)
+        await page.addInitScript(INJECTED_SCRIPT).catch(() => {});
         // CloakBrowser launch() 返回的是 Browser; context 通过 page.context() 获取
         // (参照 gaming4free_extend.js，不可用 browser.contexts())
         const context = page.context();
