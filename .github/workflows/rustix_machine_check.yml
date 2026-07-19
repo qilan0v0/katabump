@@ -1,0 +1,60 @@
+name: Rustix Machine Check & Power On
+
+on:
+  workflow_dispatch: # 允许手动触发
+  schedule:
+    - cron: '*/30 * * * *' # 每 30 分钟检测一次机器状态并开机
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install Dependencies
+      run: |
+        npm install
+        npm install mmdb-lib socks-proxy-agent
+        # Playwright 仅用于 API 登录失败时的兜底（浏览器登录）
+        npx playwright install-deps chrome
+
+    - name: Install sing-box
+      run: |
+        mkdir -p $HOME/sing-box
+        cd $HOME/sing-box
+        LATEST=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases \
+          | jq -r '[.[] | select(.prerelease==false)][0].tag_name | sub("^v"; "")')
+        [ -z "$LATEST" ] && LATEST=1.13.14
+        echo "下载 sing-box: v${LATEST}"
+        curl -fsSL -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${LATEST}/sing-box-${LATEST}-linux-amd64.tar.gz"
+        tar -xzf sing-box.tar.gz
+        mv sing-box-*/sing-box ./
+        rm -rf sing-box-*
+        chmod +x sing-box
+        ./sing-box version
+
+    - name: Run Rustix Machine Check
+      env:
+        PROJECT_NAME: RustixMachine
+        RUSTIX_USERS_JSON: ${{ secrets.RUSTIX_USERS_JSON }}
+        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+      run: node rustix_machine_check.js
+
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: rustix-machine-screenshots
+        path: screenshots/
