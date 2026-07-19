@@ -22,9 +22,10 @@ jobs:
 
     - name: Install Dependencies
       run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
         npm install
         npm install mmdb-lib socks-proxy-agent
-        # Playwright 仅用于 API 登录失败时的兜底（浏览器登录）
         npx playwright install-deps chrome
 
     - name: Install sing-box
@@ -50,7 +51,7 @@ jobs:
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
-      run: node rustix_machine_check.js
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node rustix_machine_check.js
 
     - name: Upload Screenshots
       if: always()
