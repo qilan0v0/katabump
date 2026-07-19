@@ -264,22 +264,39 @@ async function processUser(user) {
         }
 
         console.log('   >> [开机] 发现 ' + offlineServers.length + ' 个离线服务器');
+        // 获取 XSRF token（用于 POST 请求的 CSRF 保护）
+        var xsrfToken = await page.evaluate(function() {
+            // 从 meta 标签获取
+            var meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta) return meta.getAttribute('content');
+            // 从 cookie 获取
+            var match = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
+            if (match) return decodeURIComponent(match[1]);
+            return null;
+        });
+        console.log('   >> [开机] XSRF token: ' + (xsrfToken ? '已获取' : '未获取'));
+
         var startedCount = 0;
         for (var si = 0; si < offlineServers.length; si++) {
             var srv = offlineServers[si];
             console.log('   >> [开机] 处理: ' + srv.name + ' (' + srv.identifier + ')');
             try {
-                var result = await page.evaluate(async function(id) {
+                var result = await page.evaluate(async function(params) {
                     try {
-                        var resp = await fetch('https://my.rustix.me/api/client/servers/' + id + '/power', {
+                        var headers = {
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                        };
+                        if (params.xsrf) headers['X-XSRF-TOKEN'] = params.xsrf;
+                        var resp = await fetch('https://my.rustix.me/api/client/servers/' + params.id + '/power', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                            headers: headers,
                             credentials: 'include',
                             body: JSON.stringify({ signal: 'start' }),
                         });
                         return { ok: resp.status === 204, status: resp.status };
                     } catch (e) { return { error: e.message }; }
-                }, srv.identifier);
+                }, { id: srv.identifier, xsrf: xsrfToken });
                 if (result.ok) {
                     startedCount++;
                     console.log('   >> [开机] 已发送开机信号');
