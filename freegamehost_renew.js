@@ -266,21 +266,37 @@ async function getRenewInfo(page, uuid) {
 }
 
 // --- 页面内: 调用续期 API ---
-async function callRenewApi(page, uuid, token) {
-    return await page.evaluate(async (u, t) => {
-        try {
-            const r = await fetch(`/api/client/freeservers/${u}/renew`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify({ turnstile_token: t }),
-            });
-            const text = await r.text();
-            let data = null;
-            try { data = JSON.parse(text); } catch (e) { }
-            return { ok: r.ok, status: r.status, data, raw: text.slice(0, 400) };
-        } catch (e) { return { ok: false, status: 0, raw: e.message }; }
-    }, uuid, token).catch(() => ({ ok: false, status: 0, raw: 'evaluate failed' }));
+// 续期 API 调用：从 Node.js 进程用 axios 直接请求（不依赖页面上下文，避免 Turnstile 弹窗导致 evaluate 失败）
+// 从 context 取页面 cookie 注入到请求头，X-CSRF-Token 从 meta 标签读取
+async function callRenewApi(context, page, uuid, token) {
+    try {
+        const cookies = await context.cookies();
+        const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+        const url = `${BASE_URL}/api/client/freeservers/${uuid}/renew`;
+        const headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Cookie': cookieStr,
+        };
+        // Pterodactyl 用 X-CSRF-TOKEN (meta 标签)；尝试从页面读取，读不到则跳过
+        const csrf = await page.evaluate(() => {
+            const m = document.querySelector('meta[name="csrf-token"]');
+            return m ? m.getAttribute('content') : null;
+        }).catch(() => null);
+        if (csrf) headers['X-CSRF-TOKEN'] = csrf;
+
+        const resp = await axios.post(url, { turnstile_token: token }, {
+            headers, timeout: 20000, maxRedirects: 0, proxy: false,
+            validateStatus: () => true,
+        });
+        const raw = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
+        return { ok: resp.status >= 200 && resp.status < 300, status: resp.status, data: resp.data, raw: (raw || '').slice(0, 400) };
+    } catch (e) {
+        const status = e.response ? e.response.status : 0;
+        const data = e.response ? e.response.data : null;
+        const raw = data ? (typeof data === 'string' ? data : JSON.stringify(data)) : e.message;
+        return { ok: false, status, data, raw: (raw || '').slice(0, 400) };
+    }
 }
 
 async function gotoWithRetry(page, url, retries = 3) {
@@ -444,7 +460,7 @@ async function loginOnce(page, user) {
 }
 
 // 核心: 点击 Renew +8 Hours → 等 Turnstile 自动出 token → (兜底 turnstile.render) → 调 API
-async function renewServer(page, user, serverId) {
+async function renewServer(page, context, user, serverId) {
     // 拿 uuid
     let uuid = await getServerUuid(page, serverId);
     if (!uuid) {
@@ -588,7 +604,7 @@ async function renewServer(page, user, serverId) {
 
     // 调用续期 API
     console.log('   >> 调用 POST /api/client/freeservers/{uuid}/renew...');
-    const result = await callRenewApi(page, uuid, token);
+    const result = await callRenewApi(context, page, uuid, token);
     console.log(`   >> API 响应: status=${result.status} ok=${result.ok} raw=${(result.raw || '').slice(0, 200)}`);
 
     if (result.ok) {
@@ -710,7 +726,7 @@ async function renewServer(page, user, serverId) {
             await gotoWithRetry(page, user.serverUrl);
             await page.waitForTimeout(3000);
 
-            const result = await renewServer(page, user, serverId);
+            const result = await renewServer(page, context, user, serverId);
             const shot = path.join(photoDir, `freegamehost_${safeUser}_renew.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
 
