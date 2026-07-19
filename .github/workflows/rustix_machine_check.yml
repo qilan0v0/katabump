@@ -27,6 +27,7 @@ jobs:
         npm install
         npm install mmdb-lib socks-proxy-agent
         npx playwright install-deps chrome
+        npx playwright install chromium
 
     - name: Install sing-box
       run: |
