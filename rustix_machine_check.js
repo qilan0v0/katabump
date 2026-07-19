@@ -185,19 +185,22 @@ class ApiClient {
 
     // 解析 set-cookie 并存储
     _parseCookies(setCookieHeaders) {
-        if (!setCookieHeaders) return;
+        if (!setCookieHeaders) {
+            console.log('   >> [cookie] 无 set-cookie 头');
+            return;
+        }
         const arr = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
         for (const raw of arr) {
-            const parts = raw.split(';')[0]; // 只取 name=value 部分
+            const parts = raw.split(';')[0];
             const eqIdx = parts.indexOf('=');
             if (eqIdx > 0) {
                 const name = parts.substring(0, eqIdx).trim();
                 const value = parts.substring(eqIdx + 1).trim();
                 this.cookies[name] = value;
-                // 如果是 XSRF-TOKEN，解码存储
                 if (name === 'XSRF-TOKEN') {
                     this.xsrfToken = decodeURIComponent(value);
                 }
+                console.log('   >> [cookie] 已存储: ' + name + '=' + value.substring(0, 30) + '...');
             }
         }
     }
@@ -214,6 +217,7 @@ class ApiClient {
         const headers = {
             'Accept': 'application/json',
             'X-Requested-With': 'XMLHttpRequest',
+            'Referer': MY_RUSTIX_URL + '/',
             ...extraHeaders,
         };
         if (this.xsrfToken) headers['X-XSRF-TOKEN'] = this.xsrfToken;
@@ -231,6 +235,7 @@ class ApiClient {
         const headers = {
             'Content-Type': 'application/json',
             'X-Requested-With': 'XMLHttpRequest',
+            'Referer': MY_RUSTIX_URL + '/auth/login',
             ...extraHeaders,
         };
         if (this.xsrfToken) headers['X-XSRF-TOKEN'] = this.xsrfToken;
@@ -342,13 +347,22 @@ class ApiClient {
     // 获取服务器列表
     async getServers() {
         console.log('   >> [API] 获取服务器列表...');
+        console.log('   >> [API] 当前 cookie: ' + Object.keys(this.cookies).join(', ') || '(空)');
         const resp = await this.get(MY_RUSTIX_URL + '/api/client?page=1');
+        console.log('   >> [API] 响应状态: ' + resp.status);
+        if (resp.status === 302) {
+            console.warn('   >> [API] 被重定向，可能未认证: ' + (resp.headers['location'] || '?'));
+            return [];
+        }
         if (resp.status !== 200) {
-            console.warn('   >> [API] 获取服务器列表失败: ' + resp.status);
+            console.warn('   >> [API] 获取服务器列表失败: ' + resp.status + ' ' + JSON.stringify(resp.data || '').substring(0, 200));
             return [];
         }
         const data = resp.data;
-        if (!data || !data.data) return [];
+        if (!data || !data.data) {
+            console.warn('   >> [API] 响应格式异常: ' + JSON.stringify(data).substring(0, 300));
+            return [];
+        }
         return data.data.map(s => {
             const attr = s.attributes || s;
             return {
