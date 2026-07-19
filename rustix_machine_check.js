@@ -279,13 +279,13 @@ async function processUser(user) {
 
         console.log('   >> [开机] 发现 ' + offlineServers.length + ' 个离线服务器');
         // 获取 XSRF token（用于 POST 请求的 CSRF 保护）
+        // 注意：X-XSRF-TOKEN 头需要的是 cookie 中的加密值，不是 meta 标签的明文值
         var xsrfToken = await page.evaluate(function() {
-            // 从 meta 标签获取
-            var meta = document.querySelector('meta[name="csrf-token"]');
-            if (meta) return meta.getAttribute('content');
-            // 从 cookie 获取
             var match = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
-            if (match) return decodeURIComponent(match[1]);
+            if (match) {
+                // 返回 URL 解码后的 cookie 值（Laravel 期望的格式）
+                try { return decodeURIComponent(match[1]); } catch (e) { return match[1]; }
+            }
             return null;
         });
         console.log('   >> [开机] XSRF token: ' + (xsrfToken ? '已获取' : '未获取'));
