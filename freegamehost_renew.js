@@ -1,37 +1,49 @@
-// FreeGameHost (panel.freegamehost.xyz) 续期保活脚本 —— 专用于 GitHub Actions (Linux/Headless)
-// 流程: 打开登录页 → 填邮箱/密码 → 点 "Login" → 登录成功跳主面板
-//       → 打开配置的 serverUrl → 点 "+8 Hours" 续期
-// 账号来源: Secret FREEGAMEHOST_USERS_JSON =
-//   [{"username":"a@b.com","password":"pwd","serverUrl":"https://panel.freegamehost.xyz/server/xxxx"}]
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
-const axios = require('axios');
+// FreeGameHost (panel.freegamehost.xyz) 续期保活脚本 —— 重写版
+//
+// 根因: 旧版用 playwright-extra + 手动 Chrome，Cloudflare Turnstile 检测到自动化
+//       后 auto_timeout，widget iframe 根本不渲染，永远拿不到 token。
+//
+// 解法: 改用 cloakbrowser (项目内 rustix_renew.js / gaming4free_extend.js 已验证
+//       可过 Turnstile managed 验证)。cloakbrowser 自带指纹修补，Turnstile 会
+//       自动通过并把 token 写入 hidden input (cf-turnstile-response)，读取后
+//       直接 POST /api/client/freeservers/{uuid}/renew 完成续期。
+//
+// 账号来源 (Secret FREEGAMEHOST_USERS_JSON):
+//   [{"username":"a@b.com","password":"pwd",
+//     "serverUrl":"https://panel.freegamehost.xyz/server/xxxx",
+//     "V2":"vless://..."}]
+//
+// 续期 API (从 bundle.js renewFreeServer.ts 逆向):
+//   POST /api/client/freeservers/{uuid}/renew  body: {"turnstile_token": "<token>"}
+//   Turnstile sitekey: 0x4AAAAAACDTIXgWIwkgvLBp (size=compact)
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec, execFile } = require('child_process');
+const axios = require('axios');
+const { spawn, exec } = require('child_process');
 const http = require('http');
-const os = require('os');
 
-const LOGIN_URL = 'https://panel.freegamehost.xyz/auth/login';
+const BASE_URL = 'https://panel.freegamehost.xyz';
+const LOGIN_URL = `${BASE_URL}/auth/login`;
+const TURNSTILE_SITEKEY = '0x4AAAAAACDTIXgWIwkgvLBp';
+const PROJECT = process.env.PROJECT_NAME || 'FreeGameHost';
 
-// --- v2ray 进程管理 (per-user 代理) ---
+// --- v2ray per-user 代理管理 (移植自旧版，cloakbrowser 仍需代理时用) ---
 const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
 let nextV2rayPort = 11080;
-const v2rayProcs = [];      // 当前用户的 v2ray
-const allV2rayProcs = [];   // 全局 v2ray（用于 exit 时全部清理）
+const v2rayProcs = [];
+const allV2rayProcs = [];
 
 function cleanupV2ray(procs = allV2rayProcs) {
-    for (const { proc, port } of procs) {
+    for (const { proc } of procs) {
         try { proc.kill('SIGTERM'); } catch (e) { }
         try { proc.kill('SIGKILL'); } catch (e) { }
     }
     procs.length = 0;
 }
 
-// 启动一个 v2ray 实例用于 per-user 代理
 async function startV2rayForLink(link) {
-    if (!require('fs').existsSync(V2RAY_BIN)) {
-        console.error(`[v2ray] 未找到 v2ray 二进制 (${V2RAY_BIN})`);
+    if (!fs.existsSync(V2RAY_BIN)) {
+        console.error(`[v2ray] 未找到二进制 (${V2RAY_BIN})`);
         return null;
     }
     const port = nextV2rayPort++;
@@ -40,7 +52,7 @@ async function startV2rayForLink(link) {
         const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
         const cfg = buildConfig(link, port);
         cfgPath = path.join(process.cwd(), `v2ray-freegamehost-${port}.json`);
-        require('fs').writeFileSync(cfgPath, JSON.stringify(cfg));
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg));
     } catch (e) {
         console.error(`[v2ray] 解析 V2 链接失败: ${e.message}`);
         return null;
@@ -49,7 +61,6 @@ async function startV2rayForLink(link) {
     const proc = spawn(V2RAY_BIN, ['run', '-config', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
-    proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
     const entry = { proc, port, link };
     v2rayProcs.push(entry);
     allV2rayProcs.push(entry);
@@ -73,65 +84,35 @@ async function startV2rayForLink(link) {
     return { port, url: `http://127.0.0.1:${port}` };
 }
 
-function parseProxyUrl(urlStr) {
-    const url = new URL(urlStr);
-    return {
-        server: `${url.protocol}//${url.hostname}:${url.port}`,
-        username: url.username ? decodeURIComponent(url.username) : undefined,
-        password: url.password ? decodeURIComponent(url.password) : undefined
-    };
-}
-
-// 解析每个用户应使用的代理:
-//   user.V2 → 启动 per-user v2ray, 覆盖全局 HTTP_PROXY
-//   不带 V2 → 回退到全局 HTTP_PROXY
+// 解析该用户的代理: user.V2 → per-user v2ray; 否则回退全局 HTTP_PROXY
 async function resolveUserProxy(user, skipV2 = false) {
-    // 清理上一用户的 v2ray
     cleanupV2ray(v2rayProcs);
-
     if (!skipV2 && (user.V2 || user.v2)) {
         const link = (user.V2 || user.v2).trim();
-        console.log(`   >> 检测到用户专属 V2 链接，启动独立 v2ray...`);
-        const localUrl = await startV2rayForLink(link);
-        if (localUrl) {
-            const cfg = parseProxyUrl(localUrl.url);
-            return { config: cfg, label: `v2ray (${localUrl.url})` };
-        }
+        console.log('   >> 检测到用户专属 V2 链接，启动独立 v2ray...');
+        const local = await startV2rayForLink(link);
+        if (local) return { url: local.url, label: `v2ray (${local.url})` };
         console.warn('   >> 专属 v2ray 启动失败，回退到全局代理。');
     } else if (skipV2 && (user.V2 || user.v2)) {
         console.log('   >> 跳过 V2 (已降级)，回退到全局代理/直连。');
     }
-
-    // 回退到全局 HTTP_PROXY
-    if (HTTP_PROXY) {
+    if (process.env.HTTP_PROXY) {
         try {
-            const url = new URL(HTTP_PROXY);
-            console.log(`   >> 使用全局 HTTP 代理: ${url.hostname}:${url.port}`);
-            return {
-                config: {
-                    server: `${url.protocol}//${url.hostname}:${url.port}`,
-                    username: url.username ? decodeURIComponent(url.username) : undefined,
-                    password: url.password ? decodeURIComponent(url.password) : undefined
-                },
-                label: `全局代理 (${HTTP_PROXY})`
-            };
-        } catch (e) {
-            console.warn(`   >> HTTP_PROXY 格式无效: ${HTTP_PROXY}`);
-        }
+            new URL(process.env.HTTP_PROXY); // 校验
+            return { url: process.env.HTTP_PROXY, label: `全局代理 (${process.env.HTTP_PROXY})` };
+        } catch (e) { console.warn('   >> HTTP_PROXY 格式无效'); }
     }
-
-    console.log('   >> 直连 (无代理)');
-    return { config: null, label: '直连 (无代理)' };
+    return { url: null, label: '直连 (无代理)' };
 }
 
 process.on('exit', () => cleanupV2ray());
 process.on('SIGINT', () => { cleanupV2ray(); process.exit(0); });
 process.on('SIGTERM', () => { cleanupV2ray(); process.exit(0); });
 
+// --- Telegram 推送 (沿用旧版) ---
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
-const TG_THREAD_ID = process.env.TG_THREAD_ID; // 可选：超级群话题(Topic)的 message_thread_id
-const PROJECT = process.env.PROJECT_NAME || 'FreeGameHost';
+const TG_THREAD_ID = process.env.TG_THREAD_ID;
 
 async function sendTelegramMessage(message, imagePath = null) {
     if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
@@ -140,8 +121,7 @@ async function sendTelegramMessage(message, imagePath = null) {
     }
     const text = `📌 *${PROJECT}*\n${message}`;
     const tgErr = (e) => (e.response && e.response.data && e.response.data.description)
-        ? `${e.response.data.error_code} ${e.response.data.description}`
-        : e.message;
+        ? `${e.response.data.error_code} ${e.response.data.description}` : e.message;
     const threadArg = TG_THREAD_ID ? ` -F message_thread_id="${TG_THREAD_ID}"` : '';
 
     if (imagePath && fs.existsSync(imagePath)) {
@@ -155,87 +135,49 @@ async function sendTelegramMessage(message, imagePath = null) {
             exec(cmd, (err, stdout) => resolve({ err, stdout: stdout || '' }));
         });
         let r = await sendPhoto(true);
-        if (!r.err && r.stdout.includes('"ok":true')) {
-            console.log('[Telegram] 图文消息已发送。');
-        } else {
-            console.warn('[Telegram] 图文(Markdown)发送失败，改纯文本重试:', (r.stdout || (r.err && r.err.message) || '').slice(0, 200));
+        if (!r.err && r.stdout.includes('"ok":true')) console.log('[Telegram] 图文消息已发送。');
+        else {
+            console.warn('[Telegram] 图文(MD)失败，纯文本重试:', (r.stdout || '').slice(0, 200));
             r = await sendPhoto(false);
             if (!r.err && r.stdout.includes('"ok":true')) console.log('[Telegram] 图文消息已发送 (纯文本)。');
-            else console.error('[Telegram] 图文消息发送失败:', (r.stdout || '').slice(0, 300));
+            else console.error('[Telegram] 图文失败:', (r.stdout || '').slice(0, 300));
         }
         try { fs.unlinkSync(captionFile); } catch (e) { }
         return;
     }
-
     try {
         const url = `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`;
         const base = { chat_id: TG_CHAT_ID };
         if (TG_THREAD_ID) base.message_thread_id = Number(TG_THREAD_ID);
-        try {
-            await axios.post(url, { ...base, text, parse_mode: 'Markdown' });
-            console.log('[Telegram] Message sent.');
-        } catch (e) {
-            console.warn('[Telegram] Markdown 发送失败，改用纯文本重试:', tgErr(e));
+        try { await axios.post(url, { ...base, text, parse_mode: 'Markdown' }); console.log('[Telegram] Message sent.'); }
+        catch (e) {
+            console.warn('[Telegram] Markdown 失败，纯文本重试:', tgErr(e));
             await axios.post(url, { ...base, text });
-            console.log('[Telegram] Message sent (plain text).');
+            console.log('[Telegram] Message sent (plain).');
         }
     } catch (e) {
-        console.error('[Telegram] 文字推送失败:', tgErr(e),
-            '\n   >> 提示: "chat not found" 通常表示 TG_CHAT_ID 填错，或你还没主动给该 bot 发过一条消息。');
+        console.error('[Telegram] 推送失败:', tgErr(e));
     }
 }
 
-chromium.use(stealth);
-
-const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
-const CHROME_USER_DATA = '/tmp/chrome_user_data';
-const DEBUG_PORT = 9222;
-let chromeProcess = null; // 追踪 Chrome 进程以便按用户重启
-process.env.NO_PROXY = 'localhost,127.0.0.1';
-
-// --- Proxy Configuration ---
-const HTTP_PROXY = process.env.HTTP_PROXY;
-let PROXY_CONFIG = null;
-if (HTTP_PROXY) {
-    try {
-        const proxyUrl = new URL(HTTP_PROXY);
-        PROXY_CONFIG = {
-            server: `${proxyUrl.protocol}//${proxyUrl.hostname}:${proxyUrl.port}`,
-            username: proxyUrl.username ? decodeURIComponent(proxyUrl.username) : undefined,
-            password: proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined
-        };
-        console.log(`[代理] 检测到配置: 服务器=${PROXY_CONFIG.server}, 认证=${PROXY_CONFIG.username ? '是' : '否'}`);
-    } catch (e) {
-        console.error('[代理] HTTP_PROXY 格式无效。期望: http://user:pass@host:port 或 http://host:port');
-        process.exit(1);
-    }
-}
-
-// --- KV Cookie Admin Worker：通过 Worker API 存取登录 cookie ---
+// --- KV Cookie 缓存 (可选，沿用旧版) ---
 const KV_ADMIN_URL = process.env.KV_ADMIN_URL;
 const KV_ADMIN_PASS = process.env.KV_ADMIN_PASS;
 const KV_ENABLED = !!(KV_ADMIN_URL && KV_ADMIN_PASS);
-
-if (!KV_ENABLED) console.log('[KV] 未配置 KV_ADMIN_URL/KV_ADMIN_PASS，跳过 cookie 缓存');
 
 async function kvGet(key) {
     if (!KV_ENABLED) return null;
     try {
         const r = await axios.post(KV_ADMIN_URL + '/api/get', { key }, {
             headers: { 'X-Admin-Pass': KV_ADMIN_PASS, 'Content-Type': 'application/json' },
-            timeout: 15000, proxy: false
+            timeout: 15000, proxy: false,
         });
         if (r.data.ok && r.data.value != null) {
             console.log('[KV] 读取成功，长度:', String(r.data.value).length);
             return typeof r.data.value === 'string' ? r.data.value : JSON.stringify(r.data.value);
         }
-        console.log('[KV] 暂无已存 cookie');
         return null;
-    } catch (e) {
-        if (e.response && e.response.status === 404) { console.log('[KV] 暂无已存 cookie'); return null; }
-        console.warn('[KV] 读取失败:', e.message);
-        return null;
-    }
+    } catch (e) { return e.response && e.response.status === 404 ? null : (console.warn('[KV] 读取失败:', e.message), null); }
 }
 
 async function kvPut(key, value) {
@@ -243,18 +185,13 @@ async function kvPut(key, value) {
     try {
         await axios.post(KV_ADMIN_URL + '/api/set', { key, value: String(value) }, {
             headers: { 'X-Admin-Pass': KV_ADMIN_PASS, 'Content-Type': 'application/json' },
-            timeout: 15000, proxy: false
+            timeout: 15000, proxy: false,
         });
         console.log('[KV] cookie 已保存');
         return true;
-    } catch (e) {
-        console.warn('[KV] 写入失败:', e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message);
-        return false;
-    }
+    } catch (e) { console.warn('[KV] 写入失败:', e.response ? JSON.stringify(e.response.data).slice(0, 200) : e.message); return false; }
 }
 
-
-// 规范化 cookie 数组为 Playwright addCookies 接受的格式 (兼容浏览器扩展导出的 expirationDate/sameSite 等)
 function normalizeCookies(arr) {
     if (!Array.isArray(arr)) return [];
     return arr.map(c => {
@@ -271,186 +208,85 @@ function normalizeCookies(arr) {
     }).filter(c => c.name && c.domain);
 }
 
-// --- injected.js 核心逻辑 ---
-// 这个脚本会被注入到每个 Frame 中。它劫持 attachShadow 以捕获 Turnstile 的 checkbox，
-// 计算其相对于 Frame 视口的位置比例，并存入 window.__turnstile_data 供外部读取。
-const INJECTED_SCRIPT = `
-(function() {
-    // 只在 iframe 中运行（Turnstile 通常在 iframe 里）
-    if (window.self === window.top) return;
-
-    // 1. 模拟鼠标屏幕坐标 (尝试保留这个优化)
-    try {
-        function getRandomInt(min, max) {
-            return Math.floor(Math.random() * (max - min + 1)) + min;
-        }
-        let screenX = getRandomInt(800, 1200);
-        let screenY = getRandomInt(400, 600);
-        
-        Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
-        Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
-    } catch (e) { 
-        // 忽略错误，如果不允许修改也没关系，不影响主流程
-    }
-
-    // 2. 简单的 attachShadow Hook (回退到这个版本，确保能找到元素)
-    try {
-        const originalAttachShadow = Element.prototype.attachShadow;
-        
-        Element.prototype.attachShadow = function(init) {
-            const shadowRoot = originalAttachShadow.call(this, init);
-            
-            if (shadowRoot) {
-                const checkAndReport = () => {
-                    // 尝试在 Shadow Root 中查找 checkbox
-                    const checkbox = shadowRoot.querySelector('input[type="checkbox"]');
-                    if (checkbox) {
-                        const rect = checkbox.getBoundingClientRect();
-                        // 确保元素已渲染且可见
-                        if (rect.width > 0 && rect.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
-                            const xRatio = (rect.left + rect.width / 2) / window.innerWidth;
-                            const yRatio = (rect.top + rect.height / 2) / window.innerHeight;
-                            
-                            // 暴露数据给 Playwright
-                            window.__turnstile_data = { xRatio, yRatio };
-                            return true;
-                        }
-                    }
-                    return false;
-                };
-
-                // 立即检查一次
-                if (!checkAndReport()) {
-                    // 如果没找到，监听 DOM 变化
-                    const observer = new MutationObserver(() => {
-                        if (checkAndReport()) observer.disconnect();
-                    });
-                    observer.observe(shadowRoot, { childList: true, subtree: true });
-                }
-            }
-            return shadowRoot;
-        };
-    } catch (e) {
-        console.error('[Injected] Error hooking attachShadow:', e);
-    }
-})();
-`;
-
-async function checkProxy(proxyConfig) {
-    const cfg = proxyConfig || PROXY_CONFIG;
-    if (!cfg) return true;
-    console.log('[代理] 正在验证代理连接...');
-    try {
-        const axiosConfig = {
-            proxy: {
-                protocol: 'http',
-                host: new URL(cfg.server).hostname,
-                port: new URL(cfg.server).port,
-            },
-            timeout: 10000
-        };
-        if (cfg.username && cfg.password) {
-            axiosConfig.proxy.auth = { username: cfg.username, password: cfg.password };
-        }
-        await axios.get('https://www.google.com', axiosConfig);
-        try {
-            const ipResp = await axios.get('https://api.ipify.org?format=json', axiosConfig);
-            const exitIp = ipResp.data && ipResp.data.ip ? ipResp.data.ip : '未知';
-            console.log(`[代理] 连接成功！出口 IP: ${exitIp}`);
-        } catch (e) {
-            console.log('[代理] 连接成功！(出口 IP 获取失败，但代理可用)');
-        }
-        return true;
-    } catch (error) {
-        console.error(`[代理] 连接失败: ${error.message}`);
-        return false;
-    }
-}
-
-function checkPort(port) {
-    return new Promise((resolve) => {
-        const req = http.get(`http://localhost:${port}/json/version`, () => resolve(true));
-        req.on('error', () => resolve(false));
-        req.end();
-    });
-}
-
-async function stopChrome() {
-    if (chromeProcess) {
-        console.log('正在停止 Chrome...');
-        try { process.kill(-chromeProcess.pid); } catch (e) { }
-        chromeProcess = null;
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    // 确保端口关闭
-    for (let i = 0; i < 20; i++) {
-        if (!(await checkPort(DEBUG_PORT))) return;
-        await new Promise(r => setTimeout(r, 1000));
-    }
-}
-
-async function launchChrome(proxyConfig) {
-    console.log('检查 Chrome 是否已在端口 ' + DEBUG_PORT + ' 上运行...');
-    if (await checkPort(DEBUG_PORT)) {
-        console.log('Chrome 已开启，先停止旧实例...');
-        await stopChrome();
-    }
-    const args = [
-        `--remote-debugging-port=${DEBUG_PORT}`,
-        '--remote-debugging-address=127.0.0.1',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-gpu',
-        '--window-size=1440,900',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        `--user-data-dir=${CHROME_USER_DATA}`
-    ];
-    if (proxyConfig) {
-        args.push(`--proxy-server=${proxyConfig.server}`);
-        args.push('--proxy-bypass-list=<-loopback>');
-    }
-    for (let attempt = 1; attempt <= 2; attempt++) {
-        console.log(`正在启动 Chrome (路径: ${CHROME_PATH}, 第 ${attempt} 次)...`);
-        let stderr = '';
-        const chrome = spawn(CHROME_PATH, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
-        chromeProcess = chrome;
-        if (chrome.stderr) chrome.stderr.on('data', d => { stderr += d.toString(); });
-        chrome.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
-        chrome.unref();
-        console.log('正在等待 Chrome 初始化...');
-        for (let i = 0; i < 40; i++) {
-            if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已就绪。'); return; }
-            await new Promise(r => setTimeout(r, 1000));
-        }
-        console.error(`Chrome 第 ${attempt} 次未在端口 ${DEBUG_PORT} 起来。stderr 末尾:\n` + stderr.slice(-800));
-        try { process.kill(-chrome.pid); } catch (e) { }
-        try { fs.rmSync(CHROME_USER_DATA, { recursive: true, force: true }); } catch (e) { }
-        chromeProcess = null;
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    throw new Error('Chrome 启动失败');
-}
-
+// --- 用户配置解析 ---
 function getUsers() {
     try {
         if (process.env.FREEGAMEHOST_USERS_JSON) {
-            // 清除字符串值中的控制字符（如换行符），避免 JSON.parse 失败
             const cleaned = process.env.FREEGAMEHOST_USERS_JSON.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
             const parsed = JSON.parse(cleaned);
             return Array.isArray(parsed) ? parsed : (parsed.users || []);
         }
-    } catch (e) {
-        console.error('解析 FREEGAMEHOST_USERS_JSON 环境变量错误:', e);
-    }
+    } catch (e) { console.error('解析 FREEGAMEHOST_USERS_JSON 错误:', e); }
     return [];
+}
+
+// --- 从 serverUrl 提取 server id (短 id 如 01647891) ---
+function parseServerId(serverUrl) {
+    const m = String(serverUrl || '').match(/\/server\/([A-Za-z0-9]+)/);
+    return m ? m[1] : '';
+}
+
+// --- 页面内: 获取当前 Turnstile token (hidden input + getResponse) ---
+// 在 page.evaluate 上下文中运行
+async function getPageToken(page) {
+    return await page.evaluate(() => {
+        const inp = document.querySelector('input[name="cf-turnstile-response"]');
+        if (inp && inp.value && inp.value.length > 20) return inp.value;
+        if (typeof window.turnstile !== 'undefined') {
+            try {
+                const t = window.turnstile.getResponse();
+                if (t && t.length > 20) return t;
+            } catch (e) { }
+        }
+        return null;
+    }).catch(() => null);
+}
+
+// --- 页面内: 从服务器页提取 uuid (调用 info 接口) ---
+// RenewBox 里显示的短 id (01647891) 对应 pterodactyl uuid; 通过 /api/client/servers/{id} 拿 uuid
+async function getServerUuid(page, serverId) {
+    return await page.evaluate(async (id) => {
+        const r = await fetch(`/api/client/servers/${id}`, { credentials: 'include' });
+        if (!r.ok) return null;
+        const j = await r.json();
+        return (j && j.attributes && j.attributes.uuid) ? j.attributes.uuid : null;
+    }, serverId).catch(() => null);
+}
+
+// --- 页面内: 获取续期前信息 ---
+async function getRenewInfo(page, uuid) {
+    return await page.evaluate(async (u) => {
+        try {
+            const r = await fetch(`/api/client/freeservers/${u}/info`, { credentials: 'include' });
+            if (!r.ok) return null;
+            const j = await r.json();
+            return j.success ? j.data : null;
+        } catch (e) { return null; }
+    }, uuid).catch(() => null);
+}
+
+// --- 页面内: 调用续期 API ---
+async function callRenewApi(page, uuid, token) {
+    return await page.evaluate(async (u, t) => {
+        try {
+            const r = await fetch(`/api/client/freeservers/${u}/renew`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ turnstile_token: t }),
+            });
+            const text = await r.text();
+            let data = null;
+            try { data = JSON.parse(text); } catch (e) { }
+            return { ok: r.ok, status: r.status, data, raw: text.slice(0, 400) };
+        } catch (e) { return { ok: false, status: 0, raw: e.message }; }
+    }, uuid, token).catch(() => ({ ok: false, status: 0, raw: 'evaluate failed' }));
 }
 
 async function gotoWithRetry(page, url, retries = 3) {
     for (let i = 1; i <= retries; i++) {
         try {
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
             return;
         } catch (e) {
             console.warn(`[导航] 打开 ${url} 失败 (第 ${i}/${retries} 次): ${e.message}`);
@@ -460,260 +296,12 @@ async function gotoWithRetry(page, url, retries = 3) {
     }
 }
 
-/**
- * 核心功能：遍历所有 Frames，查找被注入脚本标记的 Turnstile 坐标，
- * 计算绝对屏幕坐标，并使用 CDP 发送原生鼠标点击事件。
- */
-async function attemptTurnstileCdp(page) {
-    const frames = page.frames();
-    for (const frame of frames) {
-        try {
-            const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
-            if (data) {
-                console.log('>> Found Turnstile in frame. Ratios:', data);
-                const iframeElement = await frame.frameElement();
-                if (!iframeElement) continue;
-                const box = await iframeElement.boundingBox();
-                if (!box) continue;
-                const clickX = box.x + (box.width * data.xRatio);
-                const clickY = box.y + (box.height * data.yRatio);
-                console.log(`>> Calculated absolute click coordinates: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
-
-                // 方式1: 在 iframe 内用 evaluate 点击 checkbox（JavaScript 原生 click）
-                await frame.evaluate(() => {
-                    // 遍历 shadow DOM 找 checkbox
-                    const findCb = (root) => {
-                        if (!root) return null;
-                        const cb = root.querySelector('input[type="checkbox"]');
-                        if (cb) return cb;
-                        for (const el of root.querySelectorAll('*')) {
-                            if (el.shadowRoot) {
-                                const found = findCb(el.shadowRoot);
-                                if (found) return found;
-                            }
-                        }
-                        return null;
-                    };
-                    const cb = findCb(document);
-                    if (cb) { cb.click(); return true; }
-                    // 也尝试通过 attachShadow hook 缓存找
-                    if (window.__turnstile_data) {
-                        const all = document.querySelectorAll('*');
-                        for (const el of all) {
-                            if (el.shadowRoot) {
-                                const c = el.shadowRoot.querySelector('input[type="checkbox"]');
-                                if (c) { c.click(); return true; }
-                            }
-                        }
-                    }
-                    return false;
-                }).catch(() => {});
-
-                // 方式2: 用 Playwright mouse.click（比 CDP 更真实的交互）
-                await page.mouse.click(clickX, clickY);
-
-                console.log('>> Turnstile checkbox clicked.');
-                await page.waitForTimeout(1000);
-                return true;
-            }
-        } catch (e) { }
-    }
-    return false;
-}
-
-// --- reCAPTCHA 音频绕过 (移植自 sarperavci/GoogleRecaptchaBypass) ---
-// Python 子进程路径：优先用 python3，回退到 python
-const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
-const RECAPTCHA_SOLVER_PY = path.join(__dirname, 'recaptcha_solver.py');
-
-// 调用 recaptcha_solver.py 识别音频文件，返回识别文本
-async function recognizeAudio(mp3Path) {
-    return new Promise((resolve) => {
-        execFile(PYTHON_BIN, [RECAPTCHA_SOLVER_PY, mp3Path], { timeout: 30000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
-            if (err) {
-                console.warn(`   >> [reCAPTCHA] 语音识别子进程失败: ${err.message}`);
-                if (stderr) console.warn(`   >> [reCAPTCHA] stderr: ${stderr.slice(0, 300)}`);
-                return resolve(null);
-            }
-            const text = (stdout || '').trim();
-            if (!text) {
-                console.warn('   >> [reCAPTCHA] 语音识别返回空结果');
-                return resolve(null);
-            }
-            console.log(`   >> [reCAPTCHA] 识别结果: "${text}"`);
-            resolve(text);
-        });
-    });
-}
-
-// 判断 reCAPTCHA anchor iframe 是否已通过 (checkbox 勾选)
-async function isRecaptchaSolved(page) {
-    for (const frame of page.frames()) {
-        try {
-            const url = frame.url();
-            if (!/recaptcha\/api2\/anchor/i.test(url)) continue;
-            const checked = await frame.evaluate(() => {
-                const el = document.getElementById('recaptcha-anchor');
-                if (!el) return false;
-                return el.getAttribute('aria-checked') === 'true';
-            }).catch(() => false);
-            if (checked) return true;
-        } catch (e) { }
-    }
-    return false;
-}
-
-// 判断是否被 Google 检测为机器人 ("Try again later")
-async function isRecaptchaDetected(page) {
-    for (const frame of page.frames()) {
-        try {
-            const url = frame.url();
-            if (!/recaptcha\/api2\/bframe/i.test(url)) continue;
-            const detected = await frame.evaluate(() => {
-                const all = document.body ? document.body.innerText : '';
-                return /try again later/i.test(all);
-            }).catch(() => false);
-            if (detected) return true;
-        } catch (e) { }
-    }
-    return false;
-}
-
-// 查找 reCAPTCHA anchor iframe 并点击 checkbox
-async function clickRecaptchaCheckbox(page) {
-    for (const frame of page.frames()) {
-        try {
-            const url = frame.url();
-            if (!/recaptcha\/api2\/anchor/i.test(url)) continue;
-            const anchor = await frame.locator('#recaptcha-anchor').first();
-            const visible = await anchor.isVisible().catch(() => false);
-            if (!visible) continue;
-            await anchor.click({ timeout: 5000 }).catch(() => { });
-            console.log('   >> [reCAPTCHA] 已点击 checkbox');
-            return true;
-        } catch (e) { }
-    }
-    return false;
-}
-
-// 切换到音频挑战并下载音频 URL
-async function getAudioChallengeUrl(page) {
-    for (const frame of page.frames()) {
-        try {
-            const url = frame.url();
-            if (!/recaptcha\/api2\/bframe/i.test(url)) continue;
-            const audioBtn = frame.locator('#recaptcha-audio-button').first();
-            const visible = await audioBtn.isVisible({ timeout: 7000 }).catch(() => false);
-            if (!visible) continue;
-            await audioBtn.click({ timeout: 5000 }).catch(() => { });
-            console.log('   >> [reCAPTCHA] 已切换到音频挑战');
-            await page.waitForTimeout(800);
-            // 等待 audio-source 出现
-            const audioSrc = await frame.locator('#audio-source').first().getAttribute('src', { timeout: 10000 }).catch(() => null);
-            if (audioSrc) return { frame, audioSrc };
-        } catch (e) { }
-    }
-    return null;
-}
-
-// 完整的 reCAPTCHA 解决流程 (音频绕过)，返回 true/false
-async function solveRecaptcha(page, maxRetries = 3) {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        console.log(`   >> [reCAPTCHA] 第 ${attempt}/${maxRetries} 次尝试...`);
-
-        // 1. 点击 checkbox
-        const clicked = await clickRecaptchaCheckbox(page);
-        if (!clicked) {
-            console.warn('   >> [reCAPTCHA] 未找到 anchor checkbox，可能不是 reCAPTCHA v2');
-            return false;
-        }
-        await page.waitForTimeout(2000);
-
-        // 2. 检查是否已直接通过
-        if (await isRecaptchaSolved(page)) {
-            console.log('   >> [reCAPTCHA] ✅ 仅点击 checkbox 即通过');
-            return true;
-        }
-
-        // 3. 切换音频挑战
-        const challenge = await getAudioChallengeUrl(page);
-        if (!challenge) {
-            console.warn('   >> [reCAPTCHA] 无法切换到音频挑战');
-            await page.waitForTimeout(1500);
-            continue;
-        }
-
-        // 4. 检查是否被检测为机器人
-        if (await isRecaptchaDetected(page)) {
-            console.warn('   >> [reCAPTCHA] ❌ 被检测为机器人 (Try again later)');
-            return false;
-        }
-
-        // 5. 下载音频到临时文件
-        const tmpFile = path.join(os.tmpdir(), `recaptcha_${Date.now()}.mp3`);
-        let recognized = null;
-        try {
-            const resp = await axios.get(challenge.audioSrc, { responseType: 'arraybuffer', timeout: 20000, proxy: false });
-            fs.writeFileSync(tmpFile, resp.data);
-            console.log(`   >> [reCAPTCHA] 音频已下载 (${resp.data.length} bytes)`);
-
-            // 6. 调用 Python 子进程识别
-            recognized = await recognizeAudio(tmpFile);
-        } catch (e) {
-            console.warn(`   >> [reCAPTCHA] 下载/识别失败: ${e.message}`);
-        } finally {
-            try { fs.unlinkSync(tmpFile); } catch (e) { }
-        }
-
-        if (!recognized) {
-            await page.waitForTimeout(1500);
-            continue;
-        }
-
-        // 7. 填入答案并验证
-        try {
-            const bframe = challenge.frame;
-            const responseInput = bframe.locator('#audio-response').first();
-            await responseInput.waitFor({ state: 'visible', timeout: 5000 });
-            await responseInput.fill(recognized);
-            await page.waitForTimeout(300);
-            await bframe.locator('#recaptcha-verify-button').first().click({ timeout: 5000 });
-            console.log('   >> [reCAPTCHA] 已提交答案，等待验证...');
-            await page.waitForTimeout(2500);
-
-            if (await isRecaptchaSolved(page)) {
-                console.log('   >> [reCAPTCHA] ✅ 验证通过');
-                return true;
-            }
-            console.warn('   >> [reCAPTCHA] 答案错误，重试...');
-        } catch (e) {
-            console.warn(`   >> [reCAPTCHA] 提交答案失败: ${e.message}`);
-        }
-    }
-    return false;
-}
-
-// 检测页面上是否存在 reCAPTCHA (anchor iframe)
-async function hasRecaptcha(page) {
-    try {
-        for (const frame of page.frames()) {
-            if (/recaptcha\/api2\/anchor/i.test(frame.url())) return true;
-        }
-        // 回退：检测页面 DOM 中是否有 g-recaptcha 容器
-        const found = await page.locator('.g-recaptcha, iframe[title*="reCAPTCHA" i]').first().isVisible({ timeout: 1500 }).catch(() => false);
-        return !!found;
-    } catch (e) {
-        return false;
-    }
-}
-
-// 登录单个账号：返回 true/false
+// 登录: 返回 true/false
 async function loginOnce(page, user) {
     await gotoWithRetry(page, LOGIN_URL);
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(2500);
 
-    console.log('输入凭据...');
-    // Pterodactyl 登录页：用户名/邮箱输入框
+    console.log('   >> 输入凭据...');
     const emailInput = page.locator('input[type="text"], input[placeholder*="email" i], input[name="email"]').first();
     await emailInput.waitFor({ state: 'visible', timeout: 15000 });
     await emailInput.fill(user.username);
@@ -721,183 +309,148 @@ async function loginOnce(page, user) {
     await pwdInput.fill(user.password);
     await page.waitForTimeout(500);
 
-    console.log('点击 Login...');
-    const loginBtn = page.getByRole('button', { name: /log\s?in|sign\s?in/i })
-        .or(page.locator('button[type="submit"]'))
-        .first();
+    console.log('   >> 点击 Login...');
+    const loginBtn = page.getByRole('button', { name: /log\s?in|sign\s?in/i }).or(page.locator('button[type="submit"]')).first();
     await loginBtn.click();
 
-    // 等待离开登录页 = 登录成功；期间检测并处理 reCAPTCHA
-    let captchaSolved = false;
+    // Pterodactyl 登录页本身用 Turnstile? 实测登录无 Turnstile (仅续期有)
     for (let s = 0; s < 30; s++) {
         await page.waitForTimeout(1000);
         if (!/\/auth\/login/i.test(page.url())) return true;
         const err = await page.getByText(/invalid|incorrect|wrong|failed|error|not found/i)
             .first().isVisible().catch(() => false);
         if (err) return false;
-
-        // 检测 reCAPTCHA（Google 图片验证）并尝试音频绕过
-        if (!captchaSolved && await hasRecaptcha(page)) {
-            console.log('   >> 检测到 reCAPTCHA，启动音频绕过...');
-            const ok = await solveRecaptcha(page, 3);
-            captchaSolved = true; // 避免重复触发
-            if (ok) {
-                console.log('   >> reCAPTCHA 已通过，等待登录跳转...');
-                await page.waitForTimeout(1500);
-                if (!/\/auth\/login/i.test(page.url())) return true;
-                // 仍停留在登录页，尝试再次点击 Login 提交带 token 的表单
-                try { await loginBtn.click({ timeout: 5000 }); } catch (e) { }
-            } else {
-                console.warn('   >> reCAPTCHA 绕过失败');
-            }
-        }
     }
     return !/\/auth\/login/i.test(page.url());
 }
 
-async function clickRenewButton(page) {
-    // 先检查是否是冷却状态（按钮显示 "XX:XX:XXrenewal cooldown"）
-    const cooldownInfo = await page.evaluate(() => {
-        const btns = document.querySelectorAll('button');
-        for (const b of btns) {
-            const text = (b.textContent || '').replace(/\s+/g, ' ').trim();
-            if (text.includes('renewal cooldown')) {
-                return { found: true, text };
-            }
+// 核心: 点击 Renew +8 Hours → 等 Turnstile 自动出 token → (兜底 turnstile.render) → 调 API
+async function renewServer(page, user, serverId) {
+    // 拿 uuid
+    let uuid = await getServerUuid(page, serverId);
+    if (!uuid) {
+        // 退化: 某些版本 /api/client/servers/{id} 不返回 uuid，尝试从页面 DOM / websocket url 取
+        uuid = await page.evaluate(() => {
+            // RenewBox 里调用的 freeservers API 路径含完整 uuid，监听不到则回退到 serverId
+            const m = (document.body.innerHTML.match(/freeservers\/([0-9a-f-]{36})/) || [])[1];
+            return m || null;
+        }).catch(() => null);
+    }
+    if (!uuid) {
+        console.warn('   >> 未能解析 server uuid，尝试用 serverId 作为 uuid');
+        uuid = serverId;
+    }
+    console.log(`   >> server uuid = ${uuid}`);
+
+    // 续期前信息
+    const before = await getRenewInfo(page, uuid);
+    const beforeExpire = before ? new Date(before.expire).toISOString() : '?';
+    const beforeRemain = before ? `${before.currentRemainingHours}h` : '?';
+    console.log(`   >> 续期前: 到期 ${beforeExpire}, 剩余 ${beforeRemain}, isAtMax=${before ? before.isAtMaxLifetime : '?'}`);
+
+    // 若已达 24h 上限，跳过
+    if (before && before.isAtMaxLifetime) {
+        return { status: 'max', before, msg: `已达 ${before.maxLifetimeHours}h 上限，无需续期` };
+    }
+
+    // 点击 Renew +8 Hours
+    console.log('   >> 查找 Renew +8 Hours 按钮...');
+    const renewBtn = page.getByRole('button', { name: /Renew.*\+8.*Hours/i }).first();
+    const btnVisible = await renewBtn.isVisible({ timeout: 10000 }).catch(() => false);
+    if (!btnVisible) {
+        // 可能冷却中
+        const cooldownBtn = page.locator('button:has-text("renewal cooldown")').first();
+        const cdVisible = await cooldownBtn.isVisible({ timeout: 2000 }).catch(() => false);
+        if (cdVisible) {
+            const cdText = await cooldownBtn.innerText().catch(() => 'cooldown');
+            return { status: 'cooldown', before, msg: `冷却中: ${cdText}` };
         }
-        return { found: false };
-    }).catch(() => ({ found: false }));
-    if (cooldownInfo.found) {
-        console.log(`   >> ⏳ 冷却中: ${cooldownInfo.text}`);
-        return { status: 'cooldown', cooldown: cooldownInfo.text };
+        return { status: 'no_button', before, msg: '未找到续期按钮' };
     }
 
-    // 查找 +8 Hours 续期按钮
-    const renewBtn = page.locator('button').filter({ hasText: /\+8 hours/i }).first();
-    try {
-        await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
-    } catch (e) {
-        console.log('   >> 未找到续期按钮');
-        return { status: 'no_button' };
+    await renewBtn.click();
+    console.log('   >> 已点击 Renew +8 Hours，等待 Turnstile 弹出...');
+    await page.waitForTimeout(1500);
+
+    // 等待 Turnstile 自动通过 (cloakbrowser 下 managed challenge 会自动过)
+    let token = null;
+    console.log('   >> 等待 Turnstile 自动验证 (最多 45s)...');
+    for (let w = 0; w < 15; w++) {
+        token = await getPageToken(page);
+        if (token) {
+            console.log(`   >> ✅ Turnstile 自动验证成功 (≈${w * 3}s)，token 长度 ${token.length}`);
+            break;
+        }
+        await page.waitForTimeout(3000);
     }
 
-    const disabled = await renewBtn.isDisabled().catch(() => false);
-    if (disabled) {
-        console.log('   >> ⏳ +8 Hours 按钮禁用');
-        return { status: 'disabled' };
-    }
-
-    console.log('   >> 点击 +8 Hours 续期...');
-    try { await renewBtn.click({ timeout: 8000 }); } catch (e) { await renewBtn.click({ force: true }); }
-    await page.waitForTimeout(2000);
-
-    // 检测是否弹出 Turnstile 安全验证
-    const hasTurnstileModal = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
-    let turnstileResolved = false;
-
-    if (hasTurnstileModal) {
-        console.log('   >> 检测到 Turnstile 安全验证...');
-
-        // 方式0: 尝试用 window.turnstile.execute() 触发验证
-        try {
-            const tsResult = await page.evaluate(() => {
-                if (window.turnstile && window.turnstile.execute) {
-                    return new Promise((resolve) => {
-                        // 找 turnstile 容器
-                        const containers = document.querySelectorAll('[class*="turnstile"], [id*="turnstile"]');
-                        if (containers.length > 0) {
-                            window.turnstile.execute(containers[0], {
-                                callback: (token) => resolve({ ok: true, token }),
-                                'error-callback': (e) => resolve({ ok: false, error: e })
-                            });
-                        } else {
-                            resolve({ ok: false, error: 'no container' });
-                        }
+    // 兜底 1: 手动 turnstile.render() 触发 (用页面已有的 widget 容器)
+    if (!token) {
+        console.log('   >> 自动验证超时，尝试 turnstile.render()...');
+        token = await page.evaluate(async (sk) => {
+            if (typeof window.turnstile === 'undefined') return null;
+            // 找到 RenewBox 里的 150px 容器
+            let container = document.querySelector('div[style*="width: 150px"]')
+                || document.querySelector('[class*="TurnstileBox"] div div')
+                || document.querySelector('[class*="TurnstileBox"]');
+            if (!container) return null;
+            // 优先用已存在的 widget id 渲染容器(避免重复)
+            const existing = document.querySelector('input[name="cf-turnstile-response"]');
+            if (existing && existing.id) {
+                const wid = existing.id.replace('_response', '');
+                try { window.turnstile.remove(wid); } catch (e) { }
+            }
+            return new Promise((resolve) => {
+                const to = setTimeout(() => resolve(null), 25000);
+                try {
+                    window.turnstile.render(container, {
+                        sitekey: sk,
+                        size: 'compact',
+                        callback: (t) => { clearTimeout(to); resolve(t); },
+                        'error-callback': () => { clearTimeout(to); resolve(null); },
                     });
-                }
-                return { ok: false, error: 'no turnstile api' };
-            }).catch(() => ({ ok: false, error: 'evaluate failed' }));
-            if (tsResult.ok) {
-                console.log('   >> ✅ Turnstile executed successfully via API');
-                turnstileResolved = true;
-            }
-        } catch (e) {
-            console.log('   >> Turnstile API execute failed:', e.message);
-        }
-
-        if (!turnstileResolved) {
-            // 等待 Turnstile 渲染完成——通过 injected script 检测 __turnstile_data
-            let turnstileReady = false;
-            for (let w = 0; w < 30; w++) {
-                for (const f of page.frames()) {
-                    try {
-                        const data = await f.evaluate(() => window.__turnstile_data).catch(() => null);
-                        if (data && data.xRatio && data.yRatio) {
-                            turnstileReady = true;
-                            break;
-                        }
-                    } catch (e) { }
-                }
-                if (turnstileReady) break;
-                await page.waitForTimeout(1000);
-            }
-
-            if (turnstileReady) {
-                console.log('   >> Turnstile 已就绪，尝试点击 checkbox...');
-
-                for (let attempt = 0; attempt < 10; attempt++) {
-                    await attemptTurnstileCdp(page);
-
-                    await page.waitForTimeout(2000);
-
-                    const stillThere = await page.locator('text=Complete security check').first().isVisible().catch(() => false);
-                    if (!stillThere) {
-                        console.log('   >> ✅ Turnstile 已通过');
-                        turnstileResolved = true;
-                        break;
-                    }
-                    console.log(`   >> 尝试 ${attempt + 1}/10，验证框仍在`);
-                }
-            } else {
-                console.log('   >> ⚠️ Turnstile 未能在 30 秒内就绪');
-                // 即使超时也尝试点击 Cancel 恢复页面状态
-                await page.evaluate(() => {
-                    const btns = document.querySelectorAll('button');
-                    for (const b of btns) {
-                        if (b.textContent.includes('Cancel')) { b.click(); break; }
-                    }
-                }).catch(() => {});
-            }
-        }
-
-        if (!turnstileResolved) {
-            console.log('   >> ⚠️ Turnstile 验证未通过，续期可能未生效');
-        } else {
-            console.log('   >> ✅ Turnstile 通过，续期完成');
-        }
+                } catch (e) { clearTimeout(to); resolve(null); }
+            });
+        }, TURNSTILE_SITEKEY).catch(() => null);
+        if (token) console.log('   >> ✅ turnstile.render() 获取到 token');
+        else console.log('   >> ⚠️ turnstile.render() 未获取到 token');
     }
 
-    await page.waitForTimeout(3000);
+    // 兜底 2: 直接用 window.turnstile.execute()
+    if (!token) {
+        console.log('   >> 尝试 turnstile.execute()...');
+        token = await page.evaluate(() => {
+            return new Promise((resolve) => {
+                if (typeof window.turnstile === 'undefined' || !window.turnstile.execute) return resolve(null);
+                const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                const wid = inp && inp.id ? inp.id.replace('_response', '') : null;
+                try {
+                    window.turnstile.execute(wid, {
+                        callback: (t) => resolve(t),
+                        'error-callback': () => resolve(null),
+                    });
+                } catch (e) { resolve(null); }
+                setTimeout(() => resolve(null), 15000);
+            });
+        }).catch(() => null);
+        if (token) console.log('   >> ✅ turnstile.execute() 获取到 token');
+    }
 
-    // 获取续期后的到期时间 (仅用于日志)
-    const expiryText = await page.evaluate(() => {
-        const allEls = document.querySelectorAll('div, span, p, section');
-        for (const el of allEls) {
-            const text = (el.textContent || '').trim();
-            if (/^\d{1,2}:\d{2}:\d{2}$/.test(text) && !text.includes('renewal')) return text;
-        }
-        for (const el of allEls) {
-            const text = (el.textContent || '').trim();
-            if (text === 'Time remaining' && el.nextElementSibling) {
-                const val = (el.nextElementSibling.textContent || '').trim();
-                if (/^\d{1,2}:\d{2}:\d{2}$/.test(val)) return val;
-            }
-        }
-        return '';
-    }).catch(() => '');
-    if (expiryText) console.log(`   >> 续期后到期: ${expiryText}`);
+    if (!token) {
+        return { status: 'turnstile_fail', before, msg: 'Turnstile 验证未通过 (无 token)' };
+    }
 
-    return { status: 'clicked' };
+    // 调用续期 API
+    console.log('   >> 调用 POST /api/client/freeservers/{uuid}/renew...');
+    const result = await callRenewApi(page, uuid, token);
+    console.log(`   >> API 响应: status=${result.status} ok=${result.ok} raw=${(result.raw || '').slice(0, 200)}`);
+
+    if (result.ok) {
+        // 取续期后信息
+        const after = await getRenewInfo(page, uuid);
+        return { status: 'renewed', before, after, msg: '续期成功 (+8h)', apiRaw: result.raw };
+    }
+    return { status: 'api_fail', before, msg: `续期 API 失败: ${result.status} ${result.raw || ''}` };
 }
 
 (async () => {
@@ -910,193 +463,124 @@ async function clickRenewButton(page) {
     const photoDir = path.join(process.cwd(), 'screenshots');
     if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
 
-    // 先解析全局代理是否可用（用于没有 V2 链接的用户）
-    if (PROXY_CONFIG) {
-        const ok = await checkProxy();
-        if (!ok) {
-            console.error('[代理] 全局代理无效，降级直连。');
-            PROXY_CONFIG = null;
-            process.env.HTTP_PROXY = '';
-        }
+    console.log(`[CloakBrowser] 模块加载中...`);
+    const cloak = await import('cloakbrowser');
+    const launch = cloak.launch || cloak.launchPersistentContext || cloak.default?.launch;
+    if (!launch) {
+        console.error('[CloakBrowser] 未找到 launch 方法，请检查 cloakbrowser 版本');
+        process.exit(1);
     }
-
-    let lastProxyConfig = undefined;
 
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
         const safeUser = user.username.replace(/[^a-z0-9]/gi, '_');
-        console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`);
+        console.log(`\n=== 用户 ${i + 1}/${users.length}: ${user.username} ===`);
 
-        // 解析该用户的代理（支持独立 V2 链接）
-        let { config: proxyConfig, label: proxyLabel } = await resolveUserProxy(user);
-        console.log(`   >> 使用代理: ${proxyLabel}`);
-
-        // 代理配置变化时重启 Chrome
-        let proxyChanged = JSON.stringify(proxyConfig) !== JSON.stringify(lastProxyConfig);
-        if (proxyChanged) {
-            await stopChrome();
-            // per-user V2 代理验证失败时，降级到全局代理/直连，而非跳过用户
-            if (proxyConfig) {
-                let ok = await checkProxy(proxyConfig);
-                if (!ok && (user.V2 || user.v2)) {
-                    console.warn('[代理] 用户专属 V2 代理无效，降级到全局代理/直连...');
-                    cleanupV2ray(v2rayProcs);
-                    ({ config: proxyConfig, label: proxyLabel } = await resolveUserProxy(user, true));
-                    console.log(`   >> 降级后使用代理: ${proxyLabel}`);
-                    ok = proxyConfig ? await checkProxy(proxyConfig) : true;
-                }
-                if (!ok) {
-                    console.error('[代理] 代理无效，跳过该用户。');
-                    await sendTelegramMessage(`❌ *代理无效*\n用户: ${user.username}\n代理: ${proxyLabel}`);
-                    continue;
-                }
-            }
-            await launchChrome(proxyConfig);
-            lastProxyConfig = proxyConfig;
+        if (!user.serverUrl) {
+            console.warn('   >> 未配置 serverUrl，跳过');
+            continue;
         }
+        const serverId = parseServerId(user.serverUrl);
+        console.log(`   >> serverId = ${serverId}`);
 
-        console.log('正在连接 Chrome...');
+        // 解析代理
+        const { url: proxyUrl, label: proxyLabel } = await resolveUserProxy(user);
+        console.log(`   >> 代理: ${proxyLabel}`);
+
+        // 启动 cloakbrowser (每用户独立 context，避免 cookie/代理串台)
+        const launchOpts = { headless: true, humanize: true };
+        if (proxyUrl) launchOpts.proxy = proxyUrl;
         let browser;
-        for (let k = 0; k < 5; k++) {
-            try {
-                browser = await chromium.connectOverCDP(`http://localhost:${DEBUG_PORT}`);
-                console.log('连接成功！');
-                break;
-            } catch (e) {
-                console.log(`连接尝试 ${k + 1} 失败。2秒后重试...`);
-                await new Promise(r => setTimeout(r, 2000));
-            }
+        try {
+            console.log('[CloakBrowser] 启动中...');
+            browser = await launch(launchOpts);
+            console.log('[CloakBrowser] 启动成功');
+        } catch (e) {
+            console.error('[CloakBrowser] 启动失败:', e.message);
+            cleanupV2ray(v2rayProcs);
+            continue;
         }
-        if (!browser) { console.error('连接失败，跳过该用户。'); continue; }
 
-        const context = browser.contexts()[0];
-        let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
+        const context = browser.contexts ? browser.contexts()[0] : (browser._contexts && browser._contexts[0]);
+        const page = await browser.newPage();
         page.setDefaultTimeout(60000);
 
-        // 注入 Turnstile Hook 脚本
-        await page.addInitScript(INJECTED_SCRIPT);
-
-        if (proxyConfig && proxyConfig.username) {
-            await context.setHTTPCredentials({ username: proxyConfig.username, password: proxyConfig.password });
-        } else {
-            await context.setHTTPCredentials(null);
-        }
-
-        const cookieKey = `freegamehost_cookie_${safeUser}`;
         try {
-            if (page.isClosed()) {
-                page = await context.newPage();
-                await page.addInitScript(INJECTED_SCRIPT);
-            }
-            try { await context.clearCookies(); } catch (e) { }
-
-            // 1. 先注入 KV 里的 cookie，尝试免登录
+            // 1. KV cookie 免登录
+            const cookieKey = `freegamehost_cookie_${safeUser}`;
+            let loggedIn = false;
             const saved = await kvGet(cookieKey);
             if (saved) {
                 try {
                     const cks = normalizeCookies(JSON.parse(saved));
-                    if (cks.length) { await context.addCookies(cks); console.log(`   >> 已注入 KV cookie (${cks.length} 条)`); }
+                    if (cks.length) {
+                        try { await context.clearCookies(); } catch (e) { }
+                        await context.addCookies(cks);
+                        console.log(`   >> 已注入 KV cookie (${cks.length} 条)`);
+                    }
                 } catch (e) { console.warn('   >> cookie 解析失败:', e.message); }
-            }
-
-            // 2. 用 cookie 直接打开面板，判断 cookie 是否有效
-            let loggedIn = false;
-            if (saved) {
-                await gotoWithRetry(page, 'https://panel.freegamehost.xyz/');
+                await gotoWithRetry(page, BASE_URL + '/');
                 await page.waitForTimeout(2500);
                 loggedIn = !/\/auth\/login/i.test(page.url());
-                console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (当前: ${page.url()})`);
+                console.log(`   >> cookie ${loggedIn ? '有效，免登录' : '无效/已过期'} (url: ${page.url()})`);
             }
 
-            // 3. cookie 失效 → 完整登录 → 存新 cookie
+            // 2. cookie 失效 → 登录
             if (!loggedIn) {
                 loggedIn = await loginOnce(page, user);
                 if (!loggedIn) {
                     const shot = path.join(photoDir, `freegamehost_${safeUser}_loginfail.png`);
                     try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                    console.log(`   >> ❌ 登录失败，停留在: ${page.url()}`);
-                    await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n停留在: ${page.url()}`, shot);
-                    console.log('用户处理完成');
-                    await browser.close();
+                    console.log('   >> ❌ 登录失败，停留在: ' + page.url());
+                    await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n停留: ${page.url()}`, shot);
                     continue;
                 }
-                console.log(`   >> ✅ 登录成功: ${page.url()}`);
-                // 保存新 cookie 到 KV
+                console.log('   >> ✅ 登录成功: ' + page.url());
+                // 保存 cookie
                 try {
                     const cookies = await context.cookies();
                     await kvPut(cookieKey, JSON.stringify(cookies));
                 } catch (e) { console.warn('   >> 保存 cookie 失败:', e.message); }
             }
 
-            if (!user.serverUrl) {
-                const shot = path.join(photoDir, `freegamehost_${safeUser}.png`);
-                try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
-                await sendTelegramMessage(`✅ *登录成功*\n用户: ${user.username}\n(未配置 serverUrl，跳过续期)`, shot);
-                console.log('用户处理完成');
-                await browser.close();
-                continue;
-            }
-
-            // 打开服务器页并点 +8 Hours 续期
-            console.log(`打开续费页: ${user.serverUrl}`);
+            // 3. 打开服务器页 → 续期
+            console.log('   >> 打开服务器页: ' + user.serverUrl);
             await gotoWithRetry(page, user.serverUrl);
             await page.waitForTimeout(3000);
 
-            // 获取续期前的到期时间
-            const beforeExpiry = await page.evaluate(() => {
-                // 先找匹配 HH:MM:SS 格式的纯时间文本（最精确）
-                const allEls = document.querySelectorAll('div, span, p, section');
-                for (const el of allEls) {
-                    const text = (el.textContent || '').trim();
-                    if (/^\d{1,2}:\d{2}:\d{2}$/.test(text) && !text.includes('renewal')) return text;
-                }
-                // 回退：找 "Time remaining" 的下一个兄弟元素，并验证是时间格式
-                for (const el of allEls) {
-                    const text = (el.textContent || '').trim();
-                    if (text === 'Time remaining' && el.nextElementSibling) {
-                        const val = (el.nextElementSibling.textContent || '').trim();
-                        if (/^\d{1,2}:\d{2}:\d{2}$/.test(val)) return val;
-                    }
-                }
-                return '';
-            }).catch(() => '');
-            console.log(`   >> 续期前到期: ${beforeExpiry || '?'}`);
-
-            const result = await clickRenewButton(page);
-
+            const result = await renewServer(page, user, serverId);
             const shot = path.join(photoDir, `freegamehost_${safeUser}_renew.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
 
-            if (result.status === 'no_button') {
-                await sendTelegramMessage(`⚠️ *未找到续期按钮*\n用户: ${user.username}\n到期: ${beforeExpiry || '?'}\n详见截图`, shot);
+            // 4. 通知
+            const beforeRemain = result.before ? `${result.before.currentRemainingHours}h` : '?';
+            const afterRemain = result.after ? `${result.after.currentRemainingHours}h` : '?';
+            if (result.status === 'renewed') {
+                console.log(`   >> ✅ 续期成功 (${beforeRemain} → ${afterRemain})`);
+                await sendTelegramMessage(
+                    `✅ *续期成功 (+8h)*\n用户: ${user.username}\n服务器: ${serverId}\n剩余: ${beforeRemain} → ${afterRemain}`, shot);
+            } else if (result.status === 'max') {
+                console.log(`   >> ⏳ 已达上限 (${beforeRemain})`);
+                await sendTelegramMessage(`⏳ *已达 24h 上限*\n用户: ${user.username}\n剩余: ${beforeRemain}`, shot);
             } else if (result.status === 'cooldown') {
-                console.log(`   >> ⏳ 冷却中: ${result.cooldown}`);
-                console.log(`   >> 服务器剩余时间: ${beforeExpiry || '?'}`);
-                await sendTelegramMessage(
-                    `⏳ *冷却中，暂不可续期*\n用户: ${user.username}\n`
-                    + `冷却: ${result.cooldown}\n`
-                    + `服务器到期: ${beforeExpiry || '?'}`, shot);
-            } else if (result.status === 'disabled') {
-                console.log('   >> ⏳ +8 Hours 按钮禁用。');
-                await sendTelegramMessage(`⏳ *续期按钮禁用*\n用户: ${user.username}\n到期: ${beforeExpiry || '?'}`, shot);
-            } else if (result.status === 'clicked') {
-                console.log('   >> ✅ 已点击续期。');
-                await sendTelegramMessage(
-                    `✅ *续期操作已完成*\n用户: ${user.username}\n`
-                    + `到期: ${beforeExpiry || '?'}`, shot);
+                console.log('   >> ⏳ ' + result.msg);
+                await sendTelegramMessage(`⏳ *冷却中*\n用户: ${user.username}\n${result.msg}\n剩余: ${beforeRemain}`, shot);
+            } else {
+                console.log(`   >> ⚠️ ${result.status}: ${result.msg}`);
+                await sendTelegramMessage(`⚠️ *${result.status}*\n用户: ${user.username}\n${result.msg}\n剩余: ${beforeRemain}`, shot);
             }
         } catch (err) {
             console.error('处理用户出错:', err.message);
             const shot = path.join(photoDir, `freegamehost_${safeUser}_error.png`);
             try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) { }
             await sendTelegramMessage(`❌ *处理异常*\n用户: ${user.username}\n错误: ${err.message}`, shot);
+        } finally {
+            try { await browser.close(); } catch (e) { }
+            cleanupV2ray(v2rayProcs);
         }
-        console.log('用户处理完成');
-        await browser.close();
     }
 
     cleanupV2ray();
-    await stopChrome();
-    console.log('完成。');
+    console.log('\n完成。');
     process.exit(0);
 })();
