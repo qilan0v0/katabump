@@ -429,8 +429,9 @@ async function solveAltcha(page, scope) {
     return false;
 }
 
-// 自定义"我不是机器人"复选框 (如 aclclouds: <div class="auth-captcha-inner" role="checkbox">)。
-// 不是第三方验证码，点一下让 aria-checked 变 true 即可。点击偶发不生效，所以多次重试直到勾上。
+// 自定义"我不是机器人"复选框 + 图形挑战 (aclclouds: <div class="auth-captcha-inner" role="checkbox">)。
+// 点击复选框后可能出现图形验证码挑战（从多个选项中点击匹配目标文字的那一个），
+// 通过后 aria-checked 才变 true。参考 https://github.com/cuooc/Auto-Renew-AclClouds
 async function clickSimpleCaptcha(page, scope) {
     const root = (scope || page);
     const box = root.locator('.auth-captcha-inner, .auth-captcha-box [role="checkbox"]').first();
@@ -444,21 +445,149 @@ async function clickSimpleCaptcha(page, scope) {
         console.log('   >> 自定义验证码已勾选');
         return true;
     }
-    await page.waitForTimeout(800); // 等验证码 JS 把点击处理器挂上
-    for (let attempt = 1; attempt <= 5; attempt++) {
-        console.log(`   >> 点击自定义验证码 (第 ${attempt}/5 次)...`);
-        // 既点内框也点复选标记，提高命中率
-        try { await box.click({ timeout: 4000 }); } catch (e) {
-            try { await box.click({ force: true }); } catch (e2) { }
+
+    // ---- 辅助：获取图形挑战元素 ----
+    const getChallenge = async () => {
+        for (const sel of ['.auth-captcha-challenge', '.auth-capcha-challenge',
+            'div[class*="captcha"]:not(.auth-captcha-inner):not(.auth-captcha-box)',
+            ':scope div[class*="captcha"]']) {
+            const el = root.locator(sel).first();
+            if (await el.isVisible().catch(() => false)) return el;
         }
-        for (let i = 0; i < 6; i++) {
-            await page.waitForTimeout(500);
+        return null;
+    };
+
+    // ---- 辅助：获取选项列表 ----
+    const getOptions = async (challenge) => {
+        for (const sel of ['.auth-captcha-option', '.auth-capcha-option', 'button', 'a', '[role="button"]']) {
+            const opts = challenge.locator(sel);
+            const count = await opts.count().catch(() => 0);
+            if (count > 1) return opts;
+        }
+        return null;
+    };
+
+    // ---- 辅助：获取提示目标文字 ----
+    const getTargetText = async (challenge) => {
+        for (const sel of ['.auth-captcha-prompt strong', '.auth-capcha-prompt strong', '[class*="prompt"] strong', '[class*="prompt"] b']) {
+            const el = challenge.locator(sel).first();
+            const txt = await el.innerText().catch(() => '');
+            if (txt.trim()) return txt.trim();
+        }
+        // 也尝试 aria-label
+        const label = await challenge.getAttribute('aria-label').catch(() => '');
+        if (label) {
+            const m = label.match(/Click on\s+(.+)/i);
+            if (m) return m[1].trim();
+        }
+        return '';
+    };
+
+    // ---- 辅助：获取选项文字 ----
+    const getOptionText = async (opt) => {
+        let txt = (await opt.innerText().catch(() => '')).trim();
+        if (!txt) {
+            const img = opt.locator('img').first();
+            txt = (await img.getAttribute('alt').catch(() => '')).trim();
+        }
+        if (!txt) {
+            txt = (await opt.getAttribute('aria-label').catch(() => '')).trim();
+        }
+        return txt;
+    };
+
+    // ---- 点击复选框（第 1 次）----
+    await page.waitForTimeout(800);
+    console.log('   >> 点击自定义验证码...');
+    try { await box.click({ timeout: 4000 }); } catch (e) {
+        try { await box.click({ force: true }); } catch (e2) { }
+    }
+
+    // ---- 等待挑战出现或复选框已勾选 ----
+    let challenge;
+    for (let w = 0; w < 15; w++) {
+        await page.waitForTimeout(500);
+        if (await isChecked()) {
+            console.log('   >> ✅ 自定义验证码已勾选（无挑战）');
+            return true;
+        }
+        challenge = await getChallenge();
+        if (challenge) break;
+    }
+
+    // ---- 处理图形挑战 ----
+    if (challenge) {
+        console.log('   >> 检测到图形验证码挑战，开始处理...');
+        for (let round = 0; round < 10; round++) {
+            // 每次循环重新获取当前挑战
+            challenge = await getChallenge();
+            if (!challenge) {
+                // 挑战已消失，检查是否已勾选
+                if (await isChecked()) {
+                    console.log('   >> ✅ 挑战完成，验证码已勾选');
+                    return true;
+                }
+                await page.waitForTimeout(500);
+                continue;
+            }
+
+            const target = await getTargetText(challenge);
+            const opts = await getOptions(challenge);
+            if (!opts) {
+                console.log('   >> ⚠️ 未找到挑战选项，等待...');
+                await page.waitForTimeout(800);
+                continue;
+            }
+
+            console.log(`   >> 挑战目标: "${target}"，选项数: ${await opts.count()}`);
+
+            // 找匹配的选项
+            let matchedOpt = null;
+            const count = await opts.count();
+            for (let i = 0; i < count; i++) {
+                const opt = opts.nth(i);
+                const optText = await getOptionText(opt);
+                if (target && optText.toLowerCase().includes(target.toLowerCase())) {
+                    matchedOpt = opt;
+                    break;
+                }
+            }
+
+            // 如果没找到匹配，点第一个
+            const pick = matchedOpt || opts.first();
+            const pickText = await getOptionText(pick);
+            console.log(`   >> ${matchedOpt ? '匹配' : '默认'}选项: "${pickText}"`);
+            try { await pick.click({ timeout: 3000 }); } catch (e) {
+                try { await pick.click({ force: true }); } catch (e2) { }
+            }
+
+            await page.waitForTimeout(800);
+
             if (await isChecked()) {
-                console.log('   >> ✅ 自定义验证码已勾选');
+                console.log('   >> ✅ 验证码挑战通过');
                 return true;
             }
         }
+        console.log('   >> ⚠️ 图形挑战多次尝试未通过');
     }
+
+    // ---- 后备：旧版逻辑（多次点击复选框）----
+    if (!(await isChecked())) {
+        for (let attempt = 2; attempt <= 5; attempt++) {
+            console.log(`   >> 点击自定义验证码 (第 ${attempt}/5 次)...`);
+            try { await box.click({ timeout: 4000 }); } catch (e) {
+                try { await box.click({ force: true }); } catch (e2) { }
+            }
+            for (let i = 0; i < 6; i++) {
+                await page.waitForTimeout(500);
+                if (await isChecked()) {
+                    console.log('   >> ✅ 自定义验证码已勾选');
+                    return true;
+                }
+            }
+        }
+    }
+
     console.log('   >> ⚠️ 自定义验证码多次点击仍未勾选');
     return false;
 }
@@ -807,15 +936,14 @@ async function goToServerPage(page, user) {
                             const antiBotDialog = page.getByRole('dialog').filter({ hasText: /Anti-bot confirmation/i }).first();
                             await antiBotDialog.waitFor({ state: 'visible', timeout: 5000 });
                             console.log('   >> 检测到 Anti-bot 验证弹窗，正在处理验证码...');
-                            // 先试自定义复选框 (aclclouds)，再试 ALTCHA (katabump，备用)
-                            const simpleOk = await clickSimpleCaptcha(page, antiBotDialog);
-                            const captchaOk = simpleOk || await solveAltcha(page, antiBotDialog);
+                            // 处理自定义复选框 + 可能出现的图形挑战 (clickSimpleCaptcha 已内置完整流程)
+                            const captchaOk = await clickSimpleCaptcha(page, antiBotDialog);
                             if (captchaOk) {
                                 console.log('   >> ✅ Anti-bot 验证通过，等待续期完成...');
                                 // 勾选后弹窗会自动关闭并执行续期
                                 await antiBotDialog.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
                             } else {
-                                console.log('   >> ⚠️ Anti-bot 验证码均未通过，继续等待结果...');
+                                console.log('   >> ⚠️ Anti-bot 验证码未通过，继续等待结果...');
                             }
                         } catch (e) {
                             console.log('   >> 未检测到 Anti-bot 验证弹窗，或弹窗已自行消失');
