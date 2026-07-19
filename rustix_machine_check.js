@@ -248,11 +248,25 @@ async function processUser(user) {
             console.log('       - ' + servers[si].name + ' [' + st + ']');
         }
 
-        // Step 3: 检测离线服务器并开机
+        // Step 3: 检测离线服务器并开机（用 resources 接口获取真实状态）
+        console.log('   >> [检测] 检查服务器真实状态...');
         var offlineServers = [];
         for (var si = 0; si < servers.length; si++) {
-            if (!servers[si].status || servers[si].status === null || servers[si].status === 'off') {
-                offlineServers.push(servers[si]);
+            var srv = servers[si];
+            // 用 resources 接口获取真实 current_state
+            var realState = await page.evaluate(async function(id) {
+                try {
+                    var r = await fetch('https://my.rustix.me/api/client/servers/' + id + '/resources', {
+                        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                        credentials: 'include',
+                    });
+                    var d = await r.json();
+                    return d.attributes ? d.attributes.current_state : null;
+                } catch (e) { return null; }
+            }, srv.identifier);
+            console.log('       - ' + srv.name + ' [API status: ' + (srv.status || 'null') + ', real: ' + (realState || 'null') + ']');
+            if (realState === 'offline' || (!realState && srv.status === null)) {
+                offlineServers.push(srv);
             }
         }
 
