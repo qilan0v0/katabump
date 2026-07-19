@@ -248,21 +248,63 @@ class ApiClient {
         return resp;
     }
 
-    // 登录：先尝试直接 POST，失败再获取 XSRF token
+    // 登录：先 GET 获取 session cookie，再 POST 登录
     async login(username, password) {
-        // 尝试直接 POST 登录（如果 CSRF 保护已排除此端点）
-        console.log('   >> [登录] 尝试直接 POST 登录...');
-        const directResp = await this.post(MY_RUSTIX_URL + '/auth/login', {
+        // 1. GET 登录页获取 session cookie + XSRF token
+        console.log('   >> [登录] 获取 session cookie 和 XSRF token...');
+        const loginPageResp = await this.ax.get(MY_RUSTIX_URL + '/auth/login', {
+            headers: { Cookie: this._cookieHeader() },
+            validateStatus: () => true,
+            maxRedirects: 0,
+            responseType: 'text',
+        });
+        this._parseCookies(loginPageResp.headers['set-cookie']);
+
+        // 如果被重定向到主页（已有 session），直接返回成功
+        if (loginPageResp.status === 302) {
+            console.log('   >> [登录] ✅ 已有有效 session');
+            return true;
+        }
+
+        // 尝试从 meta 标签提取 XSRF token
+        if (!this.xsrfToken && typeof loginPageResp.data === 'string') {
+            const match = loginPageResp.data.match(/<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i);
+            if (match && match[1]) {
+                this.xsrfToken = match[1];
+                console.log('   >> [登录] ✅ 从 meta 标签获取到 XSRF token');
+            }
+        }
+        // 兜底：从 cookie 解码
+        if (!this.xsrfToken) {
+            const rawCookie = this.cookies['XSRF-TOKEN'];
+            if (rawCookie) {
+                try {
+                    this.xsrfToken = decodeURIComponent(rawCookie);
+                    console.log('   >> [登录] ✅ 从 cookie 解码获取到 XSRF token');
+                } catch (e) {
+                    this.xsrfToken = rawCookie;
+                }
+            }
+        }
+
+        // 检查关键 cookie 是否已获取
+        const hasSession = !!this.cookies['my_rustix_session'];
+        console.log('   >> [登录] session cookie: ' + (hasSession ? '已获取' : '未获取'));
+        console.log('   >> [登录] XSRF token: ' + (this.xsrfToken ? '已获取' : '未获取'));
+
+        // 2. POST 登录（即使没有 XSRF token 也尝试）
+        console.log('   >> [登录] 提交登录...');
+        const loginResp = await this.post(MY_RUSTIX_URL + '/auth/login', {
             user: username,
             password: password,
             'g-recaptcha-response': '',
         });
 
-        // 200 = 成功（空响应体），302 = 重定向到主页（成功）
-        if (directResp.status === 200 || directResp.status === 302) {
-            console.log('   >> [登录] ✅ 直接 POST 登录成功');
-            if (directResp.status === 302) {
-                const loc = directResp.headers['location'];
+        // 200 = 成功，302 = 重定向到主页（成功）
+        if (loginResp.status === 200 || loginResp.status === 302) {
+            console.log('   >> [登录] ✅ 登录成功');
+            if (loginResp.status === 302) {
+                const loc = loginResp.headers['location'];
                 if (loc) {
                     try {
                         await this.ax.get(loc, {
@@ -273,74 +315,42 @@ class ApiClient {
                     } catch (e) { }
                 }
             }
-            return true;
-        }
-
-        // 419 = CSRF token mismatch → 需要获取 XSRF token 重试
-        if (directResp.status === 419) {
-            console.log('   >> [登录] 需要 XSRF token，获取中...');
-            const loginPageResp = await this.ax.get(MY_RUSTIX_URL + '/auth/login', {
+            // 验证 session：尝试获取服务器列表
+            const testResp = await this.get(MY_RUSTIX_URL + '/api/client?page=1');
+            if (testResp.status === 200 && testResp.data && testResp.data.data) {
+                console.log('   >> [登录] ✅ session 有效，可访问 API');
+                return true;
+            }
+            // 如果 API 返回非 JSON（HTML），说明 session 未建立
+            // 尝试再次 GET 主页获取 session
+            console.log('   >> [登录] API 验证未通过，尝试重新获取 session...');
+            await this.ax.get(MY_RUSTIX_URL + '/', {
                 headers: { Cookie: this._cookieHeader() },
                 validateStatus: () => true,
                 maxRedirects: 0,
-                responseType: 'text',
             });
-            this._parseCookies(loginPageResp.headers['set-cookie']);
-
-            // 尝试从 meta 标签提取
-            if (!this.xsrfToken && typeof loginPageResp.data === 'string') {
-                const match = loginPageResp.data.match(/<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i);
-                if (match && match[1]) {
-                    this.xsrfToken = match[1];
-                    console.log('   >> [登录] ✅ 从 meta 标签获取到 XSRF token');
-                }
-            }
-            // 兜底：从 cookie 解码
-            if (!this.xsrfToken) {
-                const rawCookie = this.cookies['XSRF-TOKEN'];
-                if (rawCookie) {
-                    try {
-                        this.xsrfToken = decodeURIComponent(rawCookie);
-                        console.log('   >> [登录] ✅ 从 cookie 解码获取到 XSRF token');
-                    } catch (e) {
-                        this.xsrfToken = rawCookie;
-                    }
-                }
-            }
-
-            if (!this.xsrfToken) {
-                throw new Error('无法获取 XSRF token');
-            }
-            console.log('   >> [登录] XSRF token 已获取，带 token 重试登录...');
-
-            const retryResp = await this.post(MY_RUSTIX_URL + '/auth/login', {
-                user: username,
-                password: password,
-                'g-recaptcha-response': '',
-            });
-
-            if (retryResp.status === 200 || retryResp.status === 302) {
-                console.log('   >> [登录] ✅ 带 XSRF token 登录成功');
-                if (retryResp.status === 302) {
-                    const loc = retryResp.headers['location'];
-                    if (loc) {
-                        try {
-                            await this.ax.get(loc, {
-                                headers: { Cookie: this._cookieHeader() },
-                                validateStatus: () => true,
-                                maxRedirects: 0,
-                            });
-                        } catch (e) { }
-                    }
-                }
+            // 再次尝试 API
+            const retryResp = await this.get(MY_RUSTIX_URL + '/api/client?page=1');
+            if (retryResp.status === 200 && retryResp.data && retryResp.data.data) {
+                console.log('   >> [登录] ✅ session 已建立');
                 return true;
             }
-            console.error('   >> [登录] 带 XSRF token 登录仍失败: ' + retryResp.status);
+            // 如果还是不行，返回 true 但后续会尝试 Playwright 兜底
+            console.warn('   >> [登录] 登录成功但 API 仍不可用，将尝试浏览器兜底');
+            return false;
+        }
+
+        // 419 = CSRF token mismatch
+        if (loginResp.status === 419) {
+            console.error('   >> [登录] CSRF token 不匹配');
+            if (!this.xsrfToken) {
+                console.error('   >> [登录] 无法获取 XSRF token，需要浏览器登录');
+            }
             return false;
         }
 
         // 其他错误
-        console.error('   >> [登录] 登录失败: ' + directResp.status + ' ' + (directResp.data && directResp.data.error ? directResp.data.error : ''));
+        console.error('   >> [登录] 登录失败: ' + loginResp.status);
         return false;
     }
 
