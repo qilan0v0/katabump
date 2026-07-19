@@ -246,21 +246,51 @@ class ApiClient {
     // 登录：获取 XSRF token → POST 登录
     async login(username, password) {
         console.log('   >> [登录] 获取 XSRF token...');
-        // 1. GET 登录页获取 XSRF-TOKEN cookie
+        // 1. GET 登录页获取 XSRF-TOKEN cookie 或 meta csrf-token
         const loginPageResp = await this.ax.get(MY_RUSTIX_URL + '/auth/login', {
             headers: { Cookie: this._cookieHeader() },
             validateStatus: () => true,
             maxRedirects: 0,
+            responseType: 'text', // 确保 HTML 作为字符串返回
         });
         this._parseCookies(loginPageResp.headers['set-cookie']);
 
+        // 如果 GET 被重定向到主页（已登录），直接返回成功
+        if (loginPageResp.status === 302 || loginPageResp.status === 301) {
+            const loc = loginPageResp.headers['location'] || '';
+            if (loc === MY_RUSTIX_URL + '/' || !loc.includes('/auth/login')) {
+                console.log('   >> [登录] 已有有效 session (重定向到主页)');
+                return true;
+            }
+        }
+
+        // 尝试从 meta 标签提取 XSRF token
+        if (!this.xsrfToken && typeof loginPageResp.data === 'string') {
+            console.log('   >> [登录] 尝试从 HTML meta 标签提取 XSRF token...');
+            const match = loginPageResp.data.match(/<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i);
+            if (match && match[1]) {
+                this.xsrfToken = match[1];
+                console.log('   >> [登录] ✅ 从 meta 标签获取到 XSRF token');
+            }
+        }
+
+        // 兜底：从 raw cookie 解码
         if (!this.xsrfToken) {
-            // 尝试从响应体提取 XSRF token
-            console.warn('   >> [登录] 未从 cookie 获取到 XSRF-TOKEN，尝试从页面提取...');
-            // 有些 Laravel 应用将 token 放在 meta 标签中
+            const rawCookie = this.cookies['XSRF-TOKEN'];
+            if (rawCookie) {
+                try {
+                    this.xsrfToken = decodeURIComponent(rawCookie);
+                    console.log('   >> [登录] ✅ 从 cookie 解码获取到 XSRF token');
+                } catch (e) {
+                    this.xsrfToken = rawCookie;
+                }
+            }
+        }
+
+        if (!this.xsrfToken) {
             throw new Error('无法获取 XSRF token');
         }
-        console.log(`   >> [登录] XSRF token 已获取 (${this.xsrfToken.substring(0, 20)}...)`);
+        console.log(`   >> [登录] XSRF token 已获取 (${this.xsrfToken.substring(0, 30)}...)`);
 
         // 2. POST 登录
         console.log('   >> [登录] 提交登录...');
@@ -271,14 +301,31 @@ class ApiClient {
         });
         this._parseCookies(loginResp.headers['set-cookie']);
 
-        // 检查是否登录成功（无重定向 = 成功）
+        // 检查是否登录成功
+        // 200 = 成功（空响应体），302 = 重定向到主页（成功），419 = CSRF 失败
         if (loginResp.status === 200) {
             console.log('   >> [登录] 登录成功');
             return true;
         }
-        // 如果返回 302 或 419，登录失败
-        if (loginResp.status === 302 || loginResp.status === 419) {
-            console.error('   >> [登录] 登录失败 (状态码: ' + loginResp.status + ')');
+        if (loginResp.status === 302) {
+            // 302 重定向到主页 = 登录成功
+            console.log('   >> [登录] 登录成功 (302 重定向)');
+            this._parseCookies(loginResp.headers['set-cookie']);
+            // 跟随重定向获取 session cookie
+            const location = loginResp.headers['location'];
+            if (location) {
+                try {
+                    await this.ax.get(location, {
+                        headers: { Cookie: this._cookieHeader() },
+                        validateStatus: () => true,
+                        maxRedirects: 0,
+                    });
+                } catch (e) { }
+            }
+            return true;
+        }
+        if (loginResp.status === 419) {
+            console.error('   >> [登录] CSRF token 不匹配');
             return false;
         }
         // 200 但可能返回错误信息
