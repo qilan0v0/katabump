@@ -245,7 +245,7 @@ async function renewServer(page, server, daysToAdd = RENEW_DAYS) {
     // 如果剩余时间大于阈值，跳过续期
     if (timeLeft.days > RENEW_THRESHOLD_DAYS) {
       log(`  ⏳ 剩余 ${timeLeft.days} 天 > 阈值 ${RENEW_THRESHOLD_DAYS} 天，无需续期`);
-      return { success: true, skipped: true, timeLeft: timeLeft.text };
+      return { success: true, skipped: true, timeLeft: timeLeft.text, server: server.name };
     }
   }
 
@@ -319,7 +319,7 @@ async function renewServer(page, server, daysToAdd = RENEW_DAYS) {
 
   if (bodyText.includes('success') || bodyText.includes('Success') || bodyText.includes('added')) {
     log('  ✅ 续期成功！');
-    return { success: true, skipped: false, daysAdded: daysToAdd };
+    return { success: true, skipped: false, daysAdded: daysToAdd, server: server.name, timeLeft: timeLeft?.text };
   }
 
   // 重新获取剩余时间来判断
@@ -328,13 +328,13 @@ async function renewServer(page, server, daysToAdd = RENEW_DAYS) {
     log(`  续期后剩余时间: ${newTimeLeft.text}`);
     if (timeLeft && newTimeLeft.totalHours > timeLeft.totalHours) {
       log('  ✅ 时间已增加，续期成功！');
-      return { success: true, skipped: false, daysAdded: daysToAdd, newTimeLeft: newTimeLeft.text };
+      return { success: true, skipped: false, daysAdded: daysToAdd, newTimeLeft: newTimeLeft.text, server: server.name, timeLeft: newTimeLeft.text };
     }
   }
 
   // 如果没有明确错误，视为成功
   log('  ✅ 续期操作已完成（无明确错误）');
-  return { success: true, skipped: false, daysAdded: daysToAdd };
+  return { success: true, skipped: false, daysAdded: daysToAdd, server: server.name, timeLeft: timeLeft?.text };
 }
 
 // ===================================================================
@@ -359,7 +359,7 @@ async function runUser(token) {
     await page.goto(`${XSH_BASE}/dashboard/web`, { waitUntil: 'networkidle', timeout: 30000 });
     log(`    URL: ${page.url()}`);
 
-    // 如果已经在 dashboard，跳过登录
+    // 如果未登录，执行 Discord 登录
     if (!page.url().includes('/dashboard')) {
       // ===== 2. Discord API 授权 =====
       log('[2] 通过 Discord API 授权...');
@@ -380,8 +380,8 @@ async function runUser(token) {
 
       // 如果还没到 dashboard，再手动导航
       if (!page.url().includes('/dashboard')) {
-        log('   → 手动导航到 /dashboard/web...');
-        await page.goto(`${XSH_BASE}/dashboard/web`, { waitUntil: 'networkidle', timeout: 30000 });
+        log('   → 手动导航到 dashboard...');
+        await page.goto(`${XSH_BASE}/dashboard`, { waitUntil: 'networkidle', timeout: 30000 });
       }
     }
 
@@ -397,8 +397,13 @@ async function runUser(token) {
       log(`  🍪 已保存 ${xshCookies.length} 个 cookie`);
     }
 
-    // ===== 4. 获取服务器列表 =====
-    log('[4] 获取服务器列表...');
+    // ===== 4. 导航到 Web 服务器管理页 =====
+    log('[4] 导航到 Web 服务器管理页...');
+    await page.goto(`${XSH_BASE}/dashboard/web`, { waitUntil: 'networkidle', timeout: 30000 });
+    log(`    URL: ${page.url()}`);
+
+    // ===== 5. 获取服务器列表 =====
+    log('[5] 获取服务器列表...');
     const servers = await getServerList(page);
     log(`  找到 ${servers.length} 个 Web 服务器`);
 
@@ -409,12 +414,13 @@ async function runUser(token) {
     }
 
     // 输出服务器信息
+    console.log('');
     for (const s of servers) {
-      log(`  服务器: ${s.name} (${s.type}) | ID: ${s.id} | 费用: ${s.cost} 积分/天`);
+      console.log(`  📦 ${s.name} (${s.type}) | ID: ${s.id} | 💰 ${s.cost} 积分/天`);
     }
 
-    // ===== 5. 对每个服务器执行续期检查 =====
-    log('[5] 检查服务器续期状态...');
+    // ===== 6. 对每个服务器执行续期检查 =====
+    log('[6] 检查服务器续期状态...');
     for (let i = 0; i < servers.length; i++) {
       const server = servers[i];
       log(`\n  [服务器 ${i + 1}/${servers.length}] ${server.name} (${server.type})`);
@@ -489,10 +495,11 @@ async function main() {
     if (r.results) {
       r.results.forEach(sr => {
         const s = sr.success ? (sr.skipped ? '⏳' : '✅') : '❌';
+        const timeInfo = sr.timeLeft ? ` (剩余 ${sr.timeLeft})` : '';
         const msg = sr.skipped
-          ? `${sr.server}: 无需续期 (剩余 ${sr.timeLeft || '充足'})`
+          ? `${sr.server}: 无需续期${timeInfo}`
           : sr.success
-            ? `${sr.server}: 续期成功${sr.daysAdded ? ` (+${sr.daysAdded}天)` : ''}`
+            ? `${sr.server}: 续期成功${sr.daysAdded ? ` (+${sr.daysAdded}天)` : ''}${timeInfo}`
             : `${sr.server}: 失败 (${sr.error || '未知错误'})`;
         console.log(`  ${s} ${msg}`);
         lines.push(`${s} ${msg}`);
