@@ -146,8 +146,26 @@ async function runUser(token) {
   const page = await context.newPage();
 
   let adCount = 0;
+  const cookieKey = `xsh_${token.slice(0, 20)}`;
 
   try {
+    // ===== 0. 尝试从 KV 读取已保存的 cookie =====
+    log('[0] 尝试从 KV 读取已保存的 cookie...');
+    const saved = await kvGet(cookieKey);
+    if (saved) {
+      try {
+        const cks = JSON.parse(saved);
+        if (Array.isArray(cks) && cks.length > 0) {
+          await context.addCookies(cks);
+          log(`  ✅ 已注入 ${cks.length} 个 KV cookie`);
+        }
+      } catch (e) {
+        log(`  ⚠️ cookie 解析失败: ${e.message}`);
+      }
+    } else {
+      log('  KV 中无已保存的 cookie，需要 Discord 登录');
+    }
+
     // ===== 1. 打开 xsystemshosting =====
     log('[1] 打开 xsystemshosting...');
     await page.goto(`${XSH_BASE}/dashboard/discord`, { waitUntil: 'networkidle', timeout: 30000 });
@@ -187,7 +205,7 @@ async function runUser(token) {
       c.domain === 'xsystemshosting.com' || c.domain === '.xsystemshosting.com'
     );
     if (xshCookies.length > 0) {
-      await kvPut(`xsh_${token.slice(0, 20)}`, JSON.stringify(xshCookies));
+      await kvPut(cookieKey, JSON.stringify(xshCookies));
       log(`  🍪 已保存 ${xshCookies.length} 个 cookie`);
     }
 

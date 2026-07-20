@@ -197,23 +197,52 @@ async function getServerTimeLeft(page) {
   const text = await page.evaluate(() => document.body.innerText);
   log(`  页面文本片段: ${text.substring(0, 300).replace(/\n/g, '\\n')}`);
 
-  // 尝试多种格式匹配
-  // 格式1: "Runtime left\nXd Yh" 或 "Time left: Xd Yh"
-  const patterns = [
-    /(?:Time left|Runtime left)[:\s]*(\d+)\s*d[a-z]*[,\s]*(\d+)\s*h[a-z]*/i,
-    /(?:Time left|Runtime left)[:\s]*(\d+)\s*d[a-z]*/i,
-    /(?:Time left|Runtime left)[:\s]*(\d+)\s*h[a-z]*/i,
-    /(\d+)\s*d[a-z]*[,\s]*(\d+)\s*h[a-z]*/i,
-    /(\d+)\s*d[a-z]*/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      const days = parseInt(match[1]) || 0;
-      const hours = match[2] ? parseInt(match[2]) : 0;
-      log(`  匹配到时间: ${days}d ${hours}h (模式: ${pattern})`);
+  // 方式1: 找 "Runtime left" 或 "Time left" 标签后的内容
+  const labelMatch = text.match(/(?:Time left|Runtime left)\s*\n\s*([^\n]+)/i);
+  if (labelMatch) {
+    const timeStr = labelMatch[1].trim();
+    log(`  标签后时间文本: "${timeStr}"`);
+    // 尝试匹配 "Xd Yh" 或 "Yh" 或 "Xd"
+    const dhMatch = timeStr.match(/^(\d+)\s*d[a-z]*[,\s]*(\d+)\s*h[a-z]*$/i);
+    if (dhMatch) {
+      const days = parseInt(dhMatch[1]);
+      const hours = parseInt(dhMatch[2]);
+      log(`  匹配到: ${days}d ${hours}h`);
       return { days, hours, totalHours: days * 24 + hours, text: `${days}d ${hours}h` };
+    }
+    const hMatch = timeStr.match(/^(\d+)\s*h[a-z]*$/i);
+    if (hMatch) {
+      const hours = parseInt(hMatch[1]);
+      log(`  匹配到: 0d ${hours}h`);
+      return { days: 0, hours, totalHours: hours, text: `0d ${hours}h` };
+    }
+    const dMatch = timeStr.match(/^(\d+)\s*d[a-z]*$/i);
+    if (dMatch) {
+      const days = parseInt(dMatch[1]);
+      log(`  匹配到: ${days}d 0h`);
+      return { days, hours: 0, totalHours: days * 24, text: `${days}d 0h` };
+    }
+  }
+
+  // 方式2: 直接全文搜索 "Xd Yh" 或 "Yh" 格式（但排除按钮文本）
+  // 先找 "Xd Yh" 格式
+  const dhMatch = text.match(/(\d+)\s*d[a-z]*[,\s]*(\d+)\s*h[a-z]*/i);
+  if (dhMatch) {
+    const days = parseInt(dhMatch[1]);
+    const hours = parseInt(dhMatch[2]);
+    if (days < 100 && hours < 24) { // 合理范围检查
+      log(`  全文匹配到: ${days}d ${hours}h`);
+      return { days, hours, totalHours: days * 24 + hours, text: `${days}d ${hours}h` };
+    }
+  }
+
+  // 找 "Yh" 格式（只有小时）
+  const hMatch = text.match(/(?:^|\n)\s*(\d+)\s*h[a-z]*\s*$/im);
+  if (hMatch) {
+    const hours = parseInt(hMatch[1]);
+    if (hours < 100) {
+      log(`  全文匹配到小时: 0d ${hours}h`);
+      return { days: 0, hours, totalHours: hours, text: `0d ${hours}h` };
     }
   }
 
