@@ -43,6 +43,7 @@ jobs:
 
   renew:
     runs-on: ubuntu-latest
+    needs: watch-ads
 
     steps:
     - uses: actions/checkout@v4

@@ -195,20 +195,29 @@ async function getServerList(page) {
 // ===================================================================
 async function getServerTimeLeft(page) {
   const text = await page.evaluate(() => document.body.innerText);
-  // 查找 "Time left: Xd Yh" 或 "Runtime left\nXd Yh"
-  const match = text.match(/(?:Time left|Runtime left)[:\s]*(\d+)\s*d[a-z]*\s*(\d+)\s*h[a-z]*/i);
-  if (match) {
-    const days = parseInt(match[1]);
-    const hours = parseInt(match[2]);
-    return { days, hours, totalHours: days * 24 + hours, text: `${days}d ${hours}h` };
+  log(`  页面文本片段: ${text.substring(0, 300).replace(/\n/g, '\\n')}`);
+
+  // 尝试多种格式匹配
+  // 格式1: "Runtime left\nXd Yh" 或 "Time left: Xd Yh"
+  const patterns = [
+    /(?:Time left|Runtime left)[:\s]*(\d+)\s*d[a-z]*[,\s]*(\d+)\s*h[a-z]*/i,
+    /(?:Time left|Runtime left)[:\s]*(\d+)\s*d[a-z]*/i,
+    /(?:Time left|Runtime left)[:\s]*(\d+)\s*h[a-z]*/i,
+    /(\d+)\s*d[a-z]*[,\s]*(\d+)\s*h[a-z]*/i,
+    /(\d+)\s*d[a-z]*/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const days = parseInt(match[1]) || 0;
+      const hours = match[2] ? parseInt(match[2]) : 0;
+      log(`  匹配到时间: ${days}d ${hours}h (模式: ${pattern})`);
+      return { days, hours, totalHours: days * 24 + hours, text: `${days}d ${hours}h` };
+    }
   }
-  // 尝试其他格式
-  const match2 = text.match(/(\d+)\s*d[a-z]*\s*(\d+)\s*h[a-z]*/i);
-  if (match2) {
-    const days = parseInt(match2[1]);
-    const hours = parseInt(match2[2]);
-    return { days, hours, totalHours: days * 24 + hours, text: `${days}d ${hours}h` };
-  }
+
+  log('  ⚠️ 未匹配到任何时间格式');
   return null;
 }
 
@@ -239,7 +248,7 @@ async function renewServer(page, server, daysToAdd = RENEW_DAYS) {
   // 检查剩余时间
   const timeLeft = await getServerTimeLeft(page);
   if (!timeLeft) {
-    log('  ⚠️ 无法解析剩余时间，尝试继续...');
+    log('  ⚠️ 无法解析剩余时间，尝试继续续期...');
   } else {
     log(`  剩余时间: ${timeLeft.text}`);
     // 如果剩余时间大于阈值，跳过续期
@@ -304,7 +313,7 @@ async function renewServer(page, server, daysToAdd = RENEW_DAYS) {
   }
 
   // 等待提交结果
-  await sleep(3000);
+  await sleep(5000);
 
   // 检查是否成功
   const currentUrl = page.url();
@@ -317,9 +326,18 @@ async function renewServer(page, server, daysToAdd = RENEW_DAYS) {
     return { success: false, error: 'insufficient_credits' };
   }
 
+  // 检查页面是否包含续期成功提示
   if (bodyText.includes('success') || bodyText.includes('Success') || bodyText.includes('added')) {
     log('  ✅ 续期成功！');
-    return { success: true, skipped: false, daysAdded: daysToAdd, server: server.name, timeLeft: timeLeft?.text };
+    // 获取新剩余时间
+    const newTimeLeft = await getServerTimeLeft(page);
+    return { success: true, skipped: false, daysAdded: daysToAdd, server: server.name, timeLeft: newTimeLeft?.text || timeLeft?.text };
+  }
+
+  // 如果跳转到了 /dashboard/web，说明提交成功
+  if (currentUrl.includes('/dashboard/web')) {
+    log('  ✅ 表单提交成功，跳转回服务器列表页');
+    return { success: true, skipped: false, daysAdded: daysToAdd, server: server.name, timeLeft: '已续期' };
   }
 
   // 重新获取剩余时间来判断
@@ -352,8 +370,26 @@ async function runUser(token) {
   const page = await context.newPage();
 
   const results = [];
+  const cookieKey = `xsh_${token.slice(0, 20)}`;
 
   try {
+    // ===== 0. 尝试从 KV 读取已保存的 cookie =====
+    log('[0] 尝试从 KV 读取已保存的 cookie...');
+    const saved = await kvGet(cookieKey);
+    if (saved) {
+      try {
+        const cks = JSON.parse(saved);
+        if (Array.isArray(cks) && cks.length > 0) {
+          await context.addCookies(cks);
+          log(`  ✅ 已注入 ${cks.length} 个 KV cookie`);
+        }
+      } catch (e) {
+        log(`  ⚠️ cookie 解析失败: ${e.message}`);
+      }
+    } else {
+      log('  KV 中无已保存的 cookie，需要 Discord 登录');
+    }
+
     // ===== 1. 打开 xsystemshosting =====
     log('[1] 打开 xsystemshosting...');
     await page.goto(`${XSH_BASE}/dashboard/web`, { waitUntil: 'networkidle', timeout: 30000 });
@@ -393,7 +429,7 @@ async function runUser(token) {
       c.domain === 'xsystemshosting.com' || c.domain === '.xsystemshosting.com'
     );
     if (xshCookies.length > 0) {
-      await kvPut(`xsh_${token.slice(0, 20)}`, JSON.stringify(xshCookies));
+      await kvPut(cookieKey, JSON.stringify(xshCookies));
       log(`  🍪 已保存 ${xshCookies.length} 个 cookie`);
     }
 
