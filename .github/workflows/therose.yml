@@ -1,0 +1,47 @@
+name: TheRose Cloud Auto Renew
+
+on:
+  workflow_dispatch: # 手动触发
+  schedule:
+    - cron: '0 */6 * * *' # 每 6 小时自动运行
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        npm install
+        npx playwright install-deps chrome
+
+    - name: Run TheRose Renew Script
+      env:
+        THEROSE_USERS_JSON: ${{ secrets.THEROSE_USERS_JSON }}
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
+        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+        PROJECT_NAME: TheRose
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node therose_renew.js
+
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: therose-screenshots
+        path: screenshots/
