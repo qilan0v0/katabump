@@ -113,23 +113,60 @@ function getUsers() {
 
 // ===================== Telegram 通知 =====================
 
+async function tgExec(args) {
+  return new Promise((resolve) => {
+    const proc = spawn('curl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.on('close', () => resolve(stdout));
+    proc.on('error', e => resolve(`{error: ${e.message}}`));
+  });
+}
+
 async function sendTelegramMessage(message, imagePath = null) {
   if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
     console.log('[Telegram] 未配置 TG_BOT_TOKEN/TG_CHAT_ID，跳过推送。');
     return;
   }
   const msgText = `📌 *${PROJECT}*\n${message}`;
-  try {
-    const payload = {
-      chat_id: TG_CHAT_ID,
-      text: msgText.slice(0, 3000),
-      parse_mode: 'Markdown',
-    };
-    if (TG_THREAD_ID) payload.message_thread_id = Number(TG_THREAD_ID);
-    await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, payload, { timeout: 15000 });
-    console.log('[Telegram] 消息已发送。');
-  } catch (e) {
-    console.warn('[Telegram] 发送失败:', e.message);
+
+  const baseArgs = ['-s', '-X', 'POST', `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`,
+    '-d', `chat_id=${TG_CHAT_ID}`,
+  ];
+  if (TG_THREAD_ID) baseArgs.push('-d', `message_thread_id=${TG_THREAD_ID}`);
+
+  if (imagePath && fs.existsSync(imagePath)) {
+    console.log('[Telegram] 发送图文消息...');
+    const capFile = `${imagePath}.tg_caption.txt`;
+    try { fs.writeFileSync(capFile, msgText.slice(0, 1000)); } catch (e) { }
+    const photoArgs = ['-s', '-X', 'POST', `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto`,
+      '-F', `chat_id=${TG_CHAT_ID}`,
+    ];
+    if (TG_THREAD_ID) photoArgs.push('-F', `message_thread_id=${TG_THREAD_ID}`);
+    photoArgs.push('-F', `caption=<${capFile}`, '-F', 'parse_mode=Markdown', '-F', `photo=@${imagePath}`);
+    const stdout = await tgExec(photoArgs);
+    if (stdout.includes('"ok":true')) {
+      console.log('[Telegram] 图文消息已发送。');
+    } else {
+      console.warn('[Telegram] 图文(Markdown)发送失败，改纯文本重试:', stdout.slice(0, 200));
+      const idx = photoArgs.indexOf('parse_mode=Markdown');
+      if (idx >= 0) { photoArgs.splice(idx, 1); photoArgs.splice(idx - 1, 1); }
+      const stdout2 = await tgExec(photoArgs);
+      if (stdout2.includes('"ok":true')) {
+        console.log('[Telegram] 图文消息(纯文本)已发送。');
+      } else {
+        console.error('[Telegram] 图文消息发送失败:', stdout2.slice(0, 200));
+      }
+    }
+    try { fs.unlinkSync(capFile); } catch (e) { }
+  } else {
+    baseArgs.push('-d', 'parse_mode=Markdown', '--data-urlencode', `text=${msgText.slice(0, 3000)}`);
+    const stdout = await tgExec(baseArgs);
+    if (stdout.includes('"ok":true')) {
+      console.log('[Telegram] 消息已发送。');
+    } else {
+      console.warn('[Telegram] 发送失败:', stdout.slice(0, 200));
+    }
   }
 }
 
@@ -189,23 +226,34 @@ const INJECTED_SCRIPT = `
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
   }
 
-  // 5. 覆盖 canvas 指纹
-  const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-  HTMLCanvasElement.prototype.toDataURL = function(type) {
-    if (type === 'image/webp' || (this.width === 0 && this.height === 0)) {
-      return origToDataURL.call(this, type);
-    }
-    // 添加微小噪声
-    const ctx = this.getContext('2d');
-    if (ctx) {
-      const imageData = ctx.getImageData(0, 0, this.width, this.height);
-      if (imageData.data.length > 0) {
-        imageData.data[0] = Math.min(255, imageData.data[0] + 1);
-        ctx.putImageData(imageData, 0, 0);
-      }
-    }
-    return origToDataURL.call(this, type);
+  // 5. 覆盖 console.error 以拦截 Turnstile 的 CSS 检测
+  const origError = console.error;
+  console.error = function() {
+    const msg = Array.from(arguments).join(' ');
+    if (msg.includes('font-size') || msg.includes('NaN')) return;
+    return origError.apply(console, arguments);
   };
+
+  // 6. 覆盖 canvas 指纹（返回一致结果）
+  const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+  HTMLCanvasElement.prototype.toDataURL = function() {
+    if (this.width === 0 || this.height === 0) {
+      return 'data:image/png;base64,';
+    }
+    return origToDataURL.apply(this, arguments);
+  };
+
+  // 7. 覆盖 WebGL 指纹
+  try {
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    if (getParameter) {
+      WebGLRenderingContext.prototype.getParameter = function(param) {
+        if (param === 37445) return 'Intel Inc.';  // UNMASKED_VENDOR_WEBGL
+        if (param === 37446) return 'Intel Iris OpenGL Engine';  // UNMASKED_RENDERER_WEBGL
+        return getParameter.call(this, param);
+      };
+    }
+  } catch(e) {}
 })();
 `;
 
@@ -291,11 +339,13 @@ async function processUser(user) {
   const launchArgs = [
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-gpu',
     '--window-size=1280,720',
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
+    '--use-gl=angle',
+    '--use-angle=swiftshader',
+    '--enable-webgl',
   ];
 
   const HTTP_PROXY = process.env.HTTP_PROXY;
@@ -310,7 +360,7 @@ async function processUser(user) {
     }
   }
 
-  const browser = await chromium.launch({ headless: true, args: launchArgs });
+  const browser = await chromium.launch({ headless: false, args: launchArgs });
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -513,7 +563,8 @@ async function processUser(user) {
   } catch (e) {
     console.error(`[${email}] 处理失败:`, e.message);
     results.errors.push(e.message);
-    await saveScreenshot(page, `therose_error_${safeUser}`);
+    const sp = await saveScreenshot(page, `therose_error_${safeUser}`);
+    if (sp) results.errorScreenshot = sp;
   } finally {
     await browser.close();
   }
@@ -536,10 +587,14 @@ async function main() {
   console.log(`共 ${users.length} 个用户`);
 
   const allResults = [];
+  let lastErrorScreenshot = null;
   for (const user of users) {
     try {
       const result = await processUser(user);
-      if (result) allResults.push(result);
+      if (result) {
+        allResults.push(result);
+        if (result.errorScreenshot) lastErrorScreenshot = result.errorScreenshot;
+      }
     } catch (e) {
       console.error(`处理用户时出错:`, e.message);
     }
@@ -561,7 +616,7 @@ async function main() {
   console.log('\n' + summary);
 
   if (allResults.length > 0) {
-    await sendTelegramMessage(summary);
+    await sendTelegramMessage(summary, lastErrorScreenshot);
   }
 
   console.log('===== 执行完毕 =====');
