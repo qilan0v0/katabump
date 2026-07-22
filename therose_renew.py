@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-# TheRose Cloud (client.therose.cloud) Renewal Script
-# Uses seleniumbase + uc_gui_click_captcha for Turnstile bypass
-
+"""TheRose Cloud (client.therose.cloud) Renewal Script - seleniumbase version"""
 import os, sys, json, time, re, requests
 from seleniumbase import SB
 
@@ -17,12 +15,10 @@ KV_ADMIN_URL = os.environ.get("KV_ADMIN_URL", "")
 KV_ADMIN_PASS = os.environ.get("KV_ADMIN_PASS", "")
 KV_ENABLED = bool(KV_ADMIN_URL and KV_ADMIN_PASS)
 
-
 def send_tg(msg):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
-    text = "U0001F4CC *" + PROJECT + "*
-" + msg
+    text = "\U0001F4CC *" + PROJECT + "*\n" + msg
     try:
         r = requests.post(
             "https://api.telegram.org/bot" + TG_BOT_TOKEN + "/sendMessage",
@@ -40,7 +36,6 @@ def send_tg(msg):
             )
     except Exception as e:
         print("[TG] error:", e)
-
 
 def kv_get(key):
     if not KV_ENABLED:
@@ -81,7 +76,6 @@ def kv_set(key, val):
         print("[KV] save fail:", e)
         return False
 
-
 def login(sb, email, password):
     print("  >> Open login page...")
     sb.open(LOGIN_URL)
@@ -99,7 +93,7 @@ def login(sb, email, password):
     except Exception as e:
         print("  >> Turnstile error:", e)
     print("  >> Click Sign in...")
-    sb.uc_click("button:contains(\"Sign in\")")
+    sb.uc_click('button:contains("Sign in")')
     sb.sleep(3)
     for _ in range(30):
         cur = sb.get_current_url()
@@ -111,14 +105,13 @@ def login(sb, email, password):
     sb.save_screenshot("login_failed.png")
     return False, sb.get_current_url()
 
-
 def do_renew(sb):
     print("  >> Find Extend button...")
     selectors = [
-        "span:contains(\"Extend\")",
-        "button:contains(\"Extend\")",
-        "[class*=extend]",
-        "[class*=Extend]",
+        'span:contains("Extend")',
+        'button:contains("Extend")',
+        '[class*="extend"]',
+        '[class*="Extend"]',
     ]
     found = False
     for sel in selectors:
@@ -133,7 +126,7 @@ def do_renew(sb):
             continue
     if not found:
         try:
-            btn = sb.find_element("button:contains(\"Extend\")", timeout=2)
+            btn = sb.find_element('button:contains("Extend")', timeout=2)
             sb.driver.execute_script("arguments[0].click();", btn)
             print("  >> JS clicked Extend")
             found = True
@@ -143,13 +136,14 @@ def do_renew(sb):
     time.sleep(1)
     print("  >> Find Order now...")
     try:
-        btn = sb.find_element("button:contains(\"Order now\")", timeout=5)
+        btn = sb.find_element('button:contains("Order now")', timeout=5)
         if btn:
-            sb.uc_click("button:contains(\"Order now\")")
+            sb.uc_click('button:contains("Order now")')
             print("  >> Clicked Order now")
     except:
         print("  >> No Order now, try alt renew buttons...")
-        for sel in ["button:contains(\"Renew\")", "button:contains(\"renew\")", "button:contains(\"续期\")", "a:contains(\"Renew\")"]:
+        for sel in ['button:contains("Renew")', 'button:contains("renew")',
+                     'button:contains("续期")', 'a:contains("Renew")']:
             try:
                 if sb.find_element(sel, timeout=2):
                     sb.uc_click(sel, timeout=5)
@@ -158,7 +152,8 @@ def do_renew(sb):
             except:
                 continue
     time.sleep(5)
-    for sel in [".alert-success", "div[role=alert].alert-success", "span:contains(\"successfully purchased\")"]:
+    for sel in [".alert-success", "div[role=alert].alert-success",
+                'span:contains("successfully purchased")']:
         try:
             el = sb.find_element(sel, timeout=2)
             if el:
@@ -174,7 +169,6 @@ def do_renew(sb):
     except:
         pass
     return False, "No success message detected"
-
 
 def main():
     print("=== TheRose Cloud Renew ===")
@@ -196,8 +190,7 @@ def main():
         if not email or not password:
             print("User", i+1, "missing credentials, skip")
             continue
-        print("
-=== User", i+1, "/", len(users), ":", email, "===")
+        print("\n=== User", i+1, "/", len(users), ":", email, "===")
         safe = re.sub(r"[^a-z0-9]", "_", email.lower())
         ck = "therose_cookie_" + safe
         with SB(uc=True, headless=True) as sb:
@@ -217,7 +210,8 @@ def main():
                 sb.open(SERVERS_URL)
                 sb.sleep(3)
                 logged_in = "/login" not in sb.get_current_url()
-                print("  >> Cookie", "valid" if logged_in else "invalid", "(", sb.get_current_url(), ")")
+                print("  >> Cookie", "valid" if logged_in else "invalid",
+                      "(", sb.get_current_url(), ")")
             if not logged_in:
                 ok, url = login(sb, email, password)
                 if not ok:
@@ -247,8 +241,7 @@ def main():
                 print("  >>", msg)
                 sb.save_screenshot("renew_fail.png")
             send_tg(msg)
-    print("
-=== All done ===")
+    print("\n=== All done ===")
 
 if __name__ == "__main__":
     main()
