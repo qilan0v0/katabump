@@ -788,8 +788,30 @@ async function goToServerPage(page, user) {
                         const emailInput = page.getByRole('textbox', { name: 'Email' });
                         await emailInput.waitFor({ state: 'visible', timeout: 5000 });
                         await emailInput.fill(user.username);
+                        await page.waitForTimeout(300);
+                        var filledEmail = await emailInput.inputValue();
+                        console.log('   >> 输入验证: email=' + (filledEmail ? 'OK' : 'EMPTY'));
+                        if (!filledEmail) {
+                            console.log('   >> email fill 失败，改用 type...');
+                            await emailInput.click();
+                            await emailInput.fill('');
+                            await page.keyboard.type(user.username, {delay: 50});
+                            filledEmail = await emailInput.inputValue();
+                            console.log('   >> type 后验证: email=' + (filledEmail ? 'OK' : 'EMPTY'));
+                        }
                         const pwdInput = page.getByRole('textbox', { name: 'Password' });
                         await pwdInput.fill(user.password);
+                        await page.waitForTimeout(300);
+                        var filledPwd = await pwdInput.inputValue();
+                        console.log('   >> 输入验证: pwd=' + (filledPwd ? 'OK' : 'EMPTY'));
+                        if (!filledPwd) {
+                            console.log('   >> pwd fill 失败，改用 type...');
+                            await pwdInput.click();
+                            await pwdInput.fill('');
+                            await page.keyboard.type(user.password, {delay: 50});
+                            filledPwd = await pwdInput.inputValue();
+                            console.log('   >> type 后验证: pwd=' + (filledPwd ? 'OK' : 'EMPTY'));
+                        }
                         await page.waitForTimeout(500);
 
                         // --- 登录验证码处理 ---
@@ -832,7 +854,15 @@ async function goToServerPage(page, user) {
                             console.log('   >> 登录前未检测到或未点击 Turnstile，继续操作...');
                         }
 
-                        await page.getByRole('button', { name: /^(log\s?in|sign\s?in)$/i }).first().click();
+                        // 点击 Sign in 按钮
+                        var signInBtn = page.locator('button[type="submit"]');
+                        if (await signInBtn.isVisible().catch(function(){return false;})) {
+                            await signInBtn.click();
+                            console.log('   >> Sign in 按钮已点击');
+                        } else {
+                            console.log('   >> Sign in 按钮不可见，尝试 JS 提交表单');
+                            await page.evaluate(function(){var f=document.querySelector('form');if(f)f.submit();});
+                        }
 
                         // Check for incorrect password
                         try {
