@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""TheRose Cloud (client.therose.cloud) Renewal Script - seleniumbase version"""
-import os, sys, json, time, re, requests
+"""
+TheRose Cloud (client.therose.cloud) 续期脚本
+基于可执行参考脚本改造，支持多用户 JSON 配置
+"""
+
+import os, re, sys, time, json, requests
 from seleniumbase import SB
 
+# ==================== 配置 ====================
 BASE_URL = "https://client.therose.cloud"
 LOGIN_URL = BASE_URL + "/login"
 SERVERS_URL = BASE_URL + "/panel?routeName=servers"
@@ -15,46 +20,22 @@ KV_ADMIN_URL = os.environ.get("KV_ADMIN_URL", "")
 KV_ADMIN_PASS = os.environ.get("KV_ADMIN_PASS", "")
 KV_ENABLED = bool(KV_ADMIN_URL and KV_ADMIN_PASS)
 
-def send_tg(msg):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        return
-    text = "\U0001F4CC *" + PROJECT + "*\n" + msg
-    try:
-        r = requests.post(
-            "https://api.telegram.org/bot" + TG_BOT_TOKEN + "/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "Markdown"},
-            timeout=10,
-        )
-        if r.status_code == 200:
-            print("[TG] sent")
-        else:
-            print("[TG] fail:", r.text[:200])
-            requests.post(
-                "https://api.telegram.org/bot" + TG_BOT_TOKEN + "/sendMessage",
-                json={"chat_id": TG_CHAT_ID, "text": text},
-                timeout=10,
-            )
-    except Exception as e:
-        print("[TG] error:", e)
 
+# ==================== KV Cookie 缓存 ====================
 def kv_get(key):
     if not KV_ENABLED:
         return None
     try:
-        r = requests.post(
-            KV_ADMIN_URL + "/api/get",
-            json={"key": key},
-            headers={"X-Admin-Pass": KV_ADMIN_PASS, "Content-Type": "application/json"},
-            timeout=15,
-        )
+        r = requests.post(KV_ADMIN_URL + "/api/get", json={"key": key},
+            headers={"X-Admin-Pass": KV_ADMIN_PASS, "Content-Type": "application/json"}, timeout=15)
         if r.status_code == 200 and r.json().get("ok") and r.json().get("value") is not None:
             val = r.json()["value"]
-            print("[KV] read ok, len:", len(str(val)))
+            print("[KV] 读取成功，长度:", len(str(val)))
             return str(val) if not isinstance(val, str) else val
-        print("[KV] no cookie")
+        print("[KV] 暂无已存 cookie")
         return None
     except Exception as e:
-        print("[KV] read fail:", e)
+        print("[KV] 读取失败:", e)
         return None
 
 
@@ -62,168 +43,172 @@ def kv_set(key, val):
     if not KV_ENABLED:
         return False
     try:
-        r = requests.post(
-            KV_ADMIN_URL + "/api/set",
-            json={"key": key, "value": str(val)},
-            headers={"X-Admin-Pass": KV_ADMIN_PASS, "Content-Type": "application/json"},
-            timeout=15,
-        )
+        r = requests.post(KV_ADMIN_URL + "/api/set", json={"key": key, "value": str(val)},
+            headers={"X-Admin-Pass": KV_ADMIN_PASS, "Content-Type": "application/json"}, timeout=15)
         if r.status_code == 200:
-            print("[KV] saved")
+            print("[KV] cookie 已保存")
             return True
         return False
     except Exception as e:
-        print("[KV] save fail:", e)
+        print("[KV] 写入失败:", e)
         return False
 
+
+# ==================== Telegram 通知 ====================
+def send_tg(msg):
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return
+    text = f"\U0001F4CC *{PROJECT}*\n{msg}"
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
+        if r.status_code == 200:
+            print("📨 Telegram 通知已发送")
+        else:
+            print(f"❌ Telegram 发送失败: {r.text[:200]}")
+            requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT_ID, "text": text}, timeout=10)
+    except Exception as e:
+        print(f"❌ Telegram 发送异常: {e}")
+
+
+# ==================== 登录 ====================
 def login(sb, email, password):
-    print("  >> Open login page...")
+    print("🌐 打开登录页面...")
     sb.open(LOGIN_URL)
     sb.wait_for_ready_state_complete()
-    sb.sleep(2)
-    print("  >> Fill email...")
-    sb.type("#login_form_email", email, timeout=10)
-    print("  >> Fill password...")
-    sb.type("#login_form_password", password, timeout=10)
+    sb.sleep(1)
+    print("📧 填写邮箱...")
+    sb.type('#login_form_email', email, timeout=10)
+    print("🔑 填写密码...")
+    sb.type('#login_form_password', password, timeout=10)
     time.sleep(1)
-    print("  >> Handle Turnstile...")
-    turnstile_ok = False
+    print("🛡 处理 Turnstile...")
     try:
-        sb.uc_click_captcha()
-        print("  >> Turnstile done (uc_click_captcha)")
-        turnstile_ok = True
+        sb.uc_gui_click_captcha()
+        print("✅ Turnstile 验证已处理")
     except Exception as e:
-        print("  >> uc_click_captcha failed:", str(e)[:80])
-    if not turnstile_ok:
+        print(f"⚠️ uc_gui_click_captcha 异常: {e}")
+        # 兜底: 尝试 iframe 内点击
         try:
             for attempt in range(10):
-                try:
-                    frames = sb.driver.find_elements(
-                        "xpath", '//iframe[contains(@src, "challenges.cloudflare.com")]')
-                    if frames:
-                        sb.driver.switch_to.frame(frames[0])
-                        checkboxes = sb.driver.find_elements(
-                            "xpath", '//input[@type="checkbox"]')
-                        if checkboxes:
-                            checkboxes[0].click()
-                            print("  >> Clicked Turnstile checkbox in iframe (attempt", attempt+1, ")")
-                            sb.driver.switch_to.default_content()
-                            turnstile_ok = True
-                            break
+                frames = sb.driver.find_elements("xpath", '//iframe[contains(@src, "challenges.cloudflare.com")]')
+                if frames:
+                    sb.driver.switch_to.frame(frames[0])
+                    cbs = sb.driver.find_elements("xpath", '//input[@type="checkbox"]')
+                    if cbs:
+                        cbs[0].click()
+                        print(f"✅ iframe 内点击 Turnstile 复选框 (第 {attempt+1} 次)")
                         sb.driver.switch_to.default_content()
-                except Exception:
-                    try:
-                        sb.driver.switch_to.default_content()
-                    except:
-                        pass
+                        break
+                    sb.driver.switch_to.default_content()
                 time.sleep(1)
         except Exception as e2:
-            print("  >> Manual Turnstile click failed:", str(e2)[:80])
-    if not turnstile_ok:
-        print("  >> Turnstile may not be solved, continuing anyway...")
-    print("  >> Click Sign in...")
+            print(f"⚠️ iframe 点击也失败: {e2}")
+    print("🔑 点击登录按钮...")
     sb.uc_click('button:contains("Sign in")')
     sb.sleep(3)
     for _ in range(30):
         cur = sb.get_current_url()
-        if "/login" not in cur:
-            print("  >> Login success:", cur)
+        if "panel" in cur or "login" not in cur:
+            print(f"✅ 登录成功，已跳转到: {cur}")
             return True, cur
         time.sleep(1)
-    print("  >> Login failed:", sb.get_current_url())
+    print(f"❌ 登录失败，当前 URL: {sb.get_current_url()}")
     sb.save_screenshot("login_failed.png")
     return False, sb.get_current_url()
-def do_renew(sb):
-    print("  >> Find Extend button...")
+
+
+# ==================== 续期 ====================
+def click_extend_button(sb):
     selectors = [
         'span:contains("Extend")',
-        'button:contains("Extend")',
-        '[class*="extend"]',
-        '[class*="Extend"]',
+        'button:contains(title="Extend")',
     ]
-    found = False
     for sel in selectors:
         try:
             if sb.find_element(sel, timeout=2):
-                print("  >> Found Extend:", sel)
+                print(f"✅ 找到按钮，选择器: {sel}")
                 sb.uc_click(sel, timeout=5)
-                print("  >> Clicked Extend")
-                found = True
-                break
+                print("✅ 点击成功")
+                return True, {}
         except:
             continue
-    if not found:
-        try:
-            btn = sb.find_element('button:contains("Extend")', timeout=2)
-            sb.driver.execute_script("arguments[0].click();", btn)
-            print("  >> JS clicked Extend")
-            found = True
-        except Exception as e:
-            print("  >> No Extend button:", e)
-            return False, "No Extend button"
-    time.sleep(1)
-    print("  >> Find Order now...")
     try:
-        btn = sb.find_element('button:contains("Order now")', timeout=5)
-        if btn:
-            sb.uc_click('button:contains("Order now")')
-            print("  >> Clicked Order now")
-    except:
-        print("  >> No Order now, try alt renew buttons...")
-        for sel in ['button:contains("Renew")', 'button:contains("renew")',
-                     'button:contains("续期")', 'a:contains("Renew")']:
-            try:
-                if sb.find_element(sel, timeout=2):
-                    sb.uc_click(sel, timeout=5)
-                    print("  >> Clicked", sel)
-                    break
-            except:
-                continue
+        btn = sb.find_element('button:contains("Extend")', timeout=2)
+        sb.driver.execute_script("arguments[0].click();", btn)
+        print("✅ 通过 JavaScript 点击成功")
+        return True, {}
+    except Exception as e:
+        return False, {"error": str(e)}
+
+
+def check_renewal_success(sb):
+    success_selectors = [
+        '.alert-success',
+        '.alert.alert-success',
+        'div[role="alert"].alert-success',
+        'div.alert-success',
+        'span:contains("successfully purchased")',
+        'div:contains("successfully purchased")'
+    ]
+    print("⏳ 等待5秒检查续期结果...")
     time.sleep(5)
-    for sel in [".alert-success", "div[role=alert].alert-success",
-                'span:contains("successfully purchased")']:
+    for selector in success_selectors:
         try:
-            el = sb.find_element(sel, timeout=2)
-            if el:
-                print("  >> Renew success:", el.text[:100])
-                return True, el.text[:200]
+            element = sb.find_element(selector, timeout=2)
+            if element:
+                text = element.text
+                print(f"✅ 发现成功提示！选择器: {selector}")
+                print(f"📝 提示内容: {text}")
+                return True, text
         except:
             continue
     try:
-        src = sb.get_page_source()
-        if "successfully purchased" in src.lower():
-            print("  >> Renew success (keyword)")
-            return True, "Server renewed"
+        page_source = sb.get_page_source()
+        if "successfully purchased" in page_source.lower():
+            print("✅ 页面源码中发现 'successfully purchased' 关键词")
+            return True, "服务器已成功续期"
     except:
         pass
-    return False, "No success message detected"
+    return False, "未检测到续期成功提示"
 
+
+# ==================== 主流程 ====================
 def main():
-    print("=== TheRose Cloud Renew ===")
+    print("🚀 TheRose Cloud 续期脚本")
+
+    # 读取用户配置
     users_json = os.environ.get("THEROSE_USERS_JSON", "")
     if not users_json:
-        print("Missing THEROSE_USERS_JSON")
+        print("❌ 请设置环境变量 THEROSE_USERS_JSON")
         sys.exit(1)
     try:
         users = json.loads(users_json)
         if not isinstance(users, list) or len(users) == 0:
-            raise ValueError("empty")
+            raise ValueError("空数组")
     except Exception as e:
-        print("Invalid THEROSE_USERS_JSON:", e)
+        print(f"❌ THEROSE_USERS_JSON 格式无效: {e}")
         sys.exit(1)
-    print("Total users:", len(users))
+    print(f"共 {len(users)} 个用户")
+
     for i, user in enumerate(users):
         email = user.get("email") or user.get("username") or user.get("user", "")
         password = user.get("password") or user.get("pass") or user.get("pwd", "")
         if not email or not password:
-            print("User", i+1, "missing credentials, skip")
+            print(f"❌ 用户 {i+1} 缺少 email 或 password，跳过")
             continue
-        print("\n=== User", i+1, "/", len(users), ":", email, "===")
-        safe = re.sub(r"[^a-z0-9]", "_", email.lower())
-        ck = "therose_cookie_" + safe
+
+        print(f"\n=== 正在处理用户 {i+1}/{len(users)}: {email} ===")
+
+        safe_user = re.sub(r'[^a-z0-9]', '_', email.lower())
+        cookie_key = f"therose_cookie_{safe_user}"
+
         with SB(uc=True, headless=True) as sb:
             logged_in = False
-            saved = kv_get(ck)
+
+            # 尝试 KV cookie 免登录
+            saved = kv_get(cookie_key)
             if saved:
                 try:
                     cookies = json.loads(saved)
@@ -232,44 +217,86 @@ def main():
                             sb.driver.add_cookie(c)
                         except:
                             pass
-                    print("  >> Injected", len(cookies), "cookies")
+                    print(f"✅ 已注入 {len(cookies)} 条 cookie")
                 except Exception as e:
-                    print("  >> Cookie parse error:", e)
+                    print(f"⚠️ cookie 解析失败: {e}")
                 sb.open(SERVERS_URL)
                 sb.sleep(3)
                 logged_in = "/login" not in sb.get_current_url()
-                print("  >> Cookie", "valid" if logged_in else "invalid",
-                      "(", sb.get_current_url(), ")")
+                print(f"  >> cookie {'有效' if logged_in else '无效'} ({sb.get_current_url()})")
+
+            # 完整登录
             if not logged_in:
                 ok, url = login(sb, email, password)
                 if not ok:
-                    send_tg("Login failed\nUser: " + email)
+                    send_tg(f"❌ 登录失败\n用户: {email}")
                     continue
+                logged_in = True
+                # 保存 cookie
                 if KV_ENABLED:
                     try:
                         cookies = sb.driver.get_cookies()
+           
                         if cookies:
-                            kv_set(ck, json.dumps(cookies))
-                    except:
-                        pass
+                            kv_set(cookie_key, json.dumps(cookies))
+                    except Exception as e:
+                        print(f"⚠️ 保存 cookie 失败: {e}")
+
+            # 确保在服务器面板
             if "/panel" not in sb.get_current_url():
                 sb.open(SERVERS_URL)
                 sb.sleep(3)
             if "/login" in sb.get_current_url():
-                print("  >> Cookie expired")
-                send_tg("Cookie expired\nUser: " + email)
+                print("❌ cookie 失效，无法访问面板")
+                send_tg(f"❌ Cookie 失效\n用户: {email}")
                 continue
-            ok, info = do_renew(sb)
-            if ok:
-                msg = "Renew success\nUser: " + email + "\n" + info[:100]
-                print("  >>", msg)
-                sb.save_screenshot("renew_ok.png")
+
+            # 执行续期
+            print("📄 开始续期流程...")
+            ok, info = click_extend_button(sb)
+            if not ok:
+                msg = f"❌ 点击 Extend 按钮失败: {info.get('error')}"
+                print(msg)
+                send_tg(f"❌ 续期失败\n用户: {email}\n原因: {info.get('error')}")
+                continue
+
+            time.sleep(1)
+
+            # 点击 Order now
+            try:
+                button = sb.find_element('button:contains("Order now")', timeout=5)
+                if button:
+                    print("🛒 点击 Order now 按钮...")
+                    sb.uc_click('button:contains("Order now")')
+                    print("✅ 已点击 Order now 按钮")
+                else:
+                    msg = "❌ 未找到 Order now 按钮"
+                    print(msg)
+                    send_tg(f"❌ 续期失败\n用户: {email}\n原因: 未找到 Order now 按钮")
+                    continue
+            except Exception as e:
+                msg = f"❌ 点击 Order now 失败: {e}"
+                print(msg)
+                send_tg(f"❌ 续期失败\n用户: {email}\n原因: {e}")
+                continue
+
+            # 检查续期结果
+            print("🔍 检查续期结果...")
+            renewal_success, renewal_msg = check_renewal_success(sb)
+
+            if renewal_success:
+                msg = f"✅ 续期成功！{renewal_msg}"
+                print(msg)
+                sb.save_screenshot("renewal_success.png")
             else:
-                msg = "Renew incomplete\nUser: " + email + "\n" + info
-                print("  >>", msg)
-                sb.save_screenshot("renew_fail.png")
-            send_tg(msg)
-    print("\n=== All done ===")
+                msg = f"❌ 续期可能失败: {renewal_msg}"
+                print(msg)
+                sb.save_screenshot("renewal_failed.png")
+
+            send_tg(f"{'✅' if renewal_success else '❌'} 续期{'成功' if renewal_success else '失败'}\n用户: {email}\n{renewal_msg}")
+
+    print("🏁 脚本执行完毕")
+
 
 if __name__ == "__main__":
     main()
