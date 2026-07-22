@@ -151,6 +151,126 @@ async function saveScreenshot(page, name) {
   }
 }
 
+// ===================== Turnstile 绕过 =====================
+
+// 注入脚本：在页面加载前执行，增强 stealth 并拦截 Turnstile
+const INJECTED_SCRIPT = `
+(function() {
+  // 1. 覆盖 navigator.webdriver
+  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+  // 2. 覆盖 chrome 对象
+  if (window.chrome) {
+    window.chrome.runtime = window.chrome.runtime || {};
+  }
+
+  // 3. 覆盖权限查询
+  const originalQuery = window.navigator.permissions?.query;
+  if (originalQuery) {
+    window.navigator.permissions.query = (descriptor) => {
+      if (descriptor.name === 'notifications') return Promise.resolve({ state: 'denied' });
+      return originalQuery.call(window.navigator.permissions, descriptor);
+    };
+  }
+
+  // 4. 增强 plugins 数组
+  if (navigator.plugins.length === 0) {
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => {
+        const arr = [{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' }];
+        arr.item = i => arr[i];
+        arr.namedItem = n => arr.find(p => p.name === n);
+        arr.length = 1;
+        return arr;
+      }
+    });
+  }
+  if (navigator.languages.length === 0) {
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+  }
+
+  // 5. 覆盖 canvas 指纹
+  const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+  HTMLCanvasElement.prototype.toDataURL = function(type) {
+    if (type === 'image/webp' || (this.width === 0 && this.height === 0)) {
+      return origToDataURL.call(this, type);
+    }
+    // 添加微小噪声
+    const ctx = this.getContext('2d');
+    if (ctx) {
+      const imageData = ctx.getImageData(0, 0, this.width, this.height);
+      if (imageData.data.length > 0) {
+        imageData.data[0] = Math.min(255, imageData.data[0] + 1);
+        ctx.putImageData(imageData, 0, 0);
+      }
+    }
+    return origToDataURL.call(this, type);
+  };
+})();
+`;
+
+// 等待 Turnstile 生成 token，最多等 20 秒
+async function waitForTurnstileToken(page, timeoutMs = 20000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const token = await page.evaluate(() => {
+      const el = document.querySelector('input[name="cf-turnstile-response"]');
+      return el ? el.value : '';
+    }).catch(() => '');
+    if (token && token.length > 10) {
+      console.log(`[Turnstile] token 已生成 (${token.length} 字符)`);
+      return token;
+    }
+    await sleep(500);
+  }
+  console.log('[Turnstile] 等待 token 超时');
+  return null;
+}
+
+// 尝试手动触发 Turnstile
+async function triggerTurnstile(page) {
+  console.log('[Turnstile] 尝试手动触发...');
+  // 调用 turnstile.execute() 触发挑战
+  const result = await page.evaluate(() => {
+    return new Promise((resolve) => {
+      if (typeof turnstile === 'undefined') {
+        resolve({ error: 'turnstile undefined' });
+        return;
+      }
+      // 设置一个回调来捕获 token
+      const checkInterval = setInterval(() => {
+        const el = document.querySelector('input[name="cf-turnstile-response"]');
+        if (el && el.value && el.value.length > 10) {
+          clearInterval(checkInterval);
+          resolve({ success: true, token: el.value });
+        }
+      }, 200);
+
+      // 尝试执行
+      try {
+        turnstile.execute(undefined, {
+          callback: (token) => {
+            clearInterval(checkInterval);
+            resolve({ success: true, token });
+          }
+        });
+      } catch (e) {
+        clearInterval(checkInterval);
+        resolve({ error: e.message });
+      }
+
+      // 超时
+      setTimeout(() => {
+        clearInterval(checkInterval);
+        const el = document.querySelector('input[name="cf-turnstile-response"]');
+        resolve({ timeout: true, token: el?.value || '' });
+      }, 10000);
+    });
+  }).catch(e => ({ error: e.message }));
+  console.log('[Turnstile] 触发结果:', JSON.stringify(result).slice(0, 200));
+  return result;
+}
+
 // ===================== 核心流程 =====================
 
 async function processUser(user) {
@@ -198,6 +318,10 @@ async function processUser(user) {
   });
   const page = await context.newPage();
 
+  // 注入防检测脚本（在每个页面加载前执行）
+  await page.addInitScript(INJECTED_SCRIPT);
+  console.log('[注入] 防检测脚本已注入');
+
   try {
     // ===== Step 1: 尝试使用缓存的 cookie =====
     const cachedRaw = await kvGet(cookieKey);
@@ -213,7 +337,7 @@ async function processUser(user) {
       await page.goto(SERVERS_URL, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
       await sleep(3000);
 
-      // 检查是否登录成功（页面内容包含 email 或 Dashboard 等）
+      // 检查是否登录成功
       const pageText = await page.evaluate(() => document.body.innerText).catch(() => '');
       if (pageText.includes(email) || (pageText.includes('My servers') && pageText.includes('Extend'))) {
         console.log(`[${email}] 缓存 cookie 有效，已登录！`);
@@ -231,23 +355,43 @@ async function processUser(user) {
       await page.goto(LOGIN_URL, { waitUntil: 'load', timeout: 30000 });
       await sleep(3000);
 
-      // 等待 Turnstile 加载
-      await sleep(2000);
-
       // 填写登录表单
       await page.fill('#login_form_email', email);
       await page.fill('#login_form_password', password);
       await page.check('#login_form_remember_me');
-
       await sleep(1000);
 
-      // 点击登录按钮
-      await page.click('button:has-text("Sign in")');
+      // 尝试触发 Turnstile 并等待 token
+      console.log(`[${email}] 等待 Turnstile 加载...`);
+      await sleep(2000);
 
-      // 等待登录完成（可能跳转到 /panel 或刷新）
+      // 先尝试等待 Turnstile 自动生成 token
+      let token = await waitForTurnstileToken(page, 8000);
+
+      // 如果自动生成失败，手动触发
+      if (!token) {
+        await triggerTurnstile(page);
+        token = await waitForTurnstileToken(page, 10000);
+      }
+
+      // 如果还是没 token，再试一次手动触发
+      if (!token) {
+        console.log(`[${email}] 再次尝试触发 Turnstile...`);
+        await triggerTurnstile(page);
+        token = await waitForTurnstileToken(page, 10000);
+      }
+
+      if (token) {
+        console.log(`[${email}] Turnstile token 已获取，提交登录...`);
+      } else {
+        console.log(`[${email}] Turnstile token 未生成，尝试直接提交...`);
+      }
+
+      // 提交表单
+      await page.click('button:has-text("Sign in")');
       await sleep(5000);
 
-      // 检查是否登录成功
+      // 检查登录结果
       const currentUrl = page.url();
       const pageText = await page.evaluate(() => document.body.innerText).catch(() => '');
 
@@ -257,32 +401,23 @@ async function processUser(user) {
       } else if (pageText.includes('Invalid') || pageText.includes('invalid') || pageText.includes('Error')) {
         throw new Error('登录失败：账号或密码错误');
       } else {
-        // 可能 Turnstile 需要更多时间，再等一会儿
-        console.log(`[${email}] 等待登录完成...`);
-        await sleep(5000);
-        const retryUrl = page.url();
-        const retryText = await page.evaluate(() => document.body.innerText).catch(() => '');
-        if (retryUrl.includes('/panel') || retryText.includes('Dashboard') || retryText.includes('Logout')) {
+        console.log(`[${email}] 登录后仍在登录页，尝试第二次提交...`);
+        await page.fill('#login_form_email', email);
+        await page.fill('#login_form_password', password);
+        await page.check('#login_form_remember_me');
+        await sleep(1000);
+        await triggerTurnstile(page);
+        await sleep(3000);
+        await page.click('button:has-text("Sign in")');
+        await sleep(8000);
+
+        const finalUrl = page.url();
+        const finalText = await page.evaluate(() => document.body.innerText).catch(() => '');
+        if (finalUrl.includes('/panel') || finalText.includes('Dashboard') || finalText.includes('Logout')) {
           console.log(`[${email}] 登录成功！`);
           results.login = true;
         } else {
-          // 尝试再次点击登录按钮
-          console.log(`[${email}] 尝试重新提交登录...`);
-          await page.fill('#login_form_email', email);
-          await page.fill('#login_form_password', password);
-          await page.check('#login_form_remember_me');
-          await sleep(1000);
-          await page.click('button:has-text("Sign in")');
-          await sleep(8000);
-
-          const finalUrl = page.url();
-          const finalText = await page.evaluate(() => document.body.innerText).catch(() => '');
-          if (finalUrl.includes('/panel') || finalText.includes('Dashboard') || finalText.includes('Logout')) {
-            console.log(`[${email}] 登录成功！`);
-            results.login = true;
-          } else {
-            throw new Error('登录失败：无法通过 Turnstile 验证');
-          }
+          throw new Error('登录失败：无法通过 Turnstile 验证');
         }
       }
     }
@@ -299,8 +434,6 @@ async function processUser(user) {
       if (theroseCookies.length > 0) {
         await kvSet(cookieKey, cookiesToStr(theroseCookies));
       }
-
-      // 截图登录后状态
       await saveScreenshot(page, `therose_dashboard_${safeUser}`);
     }
 
@@ -309,27 +442,23 @@ async function processUser(user) {
       console.log(`[${email}] 正在访问服务器列表...`);
       await page.goto(SERVERS_URL, { waitUntil: 'load', timeout: 30000 });
       await sleep(3000);
-
       await saveScreenshot(page, `therose_servers_${safeUser}`);
 
       // 查找所有需要续期的服务器
-      // 服务器卡片通常包含 "Extend" 或 "续期" 按钮
       const servers = await page.evaluate(() => {
         const results = [];
-        // 查找所有 Extend 链接
         const extendLinks = document.querySelectorAll('a[href*="cart_renew"]');
         extendLinks.forEach(link => {
           const href = link.getAttribute('href');
           const idMatch = href.match(/id=(\d+)/);
           if (idMatch) {
-            // 尝试获取服务器名称
             let serverName = 'Unknown';
             const card = link.closest('[class*="card"]') || link.closest('div[class*="server"]') || link.parentElement;
             if (card) {
               const heading = card.querySelector('h5, h6, [class*="title"], [class*="name"]');
               if (heading) serverName = heading.textContent.trim();
             }
-            results.push({ id: idMatch[1], href, name: serverName, element: href });
+            results.push({ id: idMatch[1], href, name: serverName });
           }
         });
         return results;
@@ -338,7 +467,6 @@ async function processUser(user) {
       console.log(`[${email}] 发现 ${servers.length} 个需要续期的服务器`);
 
       if (servers.length === 0) {
-        // 可能页面结构不同，尝试另一种方式查找
         console.log(`[${email}] 尝试通过文本查找 Extend 按钮...`);
         const extendButtons = await page.locator('a:has-text("Extend"), a:has-text("续期"), a:has-text("Renew")').all();
         console.log(`[${email}] 找到 ${extendButtons.length} 个续期按钮`);
@@ -357,11 +485,8 @@ async function processUser(user) {
         try {
           await page.goto(BASE_URL + server.href, { waitUntil: 'load', timeout: 30000 });
           await sleep(3000);
-
           await saveScreenshot(page, `therose_renew_${server.id}_${safeUser}`);
 
-          // 查找续期确认按钮
-          // 可能页面有 "Add to Cart", "Checkout", "Confirm", "续期" 等按钮
           const checkoutBtn = page.locator('button:has-text("Checkout"), button:has-text("Confirm"), a:has-text("Checkout"), a:has-text("Confirm"), button:has-text("续期"), button:has-text("Proceed")').first();
           if (await checkoutBtn.isVisible().catch(() => false)) {
             await checkoutBtn.click();
@@ -369,7 +494,6 @@ async function processUser(user) {
             console.log(`[${email}] 服务器 ${server.name} 续期成功！`);
             results.renewed.push({ id: server.id, name: server.name, success: true });
           } else {
-            // 可能不需要确认，直接进入了购物车或支付页面
             console.log(`[${email}] 服务器 ${server.name} 可能已添加到购物车`);
             results.renewed.push({ id: server.id, name: server.name, success: true });
           }
