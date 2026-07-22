@@ -12,6 +12,7 @@ const DEFAULT_PROJECTS = [
   { label: 'Gaming4Free', prefix: 'gaming4free_cookie_' },
   { label: 'BotHosting', prefix: 'bothosting_cookie_' },
   { label: 'Rustix', prefix: 'rustix_cookie_' },
+  { label: 'TheRose', prefix: 'therose_cookie_' },
 ];
 
 let _projectsCache = null;
