@@ -334,7 +334,7 @@ async function processUser(user) {
       }
 
       // 尝试直接访问服务器页
-      await page.goto(SERVERS_URL, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
+      await page.goto(SERVERS_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
       await sleep(3000);
 
       // 检查是否登录成功
@@ -344,7 +344,7 @@ async function processUser(user) {
         results.login = true;
       } else {
         console.log(`[${email}] 缓存 cookie 已过期，需要重新登录`);
-        await page.goto(LOGIN_URL, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
+        await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
         await sleep(2000);
       }
     }
@@ -352,7 +352,7 @@ async function processUser(user) {
     // ===== Step 2: 登录 =====
     if (!results.login) {
       console.log(`[${email}] 正在登录...`);
-      await page.goto(LOGIN_URL, { waitUntil: 'load', timeout: 30000 });
+      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await sleep(3000);
 
       // 填写登录表单
@@ -440,7 +440,7 @@ async function processUser(user) {
     // ===== Step 4: 访问服务器列表 =====
     if (results.login) {
       console.log(`[${email}] 正在访问服务器列表...`);
-      await page.goto(SERVERS_URL, { waitUntil: 'load', timeout: 30000 });
+      await page.goto(SERVERS_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await sleep(3000);
       await saveScreenshot(page, `therose_servers_${safeUser}`);
 
@@ -483,7 +483,7 @@ async function processUser(user) {
       for (const server of servers) {
         console.log(`[${email}] 正在续期服务器: ${server.name} (ID: ${server.id})`);
         try {
-          await page.goto(BASE_URL + server.href, { waitUntil: 'load', timeout: 30000 });
+          await page.goto(BASE_URL + server.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
           await sleep(3000);
           await saveScreenshot(page, `therose_renew_${server.id}_${safeUser}`);
 
