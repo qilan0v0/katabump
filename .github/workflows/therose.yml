@@ -1,9 +1,9 @@
 name: TheRose Cloud Auto Renew
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动触发
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */6 * * *' # 每6小时运行一次
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -11,35 +11,41 @@ env:
 jobs:
   renew:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
+    - name: 🟢 设置 Node.js
+      uses: actions/setup-node@v4
       with:
-        python-version: '3.11'
+        node-version: '20'
 
-    - name: Install Dependencies
+    - name: 🛠️ 安装依赖
       run: |
-        sudo apt-get update
+        sudo apt-get update -q
         sudo apt-get install -y xvfb
-        pip install seleniumbase requests
+        npm install
+        npx playwright install-deps chrome
 
-    - name: Run TheRose Renew Script
+    - name: 🚀 运行续期脚本
       env:
+        PROJECT_NAME: TheRose
         THEROSE_USERS_JSON: ${{ secrets.THEROSE_USERS_JSON }}
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        PROJECT_NAME: TheRose
-      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" python therose_renew.py
+        TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+      run: |
+        mkdir -p screenshots
+        xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
+          node therose_renew.js
 
-    - name: Upload Screenshots
+    - name: 📸 上传截图
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: therose-screenshots
-        path: "*.png"
+        path: screenshots/
