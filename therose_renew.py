@@ -89,6 +89,8 @@ def login(sb, email, password):
         print("✅ Turnstile 验证已处理")
     except Exception as e:
         print(f"⚠️ uc_gui_click_captcha 异常: {e}")
+    # 等待 Turnstile 验证完成
+    time.sleep(2)
     print("🔑 点击登录按钮...")
     sb.uc_click('button:contains("Sign in")')
     sb.sleep(3)
@@ -173,6 +175,13 @@ def main():
         sys.exit(1)
     print(f"共 {len(users)} 个用户")
 
+    # 代理配置
+    http_proxy = os.environ.get("HTTP_PROXY", "")
+    proxy_arg = {}
+    if http_proxy:
+        print(f"🔌 使用代理: {http_proxy}")
+        proxy_arg = {"proxy": http_proxy}
+
     for i, user in enumerate(users):
         email = user.get("email") or user.get("username") or user.get("user", "")
         password = user.get("password") or user.get("pass") or user.get("pwd", "")
@@ -185,7 +194,7 @@ def main():
         safe_user = re.sub(r'[^a-z0-9]', '_', email.lower())
         cookie_key = f"therose_cookie_{safe_user}"
 
-        with SB(uc=True, headless=False) as sb:
+        with SB(uc=True, headless=False, **proxy_arg) as sb:
             logged_in = False
 
             # 尝试 KV cookie 免登录
@@ -210,14 +219,26 @@ def main():
             if not logged_in:
                 ok, url = login(sb, email, password)
                 if not ok:
-                    send_tg(f"❌ 登录失败\n用户: {email}")
+                    # 截图失败页面并推送
+                    fail_shot = f"login_failed_{safe_user}.png"
+                    sb.save_screenshot(fail_shot)
+                    send_tg(f"❌ 登录失败\n用户: {email}\n当前URL: {sb.get_current_url()}")
+                    # 有截图就发截图
+                    if TG_BOT_TOKEN and TG_CHAT_ID:
+                        try:
+                            import requests as req
+                            with open(fail_shot, 'rb') as f:
+                                req.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto",
+                                    data={"chat_id": TG_CHAT_ID},
+                                    files={"photo": f})
+                        except:
+                            pass
                     continue
                 logged_in = True
                 # 保存 cookie
                 if KV_ENABLED:
                     try:
                         cookies = sb.driver.get_cookies()
-           
                         if cookies:
                             kv_set(cookie_key, json.dumps(cookies))
                     except Exception as e:
@@ -229,7 +250,18 @@ def main():
                 sb.sleep(3)
             if "/login" in sb.get_current_url():
                 print("❌ cookie 失效，无法访问面板")
+                fail_shot = f"cookie_expired_{safe_user}.png"
+                sb.save_screenshot(fail_shot)
                 send_tg(f"❌ Cookie 失效\n用户: {email}")
+                if TG_BOT_TOKEN and TG_CHAT_ID:
+                    try:
+                        import requests as req
+                        with open(fail_shot, 'rb') as f:
+                            req.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto",
+                                data={"chat_id": TG_CHAT_ID},
+                                files={"photo": f})
+                    except:
+                        pass
                 continue
 
             # 执行续期
