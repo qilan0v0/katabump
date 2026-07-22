@@ -25,7 +25,15 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y xvfb
         npm install
-        npx playwright install chromium chromium-headless-shell 2>/dev/null || npx playwright install chromium
+        npx playwright install-deps chromium
+
+    - name: Install Google Chrome
+      run: |
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
+        google-chrome-stable --version
 
     - name: Install v2ray
       if: env.HAS_V2RAY == 'true'
@@ -67,6 +75,7 @@ jobs:
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
+        CHROME_PATH: /usr/bin/google-chrome-stable
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}

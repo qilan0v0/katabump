@@ -15,17 +15,17 @@
  *   TG_THREAD_ID       - Telegram Thread ID (可选)
  */
 
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
+const { chromium } = require('playwright');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-
-chromium.use(stealth);
+const { spawn } = require('child_process');
 
 const BASE_URL = 'https://client.therose.cloud';
 const LOGIN_URL = BASE_URL + '/login';
 const SERVERS_URL = BASE_URL + '/panel?routeName=servers';
+
+const CHROME_PATH = process.env.CHROME_PATH;
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
@@ -360,7 +360,9 @@ async function processUser(user) {
     }
   }
 
-  const browser = await chromium.launch({ headless: false, args: launchArgs });
+  const launchOpts = { headless: false, args: launchArgs };
+  if (CHROME_PATH) launchOpts.executablePath = CHROME_PATH;
+  const browser = await chromium.launch(launchOpts);
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
