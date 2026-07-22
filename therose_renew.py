@@ -83,72 +83,12 @@ def login(sb, email, password):
     print("🔑 填写密码...")
     sb.type('#login_form_password', password, timeout=10)
     time.sleep(1)
-
-    # 处理 Turnstile - 策略: 尝试多种方法
     print("🛡 处理 Turnstile...")
-    turnstile_ok = False
-
-    # 方法1: uc_click_captcha (如果存在)
     try:
-        if hasattr(sb, 'uc_click_captcha'):
-            sb.uc_click_captcha()
-            print("✅ uc_click_captcha 成功")
-            turnstile_ok = True
+        sb.uc_gui_click_captcha()
+        print("✅ Turnstile 验证已处理")
     except Exception as e:
-        print(f"⚠️ uc_click_captcha 失败: {e}")
-
-    # 方法2: 用 JavaScript 执行 Turnstile
-    if not turnstile_ok:
-        try:
-            token = sb.execute_script("""
-                return new Promise(function(resolve) {
-                    var inp = document.querySelector('input[name="cf-turnstile-response"]');
-                    if (inp && inp.value && inp.value.length > 20) {
-                        resolve(inp.value);
-                        return;
-                    }
-                    if (typeof window.turnstile !== 'undefined' && window.turnstile.execute) {
-                        var wid = inp && inp.id ? inp.id.replace('_response', '') : null;
-                        window.turnstile.execute(wid, {
-                            callback: function(t) { resolve(t); },
-                            'error-callback': function() { resolve(null); }
-                        });
-                        setTimeout(function() { resolve(null); }, 15000);
-                    } else {
-                        resolve(null);
-                    }
-                });
-            """)
-            if token:
-                print(f"✅ turnstile.execute() 获取到 token (长度 {len(token)})")
-                turnstile_ok = True
-            else:
-                print("⚠️ turnstile.execute() 未获取到 token")
-        except Exception as e:
-            print(f"⚠️ turnstile.execute() 异常: {e}")
-
-    # 方法3: iframe 内点击复选框
-    if not turnstile_ok:
-        try:
-            for attempt in range(10):
-                frames = sb.driver.find_elements("xpath", '//iframe[contains(@src, "challenges.cloudflare.com")]')
-                if frames:
-                    sb.driver.switch_to.frame(frames[0])
-                    cbs = sb.driver.find_elements("xpath", '//input[@type="checkbox"]')
-                    if cbs:
-                        cbs[0].click()
-                        print(f"✅ iframe 内点击复选框 (第 {attempt+1} 次)")
-                        sb.driver.switch_to.default_content()
-                        turnstile_ok = True
-                        break
-                    sb.driver.switch_to.default_content()
-                time.sleep(1)
-        except Exception as e2:
-            print(f"⚠️ iframe 点击失败: {e2}")
-
-    if not turnstile_ok:
-        print("⚠️ 所有 Turnstile 处理方法均失败，尝试直接登录...")
-
+        print(f"⚠️ uc_gui_click_captcha 异常: {e}")
     print("🔑 点击登录按钮...")
     sb.uc_click('button:contains("Sign in")')
     sb.sleep(3)
@@ -245,7 +185,7 @@ def main():
         safe_user = re.sub(r'[^a-z0-9]', '_', email.lower())
         cookie_key = f"therose_cookie_{safe_user}"
 
-        with SB(uc=True, headless=True) as sb:
+        with SB(uc=True, headless=False) as sb:
             logged_in = False
 
             # 尝试 KV cookie 免登录
