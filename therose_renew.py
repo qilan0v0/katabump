@@ -87,11 +87,40 @@ def login(sb, email, password):
     sb.type("#login_form_password", password, timeout=10)
     time.sleep(1)
     print("  >> Handle Turnstile...")
+    turnstile_ok = False
     try:
-        sb.uc_gui_click_captcha()
-        print("  >> Turnstile done")
+        sb.uc_click_captcha()
+        print("  >> Turnstile done (uc_click_captcha)")
+        turnstile_ok = True
     except Exception as e:
-        print("  >> Turnstile error:", e)
+        print("  >> uc_click_captcha failed:", str(e)[:80])
+    if not turnstile_ok:
+        try:
+            for attempt in range(10):
+                try:
+                    frames = sb.driver.find_elements(
+                        "xpath", '//iframe[contains(@src, "challenges.cloudflare.com")]')
+                    if frames:
+                        sb.driver.switch_to.frame(frames[0])
+                        checkboxes = sb.driver.find_elements(
+                            "xpath", '//input[@type="checkbox"]')
+                        if checkboxes:
+                            checkboxes[0].click()
+                            print("  >> Clicked Turnstile checkbox in iframe (attempt", attempt+1, ")")
+                            sb.driver.switch_to.default_content()
+                            turnstile_ok = True
+                            break
+                        sb.driver.switch_to.default_content()
+                except Exception:
+                    try:
+                        sb.driver.switch_to.default_content()
+                    except:
+                        pass
+                time.sleep(1)
+        except Exception as e2:
+            print("  >> Manual Turnstile click failed:", str(e2)[:80])
+    if not turnstile_ok:
+        print("  >> Turnstile may not be solved, continuing anyway...")
     print("  >> Click Sign in...")
     sb.uc_click('button:contains("Sign in")')
     sb.sleep(3)
@@ -104,7 +133,6 @@ def login(sb, email, password):
     print("  >> Login failed:", sb.get_current_url())
     sb.save_screenshot("login_failed.png")
     return False, sb.get_current_url()
-
 def do_renew(sb):
     print("  >> Find Extend button...")
     selectors = [
