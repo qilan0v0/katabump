@@ -140,7 +140,8 @@ const INJECTED_SCRIPT = `
                         if (rect.width > 0 && rect.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
                             const xRatio = (rect.left + rect.width / 2) / window.innerWidth;
                             const yRatio = (rect.top + rect.height / 2) / window.innerHeight;
-                            window.__turnstile_data = { xRatio, yRatio };
+                            // Also send raw pixel offsets relative to the iframe's internal viewport
+                            window.__turnstile_data = { xRatio, yRatio, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
                             return true;
                         }
                     }
@@ -348,8 +349,12 @@ async function attemptTurnstileCdp(page) {
                 const box = await iframeElement.boundingBox();
                 if (!box) continue;
 
-                const clickX = box.x + (box.width * data.xRatio);
-                const clickY = box.y + (box.height * data.yRatio);
+                // data.xRatio/yRatio are relative to the iframe's internal viewport.
+                // The checkbox rect.left is the pixel offset from the iframe's left edge.
+                // So absolute click = box.x + rect.left_in_iframe. But we only have ratios.
+                // Better: use the raw pixel offsets if available, otherwise fall back to ratio.
+                const clickX = data.x != null ? box.x + data.x : box.x + (box.width * data.xRatio);
+                const clickY = data.y != null ? box.y + data.y : box.y + (box.height * data.yRatio);
 
                 console.log(`>> 计算点击坐标: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
 
@@ -686,7 +691,8 @@ async function goToServerPage(page, user) {
     console.log(`正在连接 Chrome...`);
 
 async function getPageToken(page) {
-    return await page.evaluate(() => {
+    // 1. Check main page hidden input + turnstile.getResponse()
+    let token = await page.evaluate(() => {
         const inp = document.querySelector('input[name="cf-turnstile-response"]');
         if (inp && inp.value && inp.value.length > 20) return inp.value;
         if (typeof window.turnstile !== 'undefined') {
@@ -697,6 +703,26 @@ async function getPageToken(page) {
         }
         return null;
     }).catch(() => null);
+    if (token) return token;
+
+    // 2. Check all frames (Turnstile iframe may have its own token)
+    for (const frame of page.frames()) {
+        try {
+            token = await frame.evaluate(() => {
+                const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                if (inp && inp.value && inp.value.length > 20) return inp.value;
+                if (typeof window.turnstile !== 'undefined') {
+                    try {
+                        const t = window.turnstile.getResponse();
+                        if (t && t.length > 20) return t;
+                    } catch (e) { }
+                }
+                return null;
+            }).catch(() => null);
+            if (token) return token;
+        } catch (e) { }
+    }
+    return null;
 }
 
     let browser;
@@ -833,12 +859,19 @@ async function getPageToken(page) {
                             console.log('   >> 正在处理 Turnstile (先获取 token 再提交)...');
                             let turnstileSolved = false;
 
-                            // 1. CDP 点击复选框 + 轮询 token
-                            for (let findAttempt = 0; findAttempt < 15 && !turnstileSolved; findAttempt++) {
+                            // 0. 先检查是否已有 token (managed/非交互模式可能已自动通过)
+                            let existingToken = await getPageToken(page);
+                            if (existingToken) {
+                                console.log('   >> ✅ Turnstile 已自动通过 (token 长度 ' + existingToken.length + ')');
+                                turnstileSolved = true;
+                            }
+
+                            // 1. CDP 点击复选框 + 轮询 token (最多 3 轮，每轮 15 秒轮询，总 ~45 秒上限)
+                            for (let findAttempt = 0; findAttempt < 3 && !turnstileSolved; findAttempt++) {
                                 const cdpOk = await attemptTurnstileCdp(page);
                                 if (cdpOk) {
-                                    console.log('   >> CDP 点击已发送，等待 token...');
-                                    for (let tw = 0; tw < 20; tw++) {
+                                    console.log('   >> CDP 点击已发送 (第 ' + (findAttempt + 1) + ' 轮)，等待 token (最多 15s)...');
+                                    for (let tw = 0; tw < 15; tw++) {
                                         const token = await getPageToken(page);
                                         if (token && token.length > 20) {
                                             console.log('   >> ✅ Turnstile token 已获取 (长度 ' + token.length + ')');
@@ -848,7 +881,10 @@ async function getPageToken(page) {
                                         await page.waitForTimeout(1000);
                                     }
                                 }
-                                if (!turnstileSolved) await page.waitForTimeout(1000);
+                                if (!turnstileSolved) {
+                                    console.log('   >> 第 ' + (findAttempt + 1) + ' 轮未获取到 token...');
+                                    await page.waitForTimeout(2000);
+                                }
                             }
 
                             // 兜底 1: turnstile.execute()
