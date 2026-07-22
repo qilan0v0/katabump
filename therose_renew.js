@@ -721,6 +721,9 @@ async function goToServerPage(page, user) {
 
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
+        // 兼容 email/username 两种字段名
+        if (user.email && !user.username) user.username = user.email;
+        if (user.pass && !user.password) user.password = user.pass;
         console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`); // 隐去具体邮箱 logging
 
         try {
