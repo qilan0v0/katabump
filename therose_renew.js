@@ -337,12 +337,8 @@ function getUsers() {
 async function attemptTurnstileCdp(page) {
     const frames = page.frames();
     for (const frame of frames) {
-        const fu = (frame.url() || '');
-        if (fu && !/cloudflare|turnstile|challenges|hcaptcha|^about:|^$/i.test(fu)) {
-            if (frame !== page.mainFrame()) continue;
-        }
         try {
-            const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
+            const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
             if (data) {
                 console.log('>> 在 frame 中发现 Turnstile。比例:', data);
 
