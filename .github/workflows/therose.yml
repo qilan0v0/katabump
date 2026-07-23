@@ -38,7 +38,6 @@ jobs:
       env:
         THEROSE_USERS_JSON: ${{ secrets.THEROSE_USERS_JSON }}
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
-        V2RAY_BIN: $HOME/v2ray/v2ray
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
