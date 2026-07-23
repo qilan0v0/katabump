@@ -6,7 +6,7 @@
  *
  * 环境变量:
  *   THEROSE_USERS_JSON - 用户配置 (必需)
- *     格式: [{"email":"xxx","password":"xxx"}]
+ *     格式: [{"email":"xxx","password":"xxx","V2":"vmess://..."}]
  *   KV_ADMIN_URL       - KV Admin Worker URL (推荐，用于 cookie 持久化)
  *   KV_ADMIN_PASS      - KV Admin Worker 密码
  *   HTTP_PROXY         - HTTP 代理 (可选)
@@ -20,17 +20,34 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const http = require('http');
 
 const BASE_URL = 'https://client.therose.cloud';
 const LOGIN_URL = BASE_URL + '/login';
 const SERVERS_URL = BASE_URL + '/panel?routeName=servers';
 
 const CHROME_PATH = process.env.CHROME_PATH;
+const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const TG_THREAD_ID = process.env.TG_THREAD_ID;
 const PROJECT = process.env.PROJECT_NAME || 'TheRose';
+
+// v2ray 进程管理
+const allV2rayProcs = [];
+let nextV2rayPort = 10810;
+
+function cleanupV2ray() {
+  for (const { proc, port } of allV2rayProcs) {
+    try { proc.kill('SIGTERM'); } catch (e) {}
+    try { fs.unlinkSync(path.join(process.cwd(), `v2ray-therose-${port}.json`)); } catch (e) {}
+  }
+  allV2rayProcs.length = 0;
+}
+process.on('exit', () => cleanupV2ray());
+process.on('SIGINT', () => { cleanupV2ray(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupV2ray(); process.exit(0); });
 
 // ===================== KV 存储 =====================
 
@@ -168,6 +185,72 @@ async function sendTelegramMessage(message, imagePath = null) {
       console.warn('[Telegram] 发送失败:', stdout.slice(0, 200));
     }
   }
+}
+
+// ===================== v2ray 管理 =====================
+
+async function startV2rayForLink(link) {
+  if (!fs.existsSync(V2RAY_BIN)) {
+    console.error(`[v2ray] 未找到 v2ray 二进制 (${V2RAY_BIN})`);
+    return null;
+  }
+  const port = nextV2rayPort++;
+  let cfgPath;
+  try {
+    const { buildConfig } = require('./.github/scripts/gen-v2ray-config');
+    const cfg = buildConfig(link, port);
+    cfgPath = path.join(process.cwd(), `v2ray-therose-${port}.json`);
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+  } catch (e) {
+    console.error(`[v2ray] 解析 V2 链接失败: ${e.message}`);
+    return null;
+  }
+  console.log(`[v2ray] 启动实例 (HTTP 127.0.0.1:${port})...`);
+  const proc = spawn(V2RAY_BIN, ['run', '-config', cfgPath], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  if (proc.stderr) proc.stderr.on('data', d => { stderr += d.toString(); });
+  proc.on('error', e => { stderr += `spawn error: ${e.message}\n`; });
+  allV2rayProcs.push({ proc, port });
+
+  const ready = await new Promise((resolve) => {
+    let n = 0;
+    const tick = () => {
+      const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 3000 }, () => resolve(true));
+      req.on('error', () => { if (++n >= 15) return resolve(false); setTimeout(tick, 2000); });
+      req.on('timeout', () => { req.destroy(); if (++n >= 15) return resolve(false); else setTimeout(tick, 2000); });
+      req.end();
+    };
+    tick();
+  });
+  if (!ready) {
+    console.error(`[v2ray] 端口 ${port} 未就绪。stderr:\n${stderr.slice(-400)}`);
+    return null;
+  }
+  console.log(`[v2ray] 代理就绪 → http://127.0.0.1:${port}`);
+  return { port, url: `http://127.0.0.1:${port}` };
+}
+
+async function resolveProxyForUser(user) {
+  // 优先使用用户自己的 V2 链接
+  if (user.V2 || user.v2) {
+    const link = user.V2 || user.v2;
+    console.log(`[代理] 用户有 V2 链接，启动独立 v2ray...`);
+    const result = await startV2rayForLink(link);
+    if (result) return result;
+    console.warn('[代理] 独立 v2ray 启动失败，回退');
+  }
+  // 其次是全局 HTTP_PROXY
+  if (process.env.HTTP_PROXY) {
+    try {
+      const url = new URL(process.env.HTTP_PROXY);
+      console.log(`[代理] 使用全局 HTTP 代理: ${url.hostname}:${url.port}`);
+      return null; // null 表示使用全局 HTTP_PROXY
+    } catch (e) {
+      console.warn('[代理] HTTP_PROXY 格式无效，直连');
+    }
+  }
+  console.log('[代理] 直连');
+  return null;
 }
 
 // ===================== 浏览器工具 =====================
@@ -335,6 +418,9 @@ async function processUser(user) {
 
   console.log(`\n========== 处理用户: ${email} ==========`);
 
+  // 解析用户代理
+  const v2rayInfo = await resolveProxyForUser(user);
+
   // 启动浏览器
   const launchArgs = [
     '--no-first-run',
@@ -348,13 +434,16 @@ async function processUser(user) {
     '--enable-webgl',
   ];
 
-  const HTTP_PROXY = process.env.HTTP_PROXY;
-  if (HTTP_PROXY) {
+  if (v2rayInfo) {
+    launchArgs.push(`--proxy-server=${v2rayInfo.url}`);
+    launchArgs.push('--proxy-bypass-list=<-loopback>');
+    console.log(`[代理] 使用独立 v2ray: ${v2rayInfo.url}`);
+  } else if (process.env.HTTP_PROXY) {
     try {
-      const url = new URL(HTTP_PROXY);
+      const url = new URL(process.env.HTTP_PROXY);
       launchArgs.push(`--proxy-server=${url.protocol}//${url.hostname}:${url.port}`);
       launchArgs.push('--proxy-bypass-list=<-loopback>');
-      console.log(`[代理] 使用 HTTP 代理: ${url.hostname}:${url.port}`);
+      console.log(`[代理] 使用全局 HTTP 代理: ${url.hostname}:${url.port}`);
     } catch (e) {
       console.warn('[代理] HTTP_PROXY 格式无效，直连');
     }
@@ -583,7 +672,7 @@ async function main() {
   const users = getUsers();
   if (users.length === 0) {
     console.error('未找到用户配置！请设置 THEROSE_USERS_JSON 环境变量');
-    console.error('格式: [{"email":"xxx","password":"xxx"}]');
+    console.error('格式: [{"email":"xxx","password":"xxx","V2":"vmess://..."}]');
     process.exit(1);
   }
   console.log(`共 ${users.length} 个用户`);
