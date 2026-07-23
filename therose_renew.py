@@ -3,6 +3,7 @@
 TheRose Cloud - 自动续期 (SeleniumBase uc 模式 + 根 URL 优先 + 独立 V2 节点)
 """
 import os, sys, json, time, subprocess, signal, atexit
+from seleniumbase import SB
 
 USERS_JSON = os.environ.get("THEROSE_USERS_JSON", "[]")
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
@@ -53,12 +54,16 @@ def start_v2ray(v2_link):
     log(f"[v2ray] 启动实例 (HTTP 127.0.0.1:{port})...")
     proc = subprocess.Popen(
         [V2RAY_BIN, "run", "-config", cfg_path],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
     )
     v2ray_procs.append((proc, port, cfg_path))
 
     # 等待就绪
     for i in range(15):
+        if proc.poll() is not None:
+            err = proc.stderr.read().decode() if proc.stderr else ""
+            log(f"[v2ray] 进程异常退出: {err[:200]}")
+            return None
         try:
             import urllib.request
             urllib.request.urlopen(f"http://127.0.0.1:{port}", timeout=2)
