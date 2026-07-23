@@ -257,6 +257,13 @@ async function resolveProxyForUser(user) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+async function safeGoto(page, url) {
+  await page.goto(url, { waitUntil: 'commit', timeout: 30000 }).catch(e => {
+    console.warn(`[导航] ${url} 超时: ${e.message?.slice(0, 60)}`);
+  });
+  await sleep(3000);
+}
+
 async function saveScreenshot(page, name) {
   const dir = 'screenshots';
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -475,7 +482,7 @@ async function processUser(user) {
       }
 
       // 尝试直接访问服务器页
-      await page.goto(SERVERS_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      await safeGoto(page, SERVERS_URL);
       await sleep(3000);
 
       // 检查是否登录成功
@@ -485,7 +492,7 @@ async function processUser(user) {
         results.login = true;
       } else {
         console.log(`[${email}] 缓存 cookie 已过期，需要重新登录`);
-        await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+        await safeGoto(page, BASE_URL);
         await sleep(2000);
       }
     }
@@ -493,13 +500,12 @@ async function processUser(user) {
     // ===== Step 2: 登录 =====
     if (!results.login) {
       console.log(`[${email}] 正在登录（先访问根 URL 触发 CF 挑战）...`);
-      await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await sleep(3000);
+      await safeGoto(page, BASE_URL);
+      await sleep(2000);
 
-      // 如果未重定向到登录页，手动导航
+      // 如果 URL 没有变化，再试一次直接导航到登录页
       if (!page.url().includes('/login')) {
-        await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await sleep(2000);
+        await safeGoto(page, LOGIN_URL);
       }
 
       // 填写登录表单
@@ -587,8 +593,7 @@ async function processUser(user) {
     // ===== Step 4: 访问服务器列表 =====
     if (results.login) {
       console.log(`[${email}] 正在访问服务器列表...`);
-      await page.goto(SERVERS_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await sleep(3000);
+      await safeGoto(page, SERVERS_URL);
       await saveScreenshot(page, `therose_servers_${safeUser}`);
 
       // 查找所有需要续期的服务器
@@ -630,8 +635,7 @@ async function processUser(user) {
       for (const server of servers) {
         console.log(`[${email}] 正在续期服务器: ${server.name} (ID: ${server.id})`);
         try {
-          await page.goto(BASE_URL + server.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
-          await sleep(3000);
+          await safeGoto(page, BASE_URL + server.href);
           await saveScreenshot(page, `therose_renew_${server.id}_${safeUser}`);
 
           const checkoutBtn = page.locator('button:has-text("Checkout"), button:has-text("Confirm"), a:has-text("Checkout"), a:has-text("Confirm"), button:has-text("续期"), button:has-text("Proceed")').first();
