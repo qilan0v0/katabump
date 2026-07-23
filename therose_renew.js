@@ -15,12 +15,15 @@
  *   TG_THREAD_ID       - Telegram Thread ID (可选)
  */
 
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
+
+chromium.use(stealth);
 
 const BASE_URL = 'https://client.therose.cloud';
 const LOGIN_URL = BASE_URL + '/login';
@@ -436,9 +439,6 @@ async function processUser(user) {
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
-    '--use-gl=angle',
-    '--use-angle=swiftshader',
-    '--enable-webgl',
   ];
 
   if (v2rayInfo) {
@@ -471,18 +471,28 @@ async function processUser(user) {
   console.log('[注入] 防检测脚本已注入');
 
   // 拦截 Turnstile API 脚本，移除自动化检测
-  await page.route('**/turnstile/**/api.js', async (route) => {
+  await page.route(/turnstile.*api\.js/, async (route) => {
     try {
       const response = await route.fetch();
       let body = await response.text();
-      // 替换 navigator.webdriver 检测
-      body = body.replace(/navigator\.webdriver/g, 'void 0');
-      // 替换 canvas toDataURL 检测
-      body = body.replace(/\.toDataURL\s*\(/g, '.toDataURL.call(');
+      const origLen = body.length;
+      // 批量替换自动化检测关键字
+      const replacements = [
+        ['navigator.webdriver', 'void 0'],
+        ['navigator.plugins.length', '1'],
+        ['navigator.languages', "['en-US','en']"],
+        ['.toDataURL(', '.toDataURL.call('],
+        ['"webdriver" in navigator', 'false'],
+        ['"plugins" in navigator', 'true'],
+        ['"languages" in navigator', 'true'],
+      ];
+      for (const [from, to] of replacements) {
+        body = body.replaceAll(from, to);
+      }
+      console.log(`[拦截] Turnstile API 已打补丁 (${origLen}->${body.length} 字节)`);
       await route.fulfill({ body, contentType: 'application/javascript' });
-      console.log('[拦截] Turnstile API 已打补丁');
     } catch (e) {
-      console.warn('[拦截] Turnstile API 补丁失败，继续:', e.message);
+      console.warn('[拦截] Turnstile API 补丁失败，继续:', e.message?.slice(0, 80));
       await route.continue();
     }
   });
