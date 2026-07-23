@@ -58,8 +58,8 @@ def start_v2ray(v2_link):
     )
     v2ray_procs.append((proc, port, cfg_path))
 
-    # 等待就绪（最多 60 秒）
-    for i in range(30):
+    # 等待就绪（最多 10 秒）
+    for i in range(5):
         if proc.poll() is not None:
             err = proc.stderr.read().decode() if proc.stderr else ""
             log(f"[v2ray] 进程异常退出: {err[:200]}")
