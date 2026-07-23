@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
 """
 TheRose Cloud - 自动续期 (SeleniumBase uc 模式)
-使用 seleniumbase 的 undetected 模式绕过 Cloudflare Turnstile
 """
 import os, sys, json, time
 from seleniumbase import SB
 
-# ===== 环境变量 =====
 USERS_JSON = os.environ.get("THEROSE_USERS_JSON", "[]")
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
 TG_THREAD_ID = os.environ.get("TG_THREAD_ID", "")
 PROJECT = os.environ.get("PROJECT_NAME", "TheRose")
 HTTP_PROXY = os.environ.get("HTTP_PROXY", "")
-
 BASE_URL = "https://client.therose.cloud"
 
 def log(msg):
     t = time.strftime("%H:%M:%S")
-    # 移除 emoji 避免 Windows GBK 编码问题
-    clean = msg.replace('\u2705', '[OK]').replace('\u274c', '[FAIL]').replace('\u2757', '[!]')
-    print(f"[{t}] {clean}", flush=True)
+    print(f"[{t}] {msg}", flush=True)
 
-# ===== Telegram 通知 =====
 def send_tg(message, image_path=None):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
@@ -35,26 +29,17 @@ def send_tg(message, image_path=None):
                 data = {"chat_id": TG_CHAT_ID, "caption": text[:1000], "parse_mode": "Markdown"}
                 if TG_THREAD_ID:
                     data["message_thread_id"] = int(TG_THREAD_ID)
-                resp = requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto",
-                                     data=data, files=files, timeout=30)
-                if resp.status_code != 200:
-                    log(f"[TG] 图文发送失败: {resp.text[:200]}")
-                else:
-                    log("[TG] 图文消息已发送")
+                resp = requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto", data=data, files=files, timeout=30)
         else:
             data = {"chat_id": TG_CHAT_ID, "text": text[:3000], "parse_mode": "Markdown"}
             if TG_THREAD_ID:
                 data["message_thread_id"] = int(TG_THREAD_ID)
-            resp = requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-                                 json=data, timeout=30)
-            if resp.status_code == 200:
-                log("[TG] 消息已发送")
-            else:
-                log(f"[TG] 发送失败: {resp.text[:200]}")
+            resp = requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage", json=data, timeout=30)
+        if resp.status_code == 200:
+            log("[TG] 已发送")
     except Exception as e:
         log(f"[TG] 异常: {e}")
 
-# ===== 登录 =====
 def login(sb, email, password):
     log("打开登录页...")
     sb.open(BASE_URL + "/login")
@@ -83,7 +68,7 @@ def login(sb, email, password):
         url = sb.get_current_url()
         log(f"[{i}] URL: {url}")
         if "panel" in url:
-            log("[OK] 登录成功！")
+            log("[OK] 登录成功")
             return True, url
         time.sleep(1)
 
@@ -91,17 +76,16 @@ def login(sb, email, password):
     sb.save_screenshot("login_failed.png")
     return False, sb.get_current_url()
 
-# ===== 续期 =====
 def renew_servers(sb):
     log("访问服务器列表...")
     sb.open(BASE_URL + "/panel?routeName=servers")
     sb.sleep(3)
 
     extend_links = sb.find_elements('a[href*="cart_renew"]')
-    log(f"发现 {len(extend_links)} 个需要续期的服务器")
+    log(f"发现 {len(extend_links)} 个服务器")
 
     if len(extend_links) == 0:
-        log("没有需要续期的服务器")
+        log("无需续期")
         return ["无需续期"]
 
     results = []
@@ -111,11 +95,7 @@ def renew_servers(sb):
             text = link.text.strip() or "Unknown"
             log(f"续期: {text}")
 
-            # 点击 Extend 链接
-            try:
-                link.click()
-            except:
-                sb.driver.execute_script("arguments[0].click()", link)
+            sb.open(href)
             sb.sleep(2)
 
             try:
@@ -124,7 +104,7 @@ def renew_servers(sb):
                     log("点击 Order now...")
                     sb.uc_click('button:contains("Order now")')
                     sb.sleep(3)
-                    log(f"[OK] 服务器 {text} 续期成功")
+                    log(f"[OK] {text} 续期成功")
                     results.append(f"{text}: 成功")
                 else:
                     results.append(f"{text}: 已处理")
@@ -136,7 +116,6 @@ def renew_servers(sb):
 
     return results
 
-# ===== 主流程 =====
 def main():
     log("===== TheRose Cloud Auto Renew =====")
 
@@ -145,9 +124,8 @@ def main():
     except:
         users = []
     if not users:
-        log("未找到用户配置，请设置 THEROSE_USERS_JSON")
+        log("请设置 THEROSE_USERS_JSON")
         sys.exit(1)
-    log(f"共 {len(users)} 个用户")
 
     all_results = []
     error_screenshot = None
@@ -155,24 +133,19 @@ def main():
     for user in users:
         email = user.get("email", "")
         password = user.get("password", "")
-        v2 = user.get("V2", "")
         if not email or not password:
-            log("跳过：用户缺少 email 或 password")
             continue
 
         log(f"\n========== {email} ==========")
 
-        proxy = HTTP_PROXY
-        if v2:
-            log("用户有独立 V2 节点")
-
         try:
-            with SB(uc=True, headless2=False, browser="chrome", proxy=proxy if proxy else None) as sb:
-                if proxy:
-                    log(f"使用代理: {proxy}")
+            with SB(uc=True, headless=False, browser="chrome") as sb:
                 ok, url = login(sb, email, password)
+                if not ok:
+                    log("重试登录...")
+                    sb.sleep(2)
+                    ok, url = login(sb, email, password)
                 if ok:
-                    sb.save_screenshot("login_success.png")
                     results = renew_servers(sb)
                     all_results.append(f"{email}: [OK] 登录成功 | 续期: {', '.join(results)}")
                 else:
@@ -180,15 +153,14 @@ def main():
                     sb.save_screenshot("error.png")
                     error_screenshot = "error.png"
         except Exception as e:
-            log(f"处理用户出错: {e}")
+            log(f"异常: {e}")
             all_results.append(f"{email}: [FAIL] 异常 - {e}")
 
-    # 汇总
     log("\n===== 执行结果 =====")
     summary = "\n".join(all_results)
     print(summary, flush=True)
     send_tg(summary, error_screenshot)
-    log("===== 执行完毕 =====")
+    log("===== 完毕 =====")
 
 if __name__ == "__main__":
     main()
