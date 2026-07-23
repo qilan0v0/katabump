@@ -695,18 +695,16 @@ async function main() {
   log('===== 执行完毕 =====');
 }
 
-// 全局超时：20 分钟后强制退出，防止卡死
-const GLOBAL_TIMEOUT = 3 * 60 * 1000;
-const timeoutTimer = setTimeout(() => {
-  log('[超时] 脚本执行超过 3 分钟，强制退出');
-  cleanupV2ray();
-  process.exit(1);
-}, GLOBAL_TIMEOUT);
+// 全局超时：3 分钟后用子进程强制 SIGKILL（独立 OS 进程，不受 Node.js 事件循环阻塞影响）
+try {
+  const killer = spawn('bash', ['-c', `sleep 180 && kill -9 ${process.pid} 2>/dev/null`], { detached: true, stdio: 'ignore' });
+  killer.unref();
+} catch (e) {
+  // fallback: 如果 spawn 失败，用 process.abort
+  setTimeout(() => { console.error('[超时] 强制退出'); process.abort(); }, 180000);
+}
 
-main().then(() => {
-  clearTimeout(timeoutTimer);
-}).catch(e => {
-  log('脚本执行失败: ' + e.message);
-  clearTimeout(timeoutTimer);
+main().then(() => {}).catch(e => {
+  console.error('脚本执行失败: ' + e.message);
   process.exit(1);
 });
