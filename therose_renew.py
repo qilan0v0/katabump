@@ -127,28 +127,16 @@ def login(sb, email, password):
         log(f"Turnstile 跳过: {e}")
 
     # 检查 Turnstile 状态
-    ts_state = sb.execute_script("""
-        return JSON.stringify({
-            token: document.querySelector('input[name="cf-turnstile-response"]')?.value || '',
-            hasFrame: !!document.querySelector('.cf-turnstile iframe'),
-            turnstileType: typeof turnstile
-        })
-    """)
+    ts_state = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]');var frame=document.querySelector('.cf-turnstile iframe');var ts=typeof turnstile;JSON.stringify({token:el?el.value:'',hasFrame:!!frame,turnstileType:ts})")
     log(f"Turnstile 状态: {ts_state}")
 
     # 检查 token 是否生成
-    token = sb.execute_script("return document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''")
+    token = sb.execute_script("var el = document.querySelector('input[name=\"cf-turnstile-response\"]'); return el ? el.value : ''")
     if not token or len(token) < 10:
         log("Token 未生成，尝试 JavaScript 触发...")
-        sb.execute_script("""
-            try {
-                if (typeof turnstile !== 'undefined') {
-                    turnstile.execute();
-                }
-            } catch(e) {}
-        """)
+        sb.execute_script("try { if (typeof turnstile !== 'undefined') { turnstile.execute(); } } catch(e) {}")
         sb.sleep(3)
-        token = sb.execute_script("return document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''")
+        token = sb.execute_script("var el = document.querySelector('input[name=\"cf-turnstile-response\"]'); return el ? el.value : ''")
         if token and len(token) > 10:
             log("JavaScript 触发成功")
         else:
