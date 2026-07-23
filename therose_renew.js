@@ -485,16 +485,22 @@ async function processUser(user) {
         results.login = true;
       } else {
         console.log(`[${email}] 缓存 cookie 已过期，需要重新登录`);
-        await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+        await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
         await sleep(2000);
       }
     }
 
     // ===== Step 2: 登录 =====
     if (!results.login) {
-      console.log(`[${email}] 正在登录...`);
-      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      console.log(`[${email}] 正在登录（先访问根 URL 触发 CF 挑战）...`);
+      await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await sleep(3000);
+
+      // 如果未重定向到登录页，手动导航
+      if (!page.url().includes('/login')) {
+        await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await sleep(2000);
+      }
 
       // 填写登录表单
       await page.fill('#login_form_email', email);
