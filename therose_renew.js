@@ -470,6 +470,23 @@ async function processUser(user) {
   await page.addInitScript(INJECTED_SCRIPT);
   console.log('[注入] 防检测脚本已注入');
 
+  // 拦截 Turnstile API 脚本，移除自动化检测
+  await page.route('**/turnstile/**/api.js', async (route) => {
+    try {
+      const response = await route.fetch();
+      let body = await response.text();
+      // 替换 navigator.webdriver 检测
+      body = body.replace(/navigator\.webdriver/g, 'void 0');
+      // 替换 canvas toDataURL 检测
+      body = body.replace(/\.toDataURL\s*\(/g, '.toDataURL.call(');
+      await route.fulfill({ body, contentType: 'application/javascript' });
+      console.log('[拦截] Turnstile API 已打补丁');
+    } catch (e) {
+      console.warn('[拦截] Turnstile API 补丁失败，继续:', e.message);
+      await route.continue();
+    }
+  });
+
   try {
     // ===== Step 1: 尝试使用缓存的 cookie =====
     const cachedRaw = await kvGet(cookieKey);
