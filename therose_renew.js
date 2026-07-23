@@ -306,6 +306,14 @@ function patchJs(body) {
     .replace(/"error":/g, '"ignore":');
 }
 
+// 带超时的 route.fetch
+async function routeFetchWithTimeout(route, timeoutMs = 5000) {
+  return await Promise.race([
+    route.fetch(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs))
+  ]);
+}
+
 // 设置三层路由拦截
 async function setupRouteInterception(page) {
   // 第1层：拦截所有 cdn-cgi/challenge-platform JS 脚本，打补丁移除自动化检测
@@ -313,9 +321,8 @@ async function setupRouteInterception(page) {
     const url = route.request().url();
     const resType = route.request().resourceType();
     try {
-      // 只拦截 JS 脚本，其他资源直接放行
       if (resType === 'script' || url.endsWith('.js') || url.includes('api.js') || url.includes('main.js')) {
-        const response = await route.fetch();
+        const response = await routeFetchWithTimeout(route);
         let body = await response.text();
         const origLen = body.length;
         body = patchJs(body);
@@ -325,7 +332,6 @@ async function setupRouteInterception(page) {
         await route.continue();
       }
     } catch (e) {
-      log(`[拦截] 补丁失败，放行: ${url.slice(-50)} - ${(e.message || '').slice(0, 60)}`);
       await route.continue();
     }
   });
@@ -334,13 +340,11 @@ async function setupRouteInterception(page) {
   await page.route('**/challenges.cloudflare.com/**', async (route) => {
     const url = route.request().url();
     const resType = route.request().resourceType();
-    // JS 脚本打补丁
     if (resType === 'script' || url.includes('api.js')) {
       try {
-        const response = await route.fetch();
+        const response = await routeFetchWithTimeout(route);
         let body = await response.text();
         body = patchJs(body);
-        log(`[拦截] CF 脚本已打补丁: ${url.slice(-60)}`);
         await route.fulfill({ body, contentType: 'application/javascript' });
       } catch (e) {
         await route.continue();
@@ -353,26 +357,22 @@ async function setupRouteInterception(page) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, score: 0.9 }) });
       return;
     }
-    // Turnstile 小部件 HTML/iframe 放行
     await route.continue();
   });
 
-  // 第3层：拦截源站 cdn-cgi 请求（oneshot 检测），返回空成功
+  // 第3层：拦截源站 cdn-cgi 请求（oneshot 检测），直接放行不阻塞
   await page.route('**/cdn-cgi/challenge-platform/h/*/jsd/oneshot/**', async (route) => {
-    log(`[拦截] oneshot 请求已短路: ${route.request().url().slice(-50)}`);
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
   });
 
-  // 拦截 Turnstile api.js（通用匹配，含查询参数）
+  // 拦截 Turnstile api.js
   await page.route('**/turnstile/v0/api.js*', async (route) => {
     try {
-      const response = await route.fetch();
+      const response = await routeFetchWithTimeout(route);
       let body = await response.text();
       body = patchJs(body);
-      log(`[拦截] Turnstile api.js 已打补丁 (${body.length} 字节)`);
       await route.fulfill({ body, contentType: 'application/javascript' });
     } catch (e) {
-      log('[拦截] Turnstile api.js 补丁失败，放行');
       await route.continue();
     }
   });
