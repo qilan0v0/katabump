@@ -58,8 +58,8 @@ def start_v2ray(v2_link):
     )
     v2ray_procs.append((proc, port, cfg_path))
 
-    # 等待就绪
-    for i in range(15):
+    # 等待就绪（最多 60 秒）
+    for i in range(30):
         if proc.poll() is not None:
             err = proc.stderr.read().decode() if proc.stderr else ""
             log(f"[v2ray] 进程异常退出: {err[:200]}")
@@ -120,7 +120,25 @@ def login(sb, email, password):
         log("Turnstile 已处理")
     except Exception as e:
         log(f"Turnstile 跳过: {e}")
-    sb.sleep(3)
+
+    # 检查 token 是否生成
+    token = sb.execute_script("return document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''")
+    if not token or len(token) < 10:
+        log("Token 未生成，尝试 JavaScript 触发...")
+        sb.execute_script("""
+            try {
+                if (typeof turnstile !== 'undefined') {
+                    turnstile.execute();
+                }
+            } catch(e) {}
+        """)
+        sb.sleep(3)
+        token = sb.execute_script("return document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''")
+        if token and len(token) > 10:
+            log("JavaScript 触发成功")
+        else:
+            log("Token 仍未生成，继续提交...")
+    sb.sleep(2)
 
     log("点击登录...")
     sb.uc_click('button:contains("Sign in")')
