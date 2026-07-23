@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-TheRose Cloud - 自动续期 (SeleniumBase uc 模式 + 根 URL 优先)
+TheRose Cloud - 自动续期 (SeleniumBase uc 模式 + 根 URL 优先 + 独立 V2 节点)
 """
-import os, sys, json, time
-from seleniumbase import SB
+import os, sys, json, time, subprocess, signal, atexit
 
 USERS_JSON = os.environ.get("THEROSE_USERS_JSON", "[]")
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
@@ -12,9 +11,63 @@ TG_THREAD_ID = os.environ.get("TG_THREAD_ID", "")
 PROJECT = os.environ.get("PROJECT_NAME", "TheRose")
 HTTP_PROXY = os.environ.get("HTTP_PROXY", "")
 BASE_URL = "https://client.therose.cloud"
+V2RAY_BIN = os.environ.get("V2RAY_BIN", os.path.expanduser("~/v2ray/v2ray"))
+
+# v2ray 进程管理
+v2ray_procs = []
+next_port = 10810
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def cleanup_v2ray():
+    for proc, port, cfg in v2ray_procs:
+        try:
+            proc.kill()
+            proc.wait(timeout=3)
+        except:
+            pass
+        try:
+            os.unlink(cfg)
+        except:
+            pass
+    v2ray_procs.clear()
+
+atexit.register(cleanup_v2ray)
+
+def start_v2ray(v2_link):
+    global next_port
+    port = next_port
+    next_port += 1
+    cfg_path = f"v2ray-therose-{port}.json"
+
+    # 调用 Node.js 脚本生成配置
+    result = subprocess.run(
+        ["node", ".github/scripts/gen-v2ray-config.js", v2_link, str(port), cfg_path],
+        capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0:
+        log(f"[v2ray] 配置生成失败: {result.stderr}")
+        return None
+
+    log(f"[v2ray] 启动实例 (HTTP 127.0.0.1:{port})...")
+    proc = subprocess.Popen(
+        [V2RAY_BIN, "run", "-config", cfg_path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    v2ray_procs.append((proc, port, cfg_path))
+
+    # 等待就绪
+    for i in range(15):
+        try:
+            import urllib.request
+            urllib.request.urlopen(f"http://127.0.0.1:{port}", timeout=2)
+            log(f"[v2ray] 代理就绪 -> http://127.0.0.1:{port}")
+            return f"http://127.0.0.1:{port}"
+        except:
+            time.sleep(2)
+    log(f"[v2ray] 启动失败")
+    return None
 
 def send_tg(message, image_path=None):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
@@ -28,25 +81,22 @@ def send_tg(message, image_path=None):
                 data = {"chat_id": TG_CHAT_ID, "caption": text[:1000], "parse_mode": "Markdown"}
                 if TG_THREAD_ID:
                     data["message_thread_id"] = int(TG_THREAD_ID)
-                resp = requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto", data=data, files=files, timeout=30)
+                requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto", data=data, files=files, timeout=30)
         else:
             data = {"chat_id": TG_CHAT_ID, "text": text[:3000], "parse_mode": "Markdown"}
             if TG_THREAD_ID:
                 data["message_thread_id"] = int(TG_THREAD_ID)
-            resp = requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage", json=data, timeout=30)
-        if resp.status_code == 200:
-            log("[TG] 已发送")
+            requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage", json=data, timeout=30)
+        log("[TG] 已发送")
     except:
         pass
 
 def login(sb, email, password):
-    # 先访问根 URL 触发 CF 挑战
     log("访问根 URL 触发 CF 挑战...")
     sb.open(BASE_URL)
     sb.wait_for_ready_state_complete()
     sb.sleep(3)
 
-    # 如果未重定向到 /login，手动导航
     if "/login" not in sb.get_current_url():
         log("手动导航到 /login...")
         sb.open(BASE_URL + "/login")
@@ -99,10 +149,8 @@ def renew_servers(sb):
             href = link.get_attribute("href")
             text = link.text.strip() or "Unknown"
             log(f"续期: {text}")
-
             sb.open(href)
             sb.sleep(2)
-
             try:
                 btn = sb.find_element('button:contains("Order now")', timeout=5)
                 if btn:
@@ -118,7 +166,6 @@ def renew_servers(sb):
         except Exception as e:
             log(f"续期失败: {e}")
             results.append(f"{text}: 失败")
-
     return results
 
 def main():
@@ -138,13 +185,26 @@ def main():
     for user in users:
         email = user.get("email", "")
         password = user.get("password", "")
+        v2 = user.get("V2", "")
         if not email or not password:
             continue
 
         log(f"\n========== {email} ==========")
 
+        # 解析代理：优先用户 V2 节点，其次全局 HTTP_PROXY
+        proxy = HTTP_PROXY or None
+        if v2:
+            log("用户有独立 V2 节点，启动 v2ray...")
+            v2proxy = start_v2ray(v2)
+            if v2proxy:
+                proxy = v2proxy
+            else:
+                log("[v2ray] 启动失败，回退到全局代理")
+
         try:
-            with SB(uc=True, headless=False, browser="chrome") as sb:
+            with SB(uc=True, headless=False, browser="chrome", proxy=proxy) as sb:
+                if proxy:
+                    log(f"使用代理: {proxy}")
                 ok, url = login(sb, email, password)
                 if not ok:
                     log("重试登录...")
@@ -161,6 +221,7 @@ def main():
             log(f"异常: {e}")
             all_results.append(f"{email}: [FAIL] 异常 - {e}")
 
+    cleanup_v2ray()
     log("\n===== 结果 =====")
     summary = "\n".join(all_results)
     print(summary, flush=True)
