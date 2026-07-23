@@ -102,6 +102,11 @@ def login(sb, email, password):
     sb.wait_for_ready_state_complete()
     sb.sleep(3)
 
+    # 检查 cf_clearance cookie
+    cookies = sb.driver.get_cookies()
+    cf_cookie = [c for c in cookies if c['name'] == 'cf_clearance']
+    log(f"cf_clearance: {'已设置' if cf_cookie else '未设置'}")
+
     if "/login" not in sb.get_current_url():
         log("手动导航到 /login...")
         sb.open(BASE_URL + "/login")
@@ -120,6 +125,16 @@ def login(sb, email, password):
         log("Turnstile 已处理")
     except Exception as e:
         log(f"Turnstile 跳过: {e}")
+
+    # 检查 Turnstile 状态
+    ts_state = sb.execute_script("""
+        return JSON.stringify({
+            token: document.querySelector('input[name="cf-turnstile-response"]')?.value || '',
+            hasFrame: !!document.querySelector('.cf-turnstile iframe'),
+            turnstileType: typeof turnstile
+        })
+    """)
+    log(f"Turnstile 状态: {ts_state}")
 
     # 检查 token 是否生成
     token = sb.execute_script("return document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''")
