@@ -122,25 +122,36 @@ def login(sb, email, password):
     log("处理 Turnstile...")
     try:
         sb.uc_gui_click_captcha()
-        log("Turnstile 已处理")
+        log("uc_gui_click_captcha 已执行")
     except Exception as e:
-        log(f"Turnstile 跳过: {e}")
+        log(f"uc_gui_click_captcha 跳过: {e}")
 
     # 检查 Turnstile 状态
     ts_state = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]');var frame=document.querySelector('.cf-turnstile iframe');var ts=typeof turnstile;JSON.stringify({token:el?el.value:'',hasFrame:!!frame,turnstileType:ts})")
     log(f"Turnstile 状态: {ts_state}")
 
-    # 检查 token 是否生成
+    # 尝试多种方式获取 token
     token = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]'); el ? el.value : ''")
+
+    # 策略1: turnstile.execute()
     if not token or len(token) < 10:
-        log("Token 未生成，尝试 JavaScript 触发...")
+        log("Token 未生成，尝试 turnstile.execute()...")
         sb.execute_script("if(typeof turnstile!=='undefined'){turnstile.execute()}")
         sb.sleep(3)
         token = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]'); el ? el.value : ''")
-        if token and len(token) > 10:
-            log("JavaScript 触发成功")
-        else:
-            log("Token 仍未生成，继续提交...")
+
+    # 策略2: turnstile.render() + 轮询
+    if not token or len(token) < 10:
+        log("execute() 失败，尝试 turnstile.render() + 轮询...")
+        sb.execute_script("var c=document.querySelector('.cf-turnstile');if(c&&typeof turnstile!=='undefined'){try{turnstile.remove()}catch(e){}turnstile.render(c,{sitekey:'0x4AAAAAADT5H9rlFdzDFH6e'})}")
+        for i in range(10):
+            sb.sleep(1)
+            token = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]'); el ? el.value : ''")
+            if token and len(token) > 10:
+                log(f"render() 轮询成功 ({i+1}s)")
+                break
+        if not token or len(token) < 10:
+            log("render() 轮询超时")
     sb.sleep(2)
 
     log("点击登录...")
