@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-TheRose Cloud - 自动续期 (SeleniumBase uc 模式 + 根 URL 优先 + 独立 V2 节点)
+TheRose Cloud - 自动续期 (SeleniumBase uc 模式 + KV cookie 缓存)
 """
-import os, sys, json, time, subprocess, signal, atexit
+import os, sys, json, time, subprocess, atexit, re
 from seleniumbase import SB
 
 USERS_JSON = os.environ.get("THEROSE_USERS_JSON", "[]")
@@ -12,76 +12,57 @@ TG_THREAD_ID = os.environ.get("TG_THREAD_ID", "")
 PROJECT = os.environ.get("PROJECT_NAME", "TheRose")
 HTTP_PROXY = os.environ.get("HTTP_PROXY", "")
 BASE_URL = "https://client.therose.cloud"
-V2RAY_BIN = os.environ.get("V2RAY_BIN", os.path.expanduser("~/v2ray/v2ray"))
-
-# v2ray 进程管理
-v2ray_procs = []
-next_port = 10810
+KV_ADMIN_URL = os.environ.get("KV_ADMIN_URL", "")
+KV_ADMIN_PASS = os.environ.get("KV_ADMIN_PASS", "")
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-def cleanup_v2ray():
-    for proc, port, cfg in v2ray_procs:
-        try:
-            proc.kill()
-            proc.wait(timeout=3)
-        except:
-            pass
-        try:
-            os.unlink(cfg)
-        except:
-            pass
-    v2ray_procs.clear()
-
-atexit.register(cleanup_v2ray)
-
-def start_v2ray(v2_link):
-    global next_port
-    port = next_port
-    next_port += 1
-    cfg_path = f"v2ray-therose-{port}.json"
-
-    # 调用 Node.js 脚本生成配置
-    result = subprocess.run(
-        ["node", ".github/scripts/gen-v2ray-config.js", v2_link, str(port), cfg_path],
-        capture_output=True, text=True, timeout=10
-    )
-    if result.returncode != 0:
-        log(f"[v2ray] 配置生成失败: {result.stderr}")
+# ===== KV 存储 =====
+def kv_get(key):
+    if not KV_ADMIN_URL or not KV_ADMIN_PASS:
         return None
-
-    log(f"[v2ray] 启动实例 (HTTP 127.0.0.1:{port})...")
-    proc = subprocess.Popen(
-        [V2RAY_BIN, "run", "-config", cfg_path],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-    )
-    v2ray_procs.append((proc, port, cfg_path))
-
-    # 等待就绪（最多 10 秒）
-    for i in range(5):
-        if proc.poll() is not None:
-            err = proc.stderr.read().decode() if proc.stderr else ""
-            log(f"[v2ray] 进程异常退出: {err[:200]}")
-            return None
-        try:
-            import urllib.request
-            urllib.request.urlopen(f"http://127.0.0.1:{port}", timeout=2)
-            log(f"[v2ray] 代理就绪 -> http://127.0.0.1:{port}")
-            return f"http://127.0.0.1:{port}"
-        except:
-            time.sleep(2)
-    log(f"[v2ray] 启动失败")
+    try:
+        import requests
+        r = requests.post(KV_ADMIN_URL + "/api/get", json={"key": key},
+            headers={"X-Admin-Pass": KV_ADMIN_PASS, "Content-Type": "application/json"}, timeout=10)
+        if r.ok and r.json().get("ok") and r.json().get("value"):
+            return r.json()["value"]
+    except:
+        pass
     return None
 
-def send_tg(message, image_path=None):
+def kv_set(key, value):
+    if not KV_ADMIN_URL or not KV_ADMIN_PASS:
+        return
+    try:
+        import requests
+        requests.post(KV_ADMIN_URL + "/api/set", json={"key": key, "value": str(value)},
+            headers={"X-Admin-Pass": KV_ADMIN_PASS, "Content-Type": "application/json"}, timeout=10)
+    except:
+        pass
+
+def cookies_to_str(cookies):
+    return ";".join(f"{c['name']}={c['value']}" for c in cookies if c.get('name') and c.get('value'))
+
+def str_to_cookies(s):
+    if not s:
+        return []
+    result = []
+    for p in s.split(";"):
+        if "=" in p:
+            n, v = p.split("=", 1)
+            result.append({"name": n, "value": v, "domain": ".therose.cloud", "path": "/"})
+    return result
+
+def send_tg(msg, img=None):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
     import requests
-    text = f"*{PROJECT}*\n{message}"
+    text = f"*{PROJECT}*\n{msg}"
     try:
-        if image_path and os.path.exists(image_path):
-            with open(image_path, "rb") as f:
+        if img and os.path.exists(img):
+            with open(img, "rb") as f:
                 files = {"photo": f}
                 data = {"chat_id": TG_CHAT_ID, "caption": text[:1000], "parse_mode": "Markdown"}
                 if TG_THREAD_ID:
@@ -102,7 +83,6 @@ def login(sb, email, password):
     sb.wait_for_ready_state_complete()
     sb.sleep(3)
 
-    # 检查 cf_clearance cookie
     cookies = sb.driver.get_cookies()
     cf_cookie = [c for c in cookies if c['name'] == 'cf_clearance']
     log(f"cf_clearance: {'已设置' if cf_cookie else '未设置'}")
@@ -126,21 +106,17 @@ def login(sb, email, password):
     except Exception as e:
         log(f"uc_gui_click_captcha 跳过: {e}")
 
-    # 检查 Turnstile 状态
     ts_state = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]');var frame=document.querySelector('.cf-turnstile iframe');var ts=typeof turnstile;JSON.stringify({token:el?el.value:'',hasFrame:!!frame,turnstileType:ts})")
     log(f"Turnstile 状态: {ts_state}")
 
-    # 尝试多种方式获取 token
     token = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]'); el ? el.value : ''")
 
-    # 策略1: turnstile.execute()
     if not token or len(token) < 10:
         log("Token 未生成，尝试 turnstile.execute()...")
         sb.execute_script("if(typeof turnstile!=='undefined'){turnstile.execute()}")
         sb.sleep(3)
         token = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]'); el ? el.value : ''")
 
-    # 策略2: turnstile.render() + 轮询
     if not token or len(token) < 10:
         log("execute() 失败，尝试 turnstile.render() + 轮询...")
         sb.execute_script("var c=document.querySelector('.cf-turnstile');if(c&&typeof turnstile!=='undefined'){try{turnstile.remove()}catch(e){}turnstile.render(c,{sitekey:'0x4AAAAAADT5H9rlFdzDFH6e'})}")
@@ -222,21 +198,32 @@ def main():
     for user in users:
         email = user.get("email", "")
         password = user.get("password", "")
-        v2 = user.get("V2", "")
         if not email or not password:
             continue
 
         log(f"\n========== {email} ==========")
 
-        # 解析代理：优先用户 V2 节点，其次全局 HTTP_PROXY
-        proxy = HTTP_PROXY or None
-        if v2:
-            log("用户有独立 V2 节点，启动 v2ray...")
-            v2proxy = start_v2ray(v2)
-            if v2proxy:
-                proxy = v2proxy
-            else:
-                log("[v2ray] 启动失败，回退到全局代理")
+        cookie_key = "therose_cookie_" + re.sub(r'[^a-z0-9]', '_', email.lower())
+        cached = kv_get(cookie_key)
+
+        if cached:
+            log("使用缓存 cookie...")
+            try:
+                with SB(uc=True, headless=False) as sb:
+                    for c in str_to_cookies(cached):
+                        sb.driver.execute_cdp_cmd("Network.setCookie", c)
+                    sb.open(BASE_URL + "/panel?routeName=servers")
+                    sb.sleep(3)
+                    text = sb.get_page_source()
+                    if email in text:
+                        log("缓存 cookie 有效，直接续期")
+                        results = renew_servers(sb)
+                        all_results.append(f"{email}: [OK] 续期: {', '.join(results)}")
+                        continue
+                    else:
+                        log("缓存 cookie 已过期，重新登录")
+            except Exception as e:
+                log(f"缓存 cookie 异常: {e}，重新登录")
 
         try:
             with SB(uc=True, headless=False) as sb:
@@ -246,17 +233,23 @@ def main():
                     sb.sleep(2)
                     ok, url = login(sb, email, password)
                 if ok:
+                    # 保存 cookie
+                    cookies = sb.driver.get_cookies()
+                    therose = [c for c in cookies if c['name'] in ('PHPSESSID', 'REMEMBERME', 'cf_clearance')]
+                    if therose:
+                        kv_set(cookie_key, cookies_to_str(therose))
                     results = renew_servers(sb)
                     all_results.append(f"{email}: [OK] 登录成功 | 续期: {', '.join(results)}")
                 else:
                     all_results.append(f"{email}: [FAIL] 登录失败")
+                    all_results.append(f"提示: 请先在本地浏览器手动登录 {BASE_URL}/login")
+                    all_results.append(f"然后将 cookie 存入 KV (key: {cookie_key})")
                     sb.save_screenshot("error.png")
                     err_screenshot = "error.png"
         except Exception as e:
             log(f"异常: {e}")
             all_results.append(f"{email}: [FAIL] 异常 - {e}")
 
-    cleanup_v2ray()
     log("\n===== 结果 =====")
     summary = "\n".join(all_results)
     print(summary, flush=True)
