@@ -1,0 +1,46 @@
+name: Zenix Auto Check-in + AFK + Renew
+
+on:
+  workflow_dispatch: # 允许手动触发
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        npm install
+        npx playwright install-deps chrome
+
+    - name: Run Zenix Check-in + AFK + Renew Script
+      env:
+        PROJECT_NAME: Zenix
+        ZENIX_USERS_JSON: ${{ secrets.ZENIX_USERS_JSON }}
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
+        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+        AFK_DURATION_MINUTES: '30'
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node zenix_renew.js
+
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: zenix-screenshots
+        path: screenshots/
