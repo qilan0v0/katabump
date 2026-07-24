@@ -239,9 +239,7 @@ def main():
                 log("[v2ray] 启动失败，回退到全局代理")
 
         try:
-            with SB(uc=True, headless=False, browser="chrome", proxy=proxy) as sb:
-                if proxy:
-                    log(f"使用代理: {proxy}")
+            with SB(uc=True, headless=False) as sb:
                 ok, url = login(sb, email, password)
                 if not ok:
                     log("重试登录...")
