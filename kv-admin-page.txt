@@ -1,0 +1,4 @@
+- generic [ref=e3]:
+  - heading "KV Cookie 管理" [level=1] [ref=e4]
+  - textbox "输入管理员密码" [active] [ref=e5]
+  - button "登录" [ref=e6] [cursor=pointer]

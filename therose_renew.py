@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TheRose Cloud - 自动续期 (基于用户参考脚本)
+TheRose Cloud - 自动续期 (SeleniumBase uc 模式 + KV cookie 缓存)
 """
 import os, sys, json, time, subprocess, atexit, re
 from seleniumbase import SB
@@ -14,62 +14,9 @@ HTTP_PROXY = os.environ.get("HTTP_PROXY", "")
 BASE_URL = "https://client.therose.cloud"
 KV_ADMIN_URL = os.environ.get("KV_ADMIN_URL", "")
 KV_ADMIN_PASS = os.environ.get("KV_ADMIN_PASS", "")
-V2RAY_BIN = os.environ.get("V2RAY_BIN", os.path.expanduser("~/v2ray/v2ray"))
-
-# v2ray 进程管理
-v2ray_procs = []
-next_port = 10810
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
-
-def cleanup_v2ray():
-    for proc, port, cfg in v2ray_procs:
-        try:
-            proc.kill()
-            proc.wait(timeout=3)
-        except:
-            pass
-        try:
-            os.unlink(cfg)
-        except:
-            pass
-    v2ray_procs.clear()
-
-atexit.register(cleanup_v2ray)
-
-def start_v2ray(v2_link):
-    global next_port
-    port = next_port
-    next_port += 1
-    cfg_path = f"v2ray-therose-{port}.json"
-    result = subprocess.run(
-        ["node", ".github/scripts/gen-v2ray-config.js", v2_link, str(port), cfg_path],
-        capture_output=True, text=True, timeout=10
-    )
-    if result.returncode != 0:
-        log(f"[v2ray] 配置生成失败: {result.stderr}")
-        return None
-    log(f"[v2ray] 启动实例 (HTTP 127.0.0.1:{port})...")
-    proc = subprocess.Popen(
-        [V2RAY_BIN, "run", "-config", cfg_path],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-    )
-    v2ray_procs.append((proc, port, cfg_path))
-    for i in range(5):
-        if proc.poll() is not None:
-            err = proc.stderr.read().decode() if proc.stderr else ""
-            log(f"[v2ray] 进程异常退出: {err[:200]}")
-            return None
-        try:
-            import urllib.request
-            urllib.request.urlopen(f"http://127.0.0.1:{port}", timeout=2)
-            log(f"[v2ray] 代理就绪 -> http://127.0.0.1:{port}")
-            return f"http://127.0.0.1:{port}"
-        except:
-            time.sleep(2)
-    log(f"[v2ray] 启动失败")
-    return None
 
 # ===== KV 存储 =====
 def kv_get(key):
@@ -130,33 +77,65 @@ def send_tg(msg, img=None):
     except:
         pass
 
-# ===== 登录（基于用户参考脚本）=====
 def login(sb, email, password):
-    log("打开登录页...")
-    sb.open(BASE_URL + "/login")
+    log("访问根 URL 触发 CF 挑战...")
+    sb.open(BASE_URL)
     sb.wait_for_ready_state_complete()
-    sb.sleep(1)
+    sb.sleep(3)
+
+    cookies = sb.driver.get_cookies()
+    cf_cookie = [c for c in cookies if c['name'] == 'cf_clearance']
+    log(f"cf_clearance: {'已设置' if cf_cookie else '未设置'}")
+
+    if "/login" not in sb.get_current_url():
+        log("手动导航到 /login...")
+        sb.open(BASE_URL + "/login")
+        sb.wait_for_ready_state_complete()
+        sb.sleep(2)
 
     log("填写邮箱...")
     sb.type('#login_form_email', email, timeout=10)
     log("填写密码...")
     sb.type('#login_form_password', password, timeout=10)
-    time.sleep(1)
+    sb.sleep(1)
 
     log("处理 Turnstile...")
     try:
         sb.uc_gui_click_captcha()
-        log("Turnstile 已处理")
+        log("uc_gui_click_captcha 已执行")
     except Exception as e:
-        log(f"Turnstile 跳过: {e}")
+        log(f"uc_gui_click_captcha 跳过: {e}")
+
+    ts_state = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]');var frame=document.querySelector('.cf-turnstile iframe');var ts=typeof turnstile;JSON.stringify({token:el?el.value:'',hasFrame:!!frame,turnstileType:ts})")
+    log(f"Turnstile 状态: {ts_state}")
+
+    token = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]'); el ? el.value : ''")
+
+    if not token or len(token) < 10:
+        log("Token 未生成，尝试 turnstile.execute()...")
+        sb.execute_script("if(typeof turnstile!=='undefined'){turnstile.execute()}")
+        sb.sleep(3)
+        token = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]'); el ? el.value : ''")
+
+    if not token or len(token) < 10:
+        log("execute() 失败，尝试 turnstile.render() + 轮询...")
+        sb.execute_script("var c=document.querySelector('.cf-turnstile');if(c&&typeof turnstile!=='undefined'){try{turnstile.remove()}catch(e){}turnstile.render(c,{sitekey:'0x4AAAAAADT5H9rlFdzDFH6e'})}")
+        for i in range(10):
+            sb.sleep(1)
+            token = sb.execute_script("var el=document.querySelector('input[name=\"cf-turnstile-response\"]'); el ? el.value : ''")
+            if token and len(token) > 10:
+                log(f"render() 轮询成功 ({i+1}s)")
+                break
+        if not token or len(token) < 10:
+            log("render() 轮询超时")
+    sb.sleep(2)
 
     log("点击登录...")
     sb.uc_click('button:contains("Sign in")')
-    sb.sleep(3)
+    sb.sleep(5)
 
-    for _ in range(30):
+    for i in range(30):
         url = sb.get_current_url()
-        log(f"URL: {url}")
         if "panel" in url:
             log("[OK] 登录成功")
             return True, url
@@ -166,62 +145,42 @@ def login(sb, email, password):
     sb.save_screenshot("login_failed.png")
     return False, sb.get_current_url()
 
-# ===== 续期（基于用户参考脚本）=====
 def renew_servers(sb):
-    log("开始续期流程...")
+    log("访问服务器列表...")
+    sb.open(BASE_URL + "/panel?routeName=servers")
+    sb.sleep(3)
 
-    # 点击 Extend 按钮
-    selectors = [
-        'span:contains("Extend")',
-        'button:contains(title="Extend")',
-    ]
-    clicked = False
-    for sel in selectors:
+    links = sb.find_elements('a[href*="cart_renew"]')
+    log(f"发现 {len(links)} 个服务器")
+
+    if len(links) == 0:
+        return ["无需续期"]
+
+    results = []
+    for link in links:
         try:
-            if sb.find_element(sel, timeout=2):
-                log(f"找到 Extend 按钮: {sel}")
-                sb.uc_click(sel, timeout=5)
-                log("点击成功")
-                clicked = True
-                break
-        except:
-            continue
-    if not clicked:
-        try:
-            btn = sb.find_element('a[href*="cart_renew"]', timeout=2)
-            sb.driver.execute_script("arguments[0].click();", btn)
-            log("通过 JS 点击 Extend 成功")
-            clicked = True
+            href = link.get_attribute("href")
+            text = link.text.strip() or "Unknown"
+            log(f"续期: {text}")
+            sb.open(href)
+            sb.sleep(2)
+            try:
+                btn = sb.find_element('button:contains("Order now")', timeout=5)
+                if btn:
+                    log("点击 Order now...")
+                    sb.uc_click('button:contains("Order now")')
+                    sb.sleep(3)
+                    log(f"[OK] {text} 续期成功")
+                    results.append(f"{text}: 成功")
+                else:
+                    results.append(f"{text}: 已处理")
+            except:
+                results.append(f"{text}: 已处理")
         except Exception as e:
-            log(f"未找到 Extend 按钮: {e}")
-            return ["未找到续期按钮"]
+            log(f"续期失败: {e}")
+            results.append(f"{text}: 失败")
+    return results
 
-    time.sleep(2)
-
-    # 点击 Order now 按钮
-    try:
-        button = sb.find_element('button:contains("Order now")', timeout=5)
-        if button:
-            log("点击 Order now...")
-            sb.uc_click('button:contains("Order now")')
-            log("已点击 Order now")
-            time.sleep(3)
-            # 检查续期是否成功
-            page_source = sb.get_page_source()
-            if "successfully purchased" in page_source.lower():
-                log("[OK] 续期成功")
-                return ["续期成功"]
-            else:
-                log("续期可能已提交")
-                return ["已提交续期"]
-        else:
-            log("未找到 Order now 按钮")
-            return ["无 Order now"]
-    except Exception as e:
-        log(f"点击 Order now 失败: {e}")
-        return [f"续期失败: {e}"]
-
-# ===== 主流程 =====
 def main():
     log("===== TheRose Cloud Auto Renew =====")
 
@@ -239,16 +198,14 @@ def main():
     for user in users:
         email = user.get("email", "")
         password = user.get("password", "")
-        v2 = user.get("V2", "")
         if not email or not password:
             continue
 
         log(f"\n========== {email} ==========")
 
         cookie_key = "therose_cookie_" + re.sub(r'[^a-z0-9]', '_', email.lower())
-
-        # 检查缓存 cookie
         cached = kv_get(cookie_key)
+
         if cached:
             log("使用缓存 cookie...")
             try:
@@ -264,22 +221,12 @@ def main():
                         all_results.append(f"{email}: [OK] 续期: {', '.join(results)}")
                         continue
                     else:
-                        log("缓存 cookie 已过期")
+                        log("缓存 cookie 已过期，重新登录")
             except Exception as e:
-                log(f"缓存 cookie 异常: {e}")
-
-        # 设置代理
-        proxy = HTTP_PROXY or None
-        if v2:
-            log("启动 v2ray...")
-            v2proxy = start_v2ray(v2)
-            if v2proxy:
-                proxy = v2proxy
-            else:
-                log("v2ray 启动失败")
+                log(f"缓存 cookie 异常: {e}，重新登录")
 
         try:
-            with SB(uc=True, headless=False, proxy=proxy) as sb:
+            with SB(uc=True, headless=False) as sb:
                 ok, url = login(sb, email, password)
                 if not ok:
                     log("重试登录...")
@@ -295,14 +242,14 @@ def main():
                     all_results.append(f"{email}: [OK] 登录成功 | 续期: {', '.join(results)}")
                 else:
                     all_results.append(f"{email}: [FAIL] 登录失败")
-                    all_results.append(f"提示: 手动登录后存 cookie 到 KV (key: {cookie_key})")
+                    all_results.append(f"提示: 请先在本地浏览器手动登录 {BASE_URL}/login")
+                    all_results.append(f"然后将 cookie 存入 KV (key: {cookie_key})")
                     sb.save_screenshot("error.png")
                     err_screenshot = "error.png"
         except Exception as e:
             log(f"异常: {e}")
             all_results.append(f"{email}: [FAIL] 异常 - {e}")
 
-    cleanup_v2ray()
     log("\n===== 结果 =====")
     summary = "\n".join(all_results)
     print(summary, flush=True)

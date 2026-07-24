@@ -1,0 +1,300 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - generic [ref=e12]:
+        - heading "KV Cookie 管理" [level=1] [ref=e13]
+        - generic [ref=e14]: 管理 KV 中存储的登录 Cookie
+      - generic [ref=e15]:
+        - button "新增" [ref=e16] [cursor=pointer]
+        - button "项目" [ref=e17] [cursor=pointer]
+        - button "刷新" [ref=e18] [cursor=pointer]
+    - generic [ref=e19]:
+      - button "全部 (22)" [ref=e322] [cursor=pointer]
+      - button "BotHosting (1)" [ref=e323] [cursor=pointer]
+      - button "FreeGameHost (1)" [ref=e324] [cursor=pointer]
+      - button "FreeMCHost (1)" [ref=e325] [cursor=pointer]
+      - button "Gaming4Free (2)" [ref=e326] [cursor=pointer]
+      - button "Katabump (2)" [ref=e327] [cursor=pointer]
+      - button "Unknown (9)" [ref=e328] [cursor=pointer]
+      - button "Vortexa (1)" [ref=e329] [cursor=pointer]
+      - button "Weirdhost (3)" [ref=e330] [cursor=pointer]
+      - button "Zampto (2)" [ref=e331] [cursor=pointer]
+    - generic [ref=e30]:
+      - textbox "按 Key 或邮箱搜索…" [ref=e31]
+      - generic [ref=e32]: 22 条记录
+    - table [ref=e332]:
+      - rowgroup [ref=e333]:
+        - row "键名 项目 邮箱 Cookie 最早过期 更新时间 操作" [ref=e334]:
+          - columnheader "键名" [ref=e335]
+          - columnheader "项目" [ref=e336]
+          - columnheader "邮箱" [ref=e337]
+          - columnheader "Cookie" [ref=e338]
+          - columnheader "最早过期" [ref=e339]
+          - columnheader "更新时间" [ref=e340]
+          - columnheader "操作" [ref=e341]
+      - rowgroup [ref=e342]:
+        - row "69yun_cookie_3100676552_qq_com Unknown 69yun_cookie_3100676552_qq_com 0 - - 编辑 删除" [ref=e343]:
+          - cell "69yun_cookie_3100676552_qq_com" [ref=e344]
+          - cell "Unknown" [ref=e345]:
+            - generic [ref=e346]: Unknown
+          - cell "69yun_cookie_3100676552_qq_com" [ref=e347]
+          - cell "0" [ref=e348]:
+            - generic [ref=e349]: "0"
+          - cell "-" [ref=e350]
+          - cell "-" [ref=e351]
+          - cell "编辑 删除" [ref=e352]:
+            - button "编辑" [ref=e353] [cursor=pointer]
+            - button "删除" [ref=e354] [cursor=pointer]
+        - row "activevm_cookie_darvinskaia_19972104_282820_xyz Unknown activevm_cookie_darvinskaia_19972104_282820_xyz 9 2026/7/21 20:31 - 编辑 删除" [ref=e355]:
+          - cell "activevm_cookie_darvinskaia_19972104_282820_xyz" [ref=e356]
+          - cell "Unknown" [ref=e357]:
+            - generic [ref=e358]: Unknown
+          - cell "activevm_cookie_darvinskaia_19972104_282820_xyz" [ref=e359]
+          - cell "9" [ref=e360]:
+            - generic [ref=e361]: "9"
+          - cell "2026/7/21 20:31" [ref=e362]
+          - cell "-" [ref=e363]
+          - cell "编辑 删除" [ref=e364]:
+            - button "编辑" [ref=e365] [cursor=pointer]
+            - button "删除" [ref=e366] [cursor=pointer]
+        - row "bothosting_cookie_3100676552_qq_com BotHosting 3100676552_qq_com 13 2026/7/24 08:31 - 编辑 删除" [ref=e367]:
+          - cell "bothosting_cookie_3100676552_qq_com" [ref=e368]
+          - cell "BotHosting" [ref=e369]:
+            - generic [ref=e370]: BotHosting
+          - cell "3100676552_qq_com" [ref=e371]
+          - cell "13" [ref=e372]:
+            - generic [ref=e373]: "13"
+          - cell "2026/7/24 08:31" [ref=e374]
+          - cell "-" [ref=e375]
+          - cell "编辑 删除" [ref=e376]:
+            - button "编辑" [ref=e377] [cursor=pointer]
+            - button "删除" [ref=e378] [cursor=pointer]
+        - row "epichost_cookie_l_282820_xyz Unknown epichost_cookie_l_282820_xyz 5 2026/7/1 02:32 - 编辑 删除" [ref=e379]:
+          - cell "epichost_cookie_l_282820_xyz" [ref=e380]
+          - cell "Unknown" [ref=e381]:
+            - generic [ref=e382]: Unknown
+          - cell "epichost_cookie_l_282820_xyz" [ref=e383]
+          - cell "5" [ref=e384]:
+            - generic [ref=e385]: "5"
+          - cell "2026/7/1 02:32" [ref=e386]
+          - cell "-" [ref=e387]
+          - cell "编辑 删除" [ref=e388]:
+            - button "编辑" [ref=e389] [cursor=pointer]
+            - button "删除" [ref=e390] [cursor=pointer]
+        - row "epichost_cookie_ql_282820_xyz Unknown epichost_cookie_ql_282820_xyz 5 2026/7/1 02:31 - 编辑 删除" [ref=e391]:
+          - cell "epichost_cookie_ql_282820_xyz" [ref=e392]
+          - cell "Unknown" [ref=e393]:
+            - generic [ref=e394]: Unknown
+          - cell "epichost_cookie_ql_282820_xyz" [ref=e395]
+          - cell "5" [ref=e396]:
+            - generic [ref=e397]: "5"
+          - cell "2026/7/1 02:31" [ref=e398]
+          - cell "-" [ref=e399]
+          - cell "编辑 删除" [ref=e400]:
+            - button "编辑" [ref=e401] [cursor=pointer]
+            - button "删除" [ref=e402] [cursor=pointer]
+        - row "freegamehost_cookie_lknkristoforfeutl_gmail_com FreeGameHost lknkristoforfeutl_gmail_com 14 2026/7/17 13:45 - 编辑 删除" [ref=e403]:
+          - cell "freegamehost_cookie_lknkristoforfeutl_gmail_com" [ref=e404]
+          - cell "FreeGameHost" [ref=e405]:
+            - generic [ref=e406]: FreeGameHost
+          - cell "lknkristoforfeutl_gmail_com" [ref=e407]
+          - cell "14" [ref=e408]:
+            - generic [ref=e409]: "14"
+          - cell "2026/7/17 13:45" [ref=e410]
+          - cell "-" [ref=e411]
+          - cell "编辑 删除" [ref=e412]:
+            - button "编辑" [ref=e413] [cursor=pointer]
+            - button "删除" [ref=e414] [cursor=pointer]
+        - row "freemchost_cookie_ql_282820_xyz FreeMCHost ql_282820_xyz 11 2026/7/24 02:36 - 编辑 删除" [ref=e415]:
+          - cell "freemchost_cookie_ql_282820_xyz" [ref=e416]
+          - cell "FreeMCHost" [ref=e417]:
+            - generic [ref=e418]: FreeMCHost
+          - cell "ql_282820_xyz" [ref=e419]
+          - cell "11" [ref=e420]:
+            - generic [ref=e421]: "11"
+          - cell "2026/7/24 02:36" [ref=e422]
+          - cell "-" [ref=e423]
+          - cell "编辑 删除" [ref=e424]:
+            - button "编辑" [ref=e425] [cursor=pointer]
+            - button "删除" [ref=e426] [cursor=pointer]
+        - row "gaming4free_cookie_lknkristoforfeutl_gmail_com Gaming4Free lknkristoforfeutl_gmail_com 28 2026/6/23 00:14 - 编辑 删除" [ref=e427]:
+          - cell "gaming4free_cookie_lknkristoforfeutl_gmail_com" [ref=e428]
+          - cell "Gaming4Free" [ref=e429]:
+            - generic [ref=e430]: Gaming4Free
+          - cell "lknkristoforfeutl_gmail_com" [ref=e431]
+          - cell "28" [ref=e432]:
+            - generic [ref=e433]: "28"
+          - cell "2026/6/23 00:14" [ref=e434]
+          - cell "-" [ref=e435]
+          - cell "编辑 删除" [ref=e436]:
+            - button "编辑" [ref=e437] [cursor=pointer]
+            - button "删除" [ref=e438] [cursor=pointer]
+        - row "gaming4free_cookie_qilan0003_gmail_com Gaming4Free qilan0003_gmail_com 12 2026/6/22 18:09 - 编辑 删除" [ref=e439]:
+          - cell "gaming4free_cookie_qilan0003_gmail_com" [ref=e440]
+          - cell "Gaming4Free" [ref=e441]:
+            - generic [ref=e442]: Gaming4Free
+          - cell "qilan0003_gmail_com" [ref=e443]
+          - cell "12" [ref=e444]:
+            - generic [ref=e445]: "12"
+          - cell "2026/6/22 18:09" [ref=e446]
+          - cell "-" [ref=e447]
+          - cell "编辑 删除" [ref=e448]:
+            - button "编辑" [ref=e449] [cursor=pointer]
+            - button "删除" [ref=e450] [cursor=pointer]
+        - row "katabump_cookie_l_282820_xyz Katabump l_282820_xyz 11 2026/7/24 18:01 - 编辑 删除" [ref=e451]:
+          - cell "katabump_cookie_l_282820_xyz" [ref=e452]
+          - cell "Katabump" [ref=e453]:
+            - generic [ref=e454]: Katabump
+          - cell "l_282820_xyz" [ref=e455]
+          - cell "11" [ref=e456]:
+            - generic [ref=e457]: "11"
+          - cell "2026/7/24 18:01" [ref=e458]
+          - cell "-" [ref=e459]
+          - cell "编辑 删除" [ref=e460]:
+            - button "编辑" [ref=e461] [cursor=pointer]
+            - button "删除" [ref=e462] [cursor=pointer]
+        - row "katabump_cookie_ql_282820_xyz Katabump ql_282820_xyz 6 2026/7/20 08:03 - 编辑 删除" [ref=e463]:
+          - cell "katabump_cookie_ql_282820_xyz" [ref=e464]
+          - cell "Katabump" [ref=e465]:
+            - generic [ref=e466]: Katabump
+          - cell "ql_282820_xyz" [ref=e467]
+          - cell "6" [ref=e468]:
+            - generic [ref=e469]: "6"
+          - cell "2026/7/20 08:03" [ref=e470]
+          - cell "-" [ref=e471]
+          - cell "编辑 删除" [ref=e472]:
+            - button "编辑" [ref=e473] [cursor=pointer]
+            - button "删除" [ref=e474] [cursor=pointer]
+        - row "lunes_cookie_borishchenko_19961306_282820_xyz Unknown lunes_cookie_borishchenko_19961306_282820_xyz 4 2026/7/13 09:19 - 编辑 删除" [ref=e475]:
+          - cell "lunes_cookie_borishchenko_19961306_282820_xyz" [ref=e476]
+          - cell "Unknown" [ref=e477]:
+            - generic [ref=e478]: Unknown
+          - cell "lunes_cookie_borishchenko_19961306_282820_xyz" [ref=e479]
+          - cell "4" [ref=e480]:
+            - generic [ref=e481]: "4"
+          - cell "2026/7/13 09:19" [ref=e482]
+          - cell "-" [ref=e483]
+          - cell "编辑 删除" [ref=e484]:
+            - button "编辑" [ref=e485] [cursor=pointer]
+            - button "删除" [ref=e486] [cursor=pointer]
+        - row "lunes_cookie_l_282820_xyz Unknown lunes_cookie_l_282820_xyz 4 2026/7/13 09:18 - 编辑 删除" [ref=e487]:
+          - cell "lunes_cookie_l_282820_xyz" [ref=e488]
+          - cell "Unknown" [ref=e489]:
+            - generic [ref=e490]: Unknown
+          - cell "lunes_cookie_l_282820_xyz" [ref=e491]
+          - cell "4" [ref=e492]:
+            - generic [ref=e493]: "4"
+          - cell "2026/7/13 09:18" [ref=e494]
+          - cell "-" [ref=e495]
+          - cell "编辑 删除" [ref=e496]:
+            - button "编辑" [ref=e497] [cursor=pointer]
+            - button "删除" [ref=e498] [cursor=pointer]
+        - row "lunes_cookie_ql_282820_xyz Unknown lunes_cookie_ql_282820_xyz 5 2026/7/6 09:16 - 编辑 删除" [ref=e499]:
+          - cell "lunes_cookie_ql_282820_xyz" [ref=e500]
+          - cell "Unknown" [ref=e501]:
+            - generic [ref=e502]: Unknown
+          - cell "lunes_cookie_ql_282820_xyz" [ref=e503]
+          - cell "5" [ref=e504]:
+            - generic [ref=e505]: "5"
+          - cell "2026/7/6 09:16" [ref=e506]
+          - cell "-" [ref=e507]
+          - cell "编辑 删除" [ref=e508]:
+            - button "编辑" [ref=e509] [cursor=pointer]
+            - button "删除" [ref=e510] [cursor=pointer]
+        - row "rustix_cookie_qilan0003_gmail_com Unknown rustix_cookie_qilan0003_gmail_com 10 2026/7/17 20:43 - 编辑 删除" [ref=e511]:
+          - cell "rustix_cookie_qilan0003_gmail_com" [ref=e512]
+          - cell "Unknown" [ref=e513]:
+            - generic [ref=e514]: Unknown
+          - cell "rustix_cookie_qilan0003_gmail_com" [ref=e515]
+          - cell "10" [ref=e516]:
+            - generic [ref=e517]: "10"
+          - cell "2026/7/17 20:43" [ref=e518]
+          - cell "-" [ref=e519]
+          - cell "编辑 删除" [ref=e520]:
+            - button "编辑" [ref=e521] [cursor=pointer]
+            - button "删除" [ref=e522] [cursor=pointer]
+        - row "searcade_cookie_ql_282820_xyz Unknown searcade_cookie_ql_282820_xyz 10 2026/8/3 11:01 - 编辑 删除" [ref=e523]:
+          - cell "searcade_cookie_ql_282820_xyz" [ref=e524]
+          - cell "Unknown" [ref=e525]:
+            - generic [ref=e526]: Unknown
+          - cell "searcade_cookie_ql_282820_xyz" [ref=e527]
+          - cell "10" [ref=e528]:
+            - generic [ref=e529]: "10"
+          - cell "2026/8/3 11:01" [ref=e530]
+          - cell "-" [ref=e531]
+          - cell "编辑 删除" [ref=e532]:
+            - button "编辑" [ref=e533] [cursor=pointer]
+            - button "删除" [ref=e534] [cursor=pointer]
+        - row "vortexa_cookie_ql_282820_xyz Vortexa ql_282820_xyz 2 2026/6/28 18:44 - 编辑 删除" [ref=e535]:
+          - cell "vortexa_cookie_ql_282820_xyz" [ref=e536]
+          - cell "Vortexa" [ref=e537]:
+            - generic [ref=e538]: Vortexa
+          - cell "ql_282820_xyz" [ref=e539]
+          - cell "2" [ref=e540]:
+            - generic [ref=e541]: "2"
+          - cell "2026/6/28 18:44" [ref=e542]
+          - cell "-" [ref=e543]
+          - cell "编辑 删除" [ref=e544]:
+            - button "编辑" [ref=e545] [cursor=pointer]
+            - button "删除" [ref=e546] [cursor=pointer]
+        - row "weirdhost_cookie_1415361185_qq_com Weirdhost 1415361185_qq_com 31 2026/6/10 01:31 - 编辑 删除" [ref=e547]:
+          - cell "weirdhost_cookie_1415361185_qq_com" [ref=e548]
+          - cell "Weirdhost" [ref=e549]:
+            - generic [ref=e550]: Weirdhost
+          - cell "1415361185_qq_com" [ref=e551]
+          - cell "31" [ref=e552]:
+            - generic [ref=e553]: "31"
+          - cell "2026/6/10 01:31" [ref=e554]
+          - cell "-" [ref=e555]
+          - cell "编辑 删除" [ref=e556]:
+            - button "编辑" [ref=e557] [cursor=pointer]
+            - button "删除" [ref=e558] [cursor=pointer]
+        - row "weirdhost_cookie_qilan0003_gmail_com Weirdhost qilan0003_gmail_com 53 2026/6/30 01:07 - 编辑 删除" [ref=e559]:
+          - cell "weirdhost_cookie_qilan0003_gmail_com" [ref=e560]
+          - cell "Weirdhost" [ref=e561]:
+            - generic [ref=e562]: Weirdhost
+          - cell "qilan0003_gmail_com" [ref=e563]
+          - cell "53" [ref=e564]:
+            - generic [ref=e565]: "53"
+          - cell "2026/6/30 01:07" [ref=e566]
+          - cell "-" [ref=e567]
+          - cell "编辑 删除" [ref=e568]:
+            - button "编辑" [ref=e569] [cursor=pointer]
+            - button "删除" [ref=e570] [cursor=pointer]
+        - row "weirdhost_cookie_rattobiahbobbit_gmail_com Weirdhost rattobiahbobbit_gmail_com 42 2026/7/7 13:07 - 编辑 删除" [ref=e571]:
+          - cell "weirdhost_cookie_rattobiahbobbit_gmail_com" [ref=e572]
+          - cell "Weirdhost" [ref=e573]:
+            - generic [ref=e574]: Weirdhost
+          - cell "rattobiahbobbit_gmail_com" [ref=e575]
+          - cell "42" [ref=e576]:
+            - generic [ref=e577]: "42"
+          - cell "2026/7/7 13:07" [ref=e578]
+          - cell "-" [ref=e579]
+          - cell "编辑 删除" [ref=e580]:
+            - button "编辑" [ref=e581] [cursor=pointer]
+            - button "删除" [ref=e582] [cursor=pointer]
+        - row "zampto_cookie_l_282820_xyz Zampto l_282820_xyz 9 2026/7/13 20:09 - 编辑 删除" [ref=e583]:
+          - cell "zampto_cookie_l_282820_xyz" [ref=e584]
+          - cell "Zampto" [ref=e585]:
+            - generic [ref=e586]: Zampto
+          - cell "l_282820_xyz" [ref=e587]
+          - cell "9" [ref=e588]:
+            - generic [ref=e589]: "9"
+          - cell "2026/7/13 20:09" [ref=e590]
+          - cell "-" [ref=e591]
+          - cell "编辑 删除" [ref=e592]:
+            - button "编辑" [ref=e593] [cursor=pointer]
+            - button "删除" [ref=e594] [cursor=pointer]
+        - row "zampto_cookie_ql_282820_xyz Zampto ql_282820_xyz 9 2026/7/14 22:37 - 编辑 删除" [ref=e595]:
+          - cell "zampto_cookie_ql_282820_xyz" [ref=e596]
+          - cell "Zampto" [ref=e597]:
+            - generic [ref=e598]: Zampto
+          - cell "ql_282820_xyz" [ref=e599]
+          - cell "9" [ref=e600]:
+            - generic [ref=e601]: "9"
+          - cell "2026/7/14 22:37" [ref=e602]
+          - cell "-" [ref=e603]
+          - cell "编辑 删除" [ref=e604]:
+            - button "编辑" [ref=e605] [cursor=pointer]
+            - button "删除" [ref=e606] [cursor=pointer]
+  - generic [ref=e7]: "已保存: ql_282820_xyz"
