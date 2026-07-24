@@ -36,6 +36,8 @@ jobs:
     - name: Run TheRose Renew Script
       env:
         THEROSE_USERS_JSON: ${{ secrets.THEROSE_USERS_JSON }}
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
