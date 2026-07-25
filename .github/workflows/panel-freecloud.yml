@@ -56,7 +56,7 @@ jobs:
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
         PROJECT_NAME: PanelFreeCloud
-      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node freecloud_checkin.js
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node panel_freecloud_checkin.js
 
     - name: Upload Screenshots
       if: always()
