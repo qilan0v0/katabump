@@ -3,7 +3,7 @@
 // 支持 KV Cookie 缓存: 先尝试缓存的 cookie 免登录，失败再完整登录并回存
 // 代理: 每个用户可携带自己的 V2 (vless://) 链接走独立 v2ray 代理，
 //       SOCKS5 代理 (socks5://user:pass@host:port)，或回退到全局 HTTP_PROXY/直连
-// 账号来源: FREECLOUD_USERS_JSON = [{"username":"xxx","password":"xxx","V2":"vless://..."}]
+// 账号来源: PANEL_FREECLOUD_USERS_JSON = [{"username":"xxx","password":"xxx","V2":"vless://..."}]
 //         或 {"email":"xxx","password":"xxx","socks":"socks5://user:pass@host:port"}
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
@@ -563,20 +563,20 @@ async function checkin(user) {
 (async () => {
     let users = [];
     try {
-        if (process.env['FREECLOUD_USERS_JSON']) {
-            const parsed = JSON.parse(process.env['FREECLOUD_USERS_JSON']);
+        if (process.env['PANEL_FREECLOUD_USERS_JSON']) {
+            const parsed = JSON.parse(process.env['PANEL_FREECLOUD_USERS_JSON']);
             users = Array.isArray(parsed) ? parsed : (parsed.users || []);
         }
     } catch (e) {
-        console.error('解析 FREECLOUD_USERS_JSON 环境变量错误:', e);
+        console.error('解析 PANEL_FREECLOUD_USERS_JSON 环境变量错误:', e);
     }
 
-    if (users.length === 0 && process.env['FREECLOUD_USER'] && process.env['FREECLOUD_PASS']) {
-        users = [{ username: process.env['FREECLOUD_USER'], password: process.env['FREECLOUD_PASS'] }];
+    if (users.length === 0 && process.env['PANEL_FREECLOUD_USER'] && process.env['PANEL_FREECLOUD_PASS']) {
+        users = [{ username: process.env['PANEL_FREECLOUD_USER'], password: process.env['PANEL_FREECLOUD_PASS'] }];
     }
 
     if (users.length === 0) {
-        console.log('未在 FREECLOUD_USERS_JSON 或 FREECLOUD_USER/FREECLOUD_PASS 中找到用户');
+        console.log('未在 PANEL_FREECLOUD_USERS_JSON 或 PANEL_FREECLOUD_USER/PANEL_FREECLOUD_PASS 中找到用户');
         process.exit(1);
     }
 
