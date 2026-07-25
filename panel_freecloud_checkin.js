@@ -522,14 +522,8 @@ async function checkin(user) {
         }
     }
 
-    // 有缓存 cookie 则直连（cf_clearance 已包含，无需代理）
-    // 无缓存 cookie 则需要代理走中国 IP 过 CF 验证
-    let proxyInfo = null;
-    if (!hasCachedCookies) {
-        proxyInfo = await resolveProxyForUser(user);
-    } else {
-        console.log('[' + userIdentifier + '] 有缓存 cookie，跳过代理直连');
-    }
+    // 缓存 cookie 用于跳过 CF 验证，但网站需要中国 IP 访问，所以代理始终要走
+    let proxyInfo = await resolveProxyForUser(user);
 
     const launchArgs = [
         '--no-first-run',
