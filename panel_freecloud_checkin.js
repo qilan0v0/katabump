@@ -507,7 +507,29 @@ async function checkin(user) {
     const safeUser = userIdentifier.replace(/[^a-zA-Z0-9@._-]/g, '_');
     const cookieKey = 'freecloud_cookie_' + safeUser.replace(/[^a-z0-9]/gi, '_');
 
-    const proxyInfo = await resolveProxyForUser(user);
+    // 先检查是否有缓存的 cookie（环境变量或 KV），有则直连跳过代理
+    let hasCachedCookies = false;
+    let cachedCookieStr = process.env['PANEL_FREECLOUD_COOKIES'];
+    if (cachedCookieStr) {
+        hasCachedCookies = true;
+        console.log('[' + userIdentifier + '] 发现 PANEL_FREECLOUD_COOKIES');
+    } else {
+        const kvRaw = await kvGet(cookieKey);
+        if (kvRaw) {
+            cachedCookieStr = kvRaw;
+            hasCachedCookies = true;
+            console.log('[' + userIdentifier + '] 发现 KV 缓存的 cookie');
+        }
+    }
+
+    // 有缓存 cookie 则直连（cf_clearance 已包含，无需代理）
+    // 无缓存 cookie 则需要代理走中国 IP 过 CF 验证
+    let proxyInfo = null;
+    if (!hasCachedCookies) {
+        proxyInfo = await resolveProxyForUser(user);
+    } else {
+        console.log('[' + userIdentifier + '] 有缓存 cookie，跳过代理直连');
+    }
 
     const launchArgs = [
         '--no-first-run',
@@ -546,15 +568,12 @@ async function checkin(user) {
     await page.evaluateOnNewDocument(INJECTED_SCRIPT);
 
     try {
-        // ===== Step 1: 尝试环境变量或 KV 缓存的 cookie =====
+        // ===== Step 1: 尝试注入缓存的 cookie 直连 =====
         let loggedIn = false;
-
-        // 1a: 优先尝试 PANEL_FREECLOUD_COOKIES 环境变量（直接注入，跳过 CF）
-        const envCookies = process.env['PANEL_FREECLOUD_COOKIES'];
-        if (envCookies) {
-            console.log('[' + userIdentifier + '] 发现 PANEL_FREECLOUD_COOKIES，尝试注入...');
+        if (hasCachedCookies) {
+            console.log('[' + userIdentifier + '] 尝试注入 cookie...');
             try {
-                const ckPairs = envCookies.split(/;\s*/).map(p => {
+                const ckPairs = cachedCookieStr.split(/;\s*/).map(p => {
                     const eq = p.indexOf('=');
                     return eq > 0 ? { name: p.slice(0, eq), value: p.slice(eq + 1), domain: '.freecloud.ltd', path: '/' } : null;
                 }).filter(Boolean);
@@ -575,35 +594,6 @@ async function checkin(user) {
             }
         }
 
-        // 1b: 尝试 KV 缓存的 cookie
-        if (!loggedIn) {
-            const cachedRaw = await kvGet(cookieKey);
-
-            if (cachedRaw) {
-                console.log('[' + userIdentifier + '] 发现缓存的 cookie，尝试注入...');
-                try {
-                    const ckPairs = cachedRaw.split(/;\s*/).map(p => {
-                        const eq = p.indexOf('=');
-                        return eq > 0 ? { name: p.slice(0, eq), value: p.slice(eq + 1), domain: '.freecloud.ltd', path: '/' } : null;
-                    }).filter(Boolean);
-                    await page.setCookie(...ckPairs);
-                    console.log('[' + userIdentifier + '] 已注入 ' + ckPairs.length + ' 条 cookie');
-
-                    await page.goto(DASHBOARD_URL, { waitUntil: 'load', timeout: 30000 });
-                    await sleep(2000);
-
-                    if (!page.url().includes('/login')) {
-                        console.log('[' + userIdentifier + '] ✅ cookie 有效，跳过登录');
-                        loggedIn = true;
-                    } else {
-                        console.log('[' + userIdentifier + '] cookie 已过期，需要重新登录');
-                        try { await page.deleteCookie(...ckPairs); } catch (e) { }
-                    }
-                } catch (e) {
-                    console.log('[' + userIdentifier + '] cookie 注入失败，重新登录:', e.message);
-                }
-            }
-        }
 
         // ===== Step 2: 完整登录 =====
         if (!loggedIn) {
