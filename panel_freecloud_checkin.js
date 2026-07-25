@@ -668,6 +668,7 @@ async function checkin(user) {
             msg = '❓ 签到状态未知';
             success = pageText.includes('签到') || pageText.includes('积分');
             console.log('[' + userIdentifier + '] ' + msg);
+            console.log('[' + userIdentifier + '] 页面源码片段: ' + pageText.slice(0, 500).replace(/\n/g, ' | '));
         }
 
         const shotPath = path.join(photoDir, 'freecloud_' + safeUser + '.png');
