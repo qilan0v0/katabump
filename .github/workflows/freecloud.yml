@@ -2,6 +2,8 @@ name: FreeCloud Daily Check-in
 
 on:
   workflow_dispatch: # 手动触发
+  schedule:
+    - cron: '0 0,8 * * *' # 每天 UTC 0:00 和 8:00（北京时间 8:00 和 16:00）
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -43,6 +45,7 @@ jobs:
       env:
         # FREECLOUD_USERS_JSON = [{"username":"xxx@qq.com","password":"xxx"}, ...]
         # 可选 V2 字段: 每个用户可带自己的 vless:// 链接，指定该用户走独立代理
+        # 可选 socks 字段: socks5://user:pass@host:port 走 SOCKS5 代理（中国 IP）
         FREECLOUD_USERS_JSON: ${{ secrets.FREECLOUD_USERS_JSON }}
         FREECLOUD_USER: ${{ secrets.FREECLOUD_USER }}
         FREECLOUD_PASS: ${{ secrets.FREECLOUD_PASS }}
