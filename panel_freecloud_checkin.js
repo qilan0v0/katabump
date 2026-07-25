@@ -522,8 +522,16 @@ async function checkin(user) {
         }
     }
 
-    // 缓存 cookie 用于跳过 CF 验证，但网站需要中国 IP 访问，所以代理始终要走
-    let proxyInfo = await resolveProxyForUser(user);
+    // 先尝试启动代理（提供中国 IP），超时则回退直连（有 cf_clearance cookie 也能过 CF）
+    let proxyInfo = null;
+    try {
+        proxyInfo = await Promise.race([
+            resolveProxyForUser(user),
+            sleep(8000).then(() => { console.log('[' + userIdentifier + '] 代理启动超时，回退直连'); return null; })
+        ]);
+    } catch (e) {
+        console.log('[' + userIdentifier + '] 代理启动失败，回退直连: ' + e.message);
+    }
 
     const launchArgs = [
         '--no-first-run',
