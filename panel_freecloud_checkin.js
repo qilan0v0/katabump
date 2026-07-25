@@ -223,6 +223,42 @@ const INJECTED_SCRIPT = `
 `;
 
 async function attemptTurnstileClick(page) {
+    // 方式0: 尝试通过 page.evaluate 直接调用 turnstile API
+    try {
+        const result = await page.evaluate(() => {
+            if (window.turnstile) {
+                // 尝试执行已渲染的 widget
+                window.turnstile.execute();
+                return 'execute';
+            }
+            // 在 iframe 内找 checkbox 通过 contentDocument
+            const iframes = document.querySelectorAll('iframe');
+            for (const iframe of iframes) {
+                try {
+                    const doc = iframe.contentDocument || iframe.contentWindow.document;
+                    if (doc) {
+                        const cb = doc.querySelector('input[type="checkbox"]');
+                        if (cb) { cb.click(); return 'iframe_doc'; }
+                    }
+                } catch(e) {}
+            }
+            // 在 shadow DOM 中找 checkbox
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+                if (el.shadowRoot) {
+                    const cb = el.shadowRoot.querySelector('input[type="checkbox"]');
+                    if (cb) { cb.click(); return 'shadow'; }
+                }
+            }
+            return null;
+        });
+        if (result) {
+            console.log('>> 通过 evaluate 点击: ' + result);
+            await sleep(2000 + Math.random() * 1000);
+            return true;
+        }
+    } catch (e) { }
+
     // 方式1: 在 Turnstile iframe 内直接找 checkbox 并点击
     try {
         const frames = page.frames();
