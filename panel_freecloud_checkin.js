@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
+const { SocksClient } = require('socks');
 
 const BASE_URL = 'https://panel.freecloud.ltd';
 const LOGIN_URL = BASE_URL + '/index.php?rp=/login';
@@ -70,9 +71,10 @@ const HTTP_PROXY = process.env.HTTP_PROXY;
 // v2ray 二进制路径
 const V2RAY_BIN = process.env.V2RAY_BIN || `${process.env.HOME}/v2ray/v2ray`;
 
-// 管理所有启动的 v2ray 子进程
+// 管理所有启动的代理（v2ray 进程 + SOCKS5 本地 HTTP 转发）
 const v2rayProcs = []; // 当前用户的（用完就清）
 const allV2rayProcs = []; // 全局管理的（进程退出时统一清理）
+const socksProxies = []; // SOCKS5 本地 HTTP 代理服务器
 let nextV2rayPort = 10810;
 
 chromium.use(stealth);
@@ -248,6 +250,68 @@ async function passCloudflare(page, readyLocator, label) {
     return await ready();
 }
 
+// ===== SOCKS5 → HTTP 本地转发代理 =====
+// Playwright/Chromium 不支持 SOCKS5 带认证，所以启动本地 HTTP CONNECT 代理转发
+async function startSocks5HttpProxy(socksUrl) {
+    const url = new URL(socksUrl);
+    const proxyHost = url.hostname;
+    const proxyPort = parseInt(url.port) || 1080;
+    const proxyUsername = url.username ? decodeURIComponent(url.username) : undefined;
+    const proxyPassword = url.password ? decodeURIComponent(url.password) : undefined;
+
+    const server = http.createServer((req, res) => {
+        if (req.method !== 'CONNECT') {
+            res.writeHead(405);
+            res.end();
+            return;
+        }
+
+        const [targetHost, targetPortStr] = req.url.split(':');
+        const targetPort = parseInt(targetPortStr) || 443;
+
+        (async () => {
+            try {
+                const info = await SocksClient.createConnection({
+                    proxy: {
+                        host: proxyHost,
+                        port: proxyPort,
+                        type: 5,
+                        userId: proxyUsername,
+                        password: proxyPassword
+                    },
+                    destination: { host: targetHost, port: targetPort },
+                    command: 'connect'
+                });
+                res.writeHead(200, { 'Connection': 'keep-alive' });
+                res.socket.pipe(info.socket);
+                info.socket.pipe(res.socket);
+                info.socket.on('error', () => { try { res.socket.destroy(); } catch (e) { } });
+                res.socket.on('error', () => { try { info.socket.destroy(); } catch (e) { } });
+            } catch (e) {
+                console.error('[SOCKS5] 连接失败: ' + targetHost + ':' + targetPort + ' - ' + e.message);
+                res.writeHead(502);
+                res.end();
+            }
+        })();
+    });
+
+    return new Promise((resolve) => {
+        server.listen(0, '127.0.0.1', () => {
+            const port = server.address().port;
+            console.log('[SOCKS5] 本地 HTTP 代理: 127.0.0.1:' + port + ' → SOCKS5 ' + proxyHost + ':' + proxyPort + ' (认证)');
+            socksProxies.push(server);
+            resolve({ port, url: 'http://127.0.0.1:' + port });
+        });
+    });
+}
+
+function cleanupSocksProxies() {
+    for (const server of socksProxies) {
+        try { server.close(); } catch (e) { }
+    }
+    socksProxies.length = 0;
+}
+
 // ===== v2ray 管理 =====
 async function startV2rayForLink(link) {
     if (!fs.existsSync(V2RAY_BIN)) {
@@ -302,26 +366,22 @@ function cleanupV2ray(procs = allV2rayProcs) {
 function cleanupCurrentUserV2ray() {
     cleanupV2ray(v2rayProcs);
 }
-process.on('exit', () => cleanupV2ray());
-process.on('SIGINT', () => { cleanupV2ray(); process.exit(0); });
-process.on('SIGTERM', () => { cleanupV2ray(); process.exit(0); });
+process.on('exit', () => { cleanupV2ray(); cleanupSocksProxies(); });
+process.on('SIGINT', () => { cleanupV2ray(); cleanupSocksProxies(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupV2ray(); cleanupSocksProxies(); process.exit(0); });
 
 // ===== 解析用户代理配置 =====
-// 返回: { type: 'socks5', server, username, password } 或 { port, url } (v2ray) 或 null (HTTP_PROXY/直连)
+// 返回: { port, url } (HTTP 代理) 或 null (直连)
 async function resolveProxyForUser(user) {
-    // 1. SOCKS5 代理（用户专用，支持认证）
+    // 1. SOCKS5 代理（用户专用，带认证）→ 启动本地 HTTP 转发
     if (user.socks) {
         try {
-            const url = new URL(user.socks);
-            console.log('[代理] 用户指定 SOCKS5 代理: ' + url.hostname + ':' + url.port);
-            return {
-                type: 'socks5',
-                server: 'socks5://' + url.hostname + ':' + url.port,
-                username: url.username ? decodeURIComponent(url.username) : undefined,
-                password: url.password ? decodeURIComponent(url.password) : undefined
-            };
+            console.log('[代理] 用户指定 SOCKS5 代理，启动本地 HTTP 转发...');
+            const result = await startSocks5HttpProxy(user.socks);
+            if (result) return result;
+            console.warn('[代理] SOCKS5 本地转发启动失败，回退');
         } catch (e) {
-            console.warn('[代理] SOCKS5 地址解析失败: ' + user.socks);
+            console.warn('[代理] SOCKS5 处理失败: ' + e.message);
         }
     }
 
@@ -371,17 +431,8 @@ async function checkin(user) {
         '--disable-dev-shm-usage'
     ];
 
-    let contextProxy = null; // SOCKS5 使用 context 级别代理（支持认证）
-
-    if (proxyInfo && proxyInfo.type === 'socks5') {
-        // SOCKS5 代理 — 通过 Playwright context proxy 选项（支持认证）
-        contextProxy = {
-            server: proxyInfo.server,
-            username: proxyInfo.username,
-            password: proxyInfo.password
-        };
-    } else if (proxyInfo) {
-        // v2ray HTTP 代理
+    // proxyInfo 有 port 字段 → 本地 HTTP 代理（SOCKS5 转发 或 v2ray）
+    if (proxyInfo && proxyInfo.port) {
         launchArgs.push('--proxy-server=http://127.0.0.1:' + proxyInfo.port);
         launchArgs.push('--proxy-bypass-list=<-loopback>');
     } else if (HTTP_PROXY) {
@@ -401,14 +452,10 @@ async function checkin(user) {
         args: launchArgs
     });
 
-    const contextOptions = {
+    const context = await browser.newContext({
         viewport: { width: 1280, height: 720 },
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    };
-    if (contextProxy) {
-        contextOptions.proxy = contextProxy;
-    }
-    const context = await browser.newContext(contextOptions);
+    });
     const page = await context.newPage();
 
     // 注入 CF 绕过脚本到所有 frame
@@ -602,6 +649,7 @@ async function checkin(user) {
     }
 
     cleanupV2ray(allV2rayProcs);
+    cleanupSocksProxies();
     console.log('\n=== 全部完成 === ' + (allSuccess ? '✅ 全部成功' : '⚠️ 部分失败'));
     process.exit(allSuccess ? 0 : 1);
 })();
