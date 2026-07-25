@@ -148,6 +148,9 @@ async function sendTelegramMessage(message, imagePath = null) {
 function _race(p, ms) {
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
 }
+function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+}
 
 // 获取页面 body 文本 (Puppeteer 版)
 async function getBodyText(page) {
@@ -234,7 +237,7 @@ async function attemptTurnstileClick(page) {
                         console.log('>> 找到 Turnstile checkbox，点击...');
                         await cb.click();
                         console.log('>> Puppeteer 点击已发送');
-                        await page.waitForTimeout(1000 + Math.random() * 1000);
+                        await sleep(1000 + Math.random() * 1000);
                         return true;
                     }
                 }
@@ -263,12 +266,12 @@ async function attemptTurnstileClick(page) {
                 const clickY = box.y + (box.h * data.yRatio);
                 console.log('>> mouse.click 坐标: (' + clickX.toFixed(0) + ', ' + clickY.toFixed(0) + ')');
                 await page.mouse.move(clickX, clickY);
-                await page.waitForTimeout(100 + Math.random() * 200);
+                await sleep(100 + Math.random() * 200);
                 await page.mouse.click(clickX, clickY);
-                await page.waitForTimeout(200 + Math.random() * 200);
+                await sleep(200 + Math.random() * 200);
                 await page.mouse.click(clickX, clickY);
                 console.log('>> 双击已发送');
-                await page.waitForTimeout(500 + Math.random() * 500);
+                await sleep(500 + Math.random() * 500);
                 return true;
             }
         }
@@ -288,7 +291,7 @@ async function waitCfChallengeDone(page) {
         }
         if (i === 0) console.log('   >> 检测到 CF 全屏验证，等待通过...');
         await _race(attemptTurnstileClick(page), 10000).catch(() => false);
-        await page.waitForTimeout(2000);
+        await sleep(2000);
     }
     return false;
 }
@@ -303,13 +306,13 @@ async function passCloudflare(page, readySelector, label) {
         const body = await getBodyText(page);
         if (/verifying you are human|this may take a few seconds/i.test(body)) {
             console.log('   >> CF 正在验证中，等待 10 秒...');
-            await page.waitForTimeout(10000);
+            await sleep(10000);
             continue;
         }
         console.log('   >> 点击 Turnstile (第 ' + (i + 1) + ' 次)...');
         await _race(attemptTurnstileClick(page), 15000).catch(() => false);
         console.log('   >> 等待 CF 验证结果...');
-        await page.waitForTimeout(10000);
+        await sleep(10000);
     }
     return await isVisible(page, readySelector);
 }
@@ -522,7 +525,7 @@ async function checkin(user) {
                 console.log('[' + userIdentifier + '] 已注入 ' + ckPairs.length + ' 条 cookie');
 
                 await page.goto(DASHBOARD_URL, { waitUntil: 'load', timeout: 30000 });
-                await page.waitForTimeout(2000);
+                await sleep(2000);
 
                 if (!page.url().includes('/login')) {
                     console.log('[' + userIdentifier + '] ✅ cookie 有效，跳过登录');
@@ -543,7 +546,7 @@ async function checkin(user) {
 
             console.log('[' + userIdentifier + '] 检测 Cloudflare 安全验证状态...');
             await waitCfChallengeDone(page);
-            await page.waitForTimeout(1000);
+            await sleep(1000);
 
             console.log('[' + userIdentifier + '] 过 Cloudflare 验证 + 等待登录表单...');
             const cfReady = await passCloudflare(page, '#inputEmail', '登录表单');
@@ -557,7 +560,7 @@ async function checkin(user) {
             console.log('[' + userIdentifier + '] 填写凭据...');
             await fillField(page, '#inputEmail', userIdentifier);
             await fillField(page, '#inputPassword', user.password);
-            await page.waitForTimeout(500);
+            await sleep(500);
 
             console.log('[' + userIdentifier + '] 点击登录...');
             await page.click('button:has-text("登录"), input[type="submit"][value="登录"]');
@@ -567,7 +570,7 @@ async function checkin(user) {
                 page.waitForNavigation({ waitUntil: 'load', timeout: 20000 }).then(() => 'ok'),
                 new Promise(r => setTimeout(r, 20000)).then(() => 'timeout')
             ]);
-            await page.waitForTimeout(2000);
+            await sleep(2000);
             const currentUrl = page.url();
             console.log('[' + userIdentifier + '] 当前 URL: ' + currentUrl);
 
@@ -576,7 +579,7 @@ async function checkin(user) {
             } else if (!currentUrl.includes('clientarea')) {
                 console.warn('[' + userIdentifier + '] 登录后不在用户中心（' + currentUrl + '），尝试跳转');
                 await page.goto(DASHBOARD_URL, { waitUntil: 'load', timeout: 30000 });
-                await page.waitForTimeout(2000);
+                await sleep(2000);
             }
 
             // 保存 cookie
@@ -592,7 +595,7 @@ async function checkin(user) {
         // ===== Step 3: 执行签到 =====
         console.log('[' + userIdentifier + '] 执行签到...');
         await page.goto(CHECKIN_URL, { waitUntil: 'load', timeout: 30000 });
-        await page.waitForTimeout(2000);
+        await sleep(2000);
 
         const pageText = await getBodyText(page);
         let success = false;
