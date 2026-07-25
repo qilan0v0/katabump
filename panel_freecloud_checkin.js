@@ -546,14 +546,15 @@ async function checkin(user) {
     await page.evaluateOnNewDocument(INJECTED_SCRIPT);
 
     try {
-        // ===== Step 1: 尝试 KV 缓存的 cookie =====
+        // ===== Step 1: 尝试环境变量或 KV 缓存的 cookie =====
         let loggedIn = false;
-        const cachedRaw = await kvGet(cookieKey);
 
-        if (cachedRaw) {
-            console.log('[' + userIdentifier + '] 发现缓存的 cookie，尝试注入...');
+        // 1a: 优先尝试 PANEL_FREECLOUD_COOKIES 环境变量（直接注入，跳过 CF）
+        const envCookies = process.env['PANEL_FREECLOUD_COOKIES'];
+        if (envCookies) {
+            console.log('[' + userIdentifier + '] 发现 PANEL_FREECLOUD_COOKIES，尝试注入...');
             try {
-                const ckPairs = cachedRaw.split(/;\s*/).map(p => {
+                const ckPairs = envCookies.split(/;\s*/).map(p => {
                     const eq = p.indexOf('=');
                     return eq > 0 ? { name: p.slice(0, eq), value: p.slice(eq + 1), domain: '.freecloud.ltd', path: '/' } : null;
                 }).filter(Boolean);
@@ -568,10 +569,39 @@ async function checkin(user) {
                     loggedIn = true;
                 } else {
                     console.log('[' + userIdentifier + '] cookie 已过期，需要重新登录');
-                    try { await page.deleteCookie(...ckPairs); } catch (e) { }
                 }
             } catch (e) {
                 console.log('[' + userIdentifier + '] cookie 注入失败，重新登录:', e.message);
+            }
+        }
+
+        // 1b: 尝试 KV 缓存的 cookie
+        if (!loggedIn) {
+            const cachedRaw = await kvGet(cookieKey);
+
+            if (cachedRaw) {
+                console.log('[' + userIdentifier + '] 发现缓存的 cookie，尝试注入...');
+                try {
+                    const ckPairs = cachedRaw.split(/;\s*/).map(p => {
+                        const eq = p.indexOf('=');
+                        return eq > 0 ? { name: p.slice(0, eq), value: p.slice(eq + 1), domain: '.freecloud.ltd', path: '/' } : null;
+                    }).filter(Boolean);
+                    await page.setCookie(...ckPairs);
+                    console.log('[' + userIdentifier + '] 已注入 ' + ckPairs.length + ' 条 cookie');
+
+                    await page.goto(DASHBOARD_URL, { waitUntil: 'load', timeout: 30000 });
+                    await sleep(2000);
+
+                    if (!page.url().includes('/login')) {
+                        console.log('[' + userIdentifier + '] ✅ cookie 有效，跳过登录');
+                        loggedIn = true;
+                    } else {
+                        console.log('[' + userIdentifier + '] cookie 已过期，需要重新登录');
+                        try { await page.deleteCookie(...ckPairs); } catch (e) { }
+                    }
+                } catch (e) {
+                    console.log('[' + userIdentifier + '] cookie 注入失败，重新登录:', e.message);
+                }
             }
         }
 

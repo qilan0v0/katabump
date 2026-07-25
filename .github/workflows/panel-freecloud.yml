@@ -46,9 +46,11 @@ jobs:
         # PANEL_FREECLOUD_USERS_JSON = [{"email":"xxx@qq.com","password":"xxx"}, ...]
         # 可选 socks 字段: socks5://user:pass@host:port 走 SOCKS5 代理（中国 IP）
         # 可选 V2 字段: vless://... 走独立 v2ray 代理
+        # PANEL_FREECLOUD_COOKIES: 手动登录后获取的 cookie，直接注入跳过 CF 验证
         PANEL_FREECLOUD_USERS_JSON: ${{ secrets.PANEL_FREECLOUD_USERS_JSON }}
         PANEL_FREECLOUD_USER: ${{ secrets.PANEL_FREECLOUD_USER }}
         PANEL_FREECLOUD_PASS: ${{ secrets.PANEL_FREECLOUD_PASS }}
+        PANEL_FREECLOUD_COOKIES: ${{ secrets.PANEL_FREECLOUD_COOKIES }}
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
