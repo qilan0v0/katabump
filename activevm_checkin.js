@@ -515,7 +515,7 @@ async function renewServer(page) {
 //  处理单个用户
 // ===================================================================
 async function processUser(user) {
-  const token = user['Discord-token'] || user['discord_token'] || user['discordToken'] || '';
+  const token = (user['Discord-token'] ? await kvGet('discord_token_' + user['Discord-token']) : null) || user['discord_token'] || user['discordToken'] || '';
   const username = user.username || token.slice(0, 20);
   const safeUser = username.replace(/[^a-zA-Z0-9@._-]/g, '_');
   const cookieKey = `activevm_cookie_${safeUser.replace(/[^a-z0-9]/gi, '_')}`;

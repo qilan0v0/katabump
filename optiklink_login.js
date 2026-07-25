@@ -158,6 +158,8 @@ async function kvPut(key, value) {
     }
 }
 
+
+
 function normalizeCookies(arr) {
     if (!Array.isArray(arr)) return [];
     return arr.map(c => {
@@ -581,8 +583,9 @@ async function controlPanelLogin(page, context, username, password) {
 
             // ===== 2. Discord OAuth 登录 optiklink.net =====
             console.log(`\n[步骤 1/2] Discord OAuth 登录 optiklink.net...`);
-            if (user['Discord-token']) {
-                userResults.optiklink = await discordLogin(page, context, user['Discord-token']);
+            const dcToken = (user['Discord-token'] ? await kvGet('discord_token_' + user['Discord-token']) : null) || user['Discord-token'];
+            if (dcToken) {
+                userResults.optiklink = await discordLogin(page, context, dcToken);
             } else {
                 log('  ⚠️ 未提供 Discord-token，跳过 optiklink.net 登录');
             }

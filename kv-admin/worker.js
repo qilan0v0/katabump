@@ -13,6 +13,7 @@ const DEFAULT_PROJECTS = [
   { label: 'BotHosting', prefix: 'bothosting_cookie_' },
   { label: 'Rustix', prefix: 'rustix_cookie_' },
   { label: 'TheRose', prefix: 'therose_cookie_' },
+  { label: 'Discord Token', prefix: 'discord_token_' },
 ];
 
 let _projectsCache = null;
@@ -20,7 +21,8 @@ let _projectsCache = null;
 async function getProjects(env) {
   if (_projectsCache) return _projectsCache;
   try {
-    const raw = await env.COOKIE_KV.get('_config:projects');
+    const row = await env.DB.prepare('SELECT value FROM entries WHERE key = ?').bind('_config:projects').first();
+    const raw = row ? row.value : null;
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length) {
@@ -116,6 +118,7 @@ const HTML = '<!DOCTYPE html>' +
 '.proj-freemchost{background:#f778ba22;color:#f778ba}' +
 '.proj-gaming4free{background:#ffd70022;color:#ffd700}' +
 '.proj-unknown{background:#30363d44;color:#8b949e}' +
+'.proj-discord{background:#5865f222;color:#5865f2}' +
 '.email-cell{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
 '.num-badge{display:inline-block;min-width:22px;text-align:center;padding:1px 6px;border-radius:8px;font-size:11px;background:#30363d;color:#e6edf3}' +
 '.expiry-cell{font-size:12px;color:#8b949e;white-space:nowrap}' +
@@ -199,7 +202,7 @@ const HTML = '<!DOCTYPE html>' +
 '  else if(a==="confirmDelete"){t.closest(".modal-overlay").remove();doDelete(t.dataset.key)}' +
 '  else if(a==="refresh")doRefresh();' +
 '  else if(a==="addCK")showCKEditor(null,null);' +
-'  else if(a==="editCK"){e.stopPropagation();(function(){var k=t.dataset.key;for(var i=0;i<DATA.length;i++){if(DATA[i].key===k){showCKEditor(k,JSON.stringify(DATA[i].cookies,null,2));return}}})()}' +
+'  else if(a==="editCK"){e.stopPropagation();(function(){var k=t.dataset.key;for(var i=0;i<DATA.length;i++){if(DATA[i].key===k){var v=DATA[i].isDiscordToken?DATA[i].rawValue:JSON.stringify(DATA[i].cookies,null,2);showCKEditor(k,v);return}}})()}' +
 '  else if(a==="saveCK"){var k=t.dataset.key||"";doSaveCK(k)}' +
 '  else if(a==="manageProjects")showProjectMgr();' +
 '  else if(a==="addProject")addProject();' +
@@ -246,7 +249,8 @@ const HTML = '<!DOCTYPE html>' +
 '    var ck=[];try{ck=JSON.parse(e.value||"[]")}catch(_){}' +
 '    if(!Array.isArray(ck))ck=[];' +
 '    var ee=getEarliestExpiry2(ck);' +
-'    return{key:e.key,project:e.project,email:e.email,cookies:ck,count:ck.length,earliestExpiry:ee?ee.getTime():null,updated:e.metadata&&e.metadata.updated?new Date(e.metadata.updated).getTime():null}' +
+'    var isDt=e.key.indexOf("discord_token_")===0;' +
+'    return{key:e.key,project:e.project,email:e.email,cookies:ck,rawValue:isDt?e.value:null,count:isDt?1:ck.length,isDiscordToken:isDt,earliestExpiry:isDt?null:(ee?ee.getTime():null),updated:e.metadata&&e.metadata.updated?new Date(e.metadata.updated).getTime():null}' +
 '  });' +
 '  buildTabs();renderTable()' +
 '}' +
@@ -284,13 +288,14 @@ const HTML = '<!DOCTYPE html>' +
 '    return true' +
 '  });' +
 '  f.sort(function(a,b){return a.key<b.key?-1:a.key>b.key?1:0});' +
+'function maskToken(t){if(!t)return"-";return t.length>12?t.slice(0,6)+"..."+t.slice(-4):t.slice(0,4)+"..."}' +
 '  document.getElementById("countLabel").textContent=f.length+" 条记录";' +
 '  if(f.length===0){document.getElementById("tableWrap").innerHTML="<div class=\\"empty\\">无记录</div>";return}' +
 '  var pbc=function(proj){' +
-'    var m={Katabump:"proj-katabump",Zampto:"proj-zampto",Vortexa:"proj-vortexa",Weirdhost:"proj-weirdhost",FreeMCHost:"proj-freemchost",Gaming4Free:"proj-gaming4free"};' +
+'    var m={Katabump:"proj-katabump",Zampto:"proj-zampto",Vortexa:"proj-vortexa",Weirdhost:"proj-weirdhost",FreeMCHost:"proj-freemchost",Gaming4Free:"proj-gaming4free","Discord Token":"proj-discord"};' +
 '    return m[proj]||"proj-unknown"' +
 '  };' +
-'  var h="<table><thead><tr><th>键名</th><th>项目</th><th>邮箱</th><th>Cookie</th><th>最早过期</th><th>更新时间</th><th>操作</th></tr></thead><tbody>";' +
+'  var h="<table><thead><tr><th>键名</th><th>项目</th><th>邮箱</th><th>Token</th><th>最早过期</th><th>更新时间</th><th>操作</th></tr></thead><tbody>";' +
 '  for(var i=0;i<f.length;i++){' +
 '    var d=f[i];' +
 '    var exp=expandedKey===d.key;' +
@@ -298,15 +303,14 @@ const HTML = '<!DOCTYPE html>' +
 '    h+="<td class=\\"key-cell\\" title=\\""+d.key+"\\">"+d.key+"</td>";' +
 '    h+="<td><span class=\\"proj-badge "+pbc(d.project)+"\\">"+d.project+"</span></td>";' +
 '    h+="<td class=\\"email-cell\\" title=\\""+d.email+"\\">"+d.email+"</td>";' +
-'    h+="<td><span class=\\"num-badge\\">"+d.count+"</span></td>";' +
+'    h+="<td><span class=\\"num-badge\\">"+(d.isDiscordToken?maskToken(d.rawValue):d.count)+"</span></td>";' +
 '    h+="<td class=\\"expiry-cell\\">"+(d.earliestExpiry?fmtDate2(d.earliestExpiry):"-")+"</td>";' +
 '    h+="<td class=\\"updated-cell\\">"+(d.updated?fmtDate2(d.updated):"-")+"</td>";' +
 '    h+="<td class=\\"actions-cell\\"><button class=\\"btn-edit\\" data-action=\\"editCK\\" data-key=\\""+d.key+"\\" style=\\"margin-right:4px\\">编辑</button><button class=\\"btn-del\\" data-action=\\"deleteKey\\" data-key=\\""+d.key+"\\">删除</button></td>";' +
 '    h+="</tr>";' +
 '    if(exp){' +
 '      h+="<tr class=\\"detail-row\\"><td colspan=\\"7\\"><div class=\\"detail-inner\\">";' +
-'      h+="<div class=\\"meta\\">键名： "+d.key+" &middot; "+d.count+" 个 Cookie <button class=\\"btn-edit\\" data-action=\\"editCK\\" data-key=\\""+d.key+"\\" style=\\"margin-left:8px\\">编辑</button></div>";' +
-'      h+="<pre>"+JSON.stringify(d.cookies,null,2)+"</pre>";' +
+'      if(d.isDiscordToken){h+="<div class=\\"meta\\">键名： "+d.key+" &middot; Discord Token<button class=\\"btn-edit\\" data-action=\\"editCK\\" data-key=\\""+d.key+"\\" style=\\"margin-left:8px\\">编辑</button></div><pre>"+htmlEscape(d.rawValue||"")+"</pre>"}else{h+="<div class=\\"meta\\">键名： "+d.key+" &middot; "+d.count+" 个 Cookie <button class=\\"btn-edit\\" data-action=\\"editCK\\" data-key=\\""+d.key+"\\" style=\\"margin-left:8px\\">编辑</button></div><pre>"+JSON.stringify(d.cookies,null,2)+"</pre>"}' +
 '      h+="</div></td></tr>"' +
 '    }' +
 '  }' +
@@ -372,16 +376,16 @@ const HTML = '<!DOCTYPE html>' +
 '  if(r.ok){toast("已删除: "+label);await loadProjects();var m=document.querySelector(".modal-overlay");if(m)m.remove();showProjectMgr()}else toast("删除失败","err")' +
 '}' +
 'function showCKEditor(key,rawVal){' +
-'  var isNew=!key;var proj="";var suf="";var ckText="[]";' +
+'  var isNew=!key;var proj="";var suf="";var ckText="[]";var isDt=key&&key.indexOf("discord_token_")===0;' +
 '  if(key){for(var i=0;i<PROJECTS.length-1;i++){if(key.startsWith(PROJECTS[i].prefix)){proj=PROJECTS[i].label;suf=key.slice(PROJECTS[i].prefix.length);break}}if(!proj){proj="Unknown";suf=key}}' +
-'  if(rawVal){try{ckText=JSON.stringify(JSON.parse(rawVal),null,2)}catch(e){ckText=rawVal}}' +
+'  if(rawVal){if(isDt){ckText=rawVal}else{try{ckText=JSON.stringify(JSON.parse(rawVal),null,2)}catch(e){ckText=rawVal}}}' +
 '  var box=document.createElement("div");box.className="modal-overlay";' +
-'  var h="<div class=\\"modal-box modal-wide\\"><h3>"+(isNew?"新增 Cookie":"编辑 Cookie")+"</h3>";' +
+'  var h="<div class=\\"modal-box modal-wide\\"><h3>"+(isNew?"新增":"编辑")+" "+(isDt?"Discord Token":"Cookie")+"</h3>";' +
 '  h+="<div class=\\"editor-row\\"><select id=\\"ckProject\\">";' +
 '  for(var i=0;i<PROJECTS.length;i++){h+="<option value=\\""+PROJECTS[i].label+"\\""+(PROJECTS[i].label===proj?" selected":"")+">"+PROJECTS[i].label+"</option>"}' +
 '  h+="</select><input id=\\"ckSuffix\\" value=\\""+suf+"\\" placeholder=\\"邮箱或标识\\"></div>";' +
 '  h+="<div id=\\"ckKeyPreview\\" class=\\"key-preview\\">"+(key?key:"")+"</div>";' +
-'  h+="<div class=\\"editor-value\\"><div class=\\"editor-hint\\">Cookie JSON 数组（每个对象含 name,value,domain,expires 等字段）</div><textarea id=\\"ckValue\\">"+ckText+"</textarea></div>";' +
+'  h+="<div class=\\"editor-value\\"><div class=\\"editor-hint\\">"+(isDt?"Discord Token（纯文本，直接粘贴 token）":"Cookie JSON 数组（每个对象含 name,value,domain,expires 等字段）")+"</div>"+(isDt?"<textarea id=\\\"ckValue\\\" style=\\\"min-height:60px;font-size:13px\\\">"+ckText+"</textarea>":"<textarea id=\\\"ckValue\\\">"+ckText+"</textarea>")+"</div>";' +
 '  h+="<div class=\\"modal-actions\\"><button class=\\"cancel\\" data-action=\\"closeModal\\">取消</button>";' +
 '  if(key){h+="<button class=\\"confirm\\" data-action=\\"saveCK\\" data-key=\\""+key+"\\" style=\\"background:#238636;border-color:#238636\\">保存</button>"}else{h+="<button class=\\"confirm\\" data-action=\\"saveCK\\" style=\\"background:#238636;border-color:#238636\\">保存</button>"}' +
 '  h+="</div></div>";box.innerHTML=h;document.body.appendChild(box);' +
@@ -392,10 +396,10 @@ const HTML = '<!DOCTYPE html>' +
 'function getFullKey(){var sel=document.getElementById("ckProject");var pfx="";for(var i=0;i<PROJECTS.length;i++){if(PROJECTS[i].label===sel.value){pfx=PROJECTS[i].prefix;break}}return pfx+document.getElementById("ckSuffix").value}' +
 'async function doSaveCK(key){' +
 '  var fullKey=key||getFullKey();' +
-'  var selProj=document.getElementById("ckProject").value;if(!fullKey||(selProj!=="Unknown"&&fullKey.indexOf("_cookie_")===-1)){toast("Key 格式错误","err");return}' +
+'  var selProj=document.getElementById("ckProject").value;if(!fullKey||(selProj!=="Unknown"&&fullKey.indexOf("_cookie_")===-1&&fullKey.indexOf("discord_token_")===-1)){toast("Key 格式错误","err");return}' +
 '  var val=document.getElementById("ckValue").value;' +
 '  if(!val){toast("请输入 Cookie 数据","err");return}' +
-'  try{JSON.parse(val)}catch(e){toast("JSON 格式错误: "+e.message,"err");return}' +
+'  var isDt=fullKey.indexOf("discord_token_")===0;if(!isDt){try{JSON.parse(val)}catch(e){toast("JSON 格式错误: "+e.message,"err");return}}' +
 '  var r=await api("/api/set",{key:fullKey,value:val});' +
 '  if(r.ok){toast("已保存: "+fullKey);var m=document.querySelector(".modal-overlay");if(m)m.remove();await loadData()}else toast("保存失败","err")}' +
 '</script>' +
@@ -432,30 +436,14 @@ export default {
     }
 
     if (url.pathname === '/api/list' && method === 'POST') {
-      const prefix = '_cookie_';
       const projects = await getProjects(env);
-      let cursor = undefined;
-      const entries = [];
-      do {
-        const listOpts = { cursor };
-        const page = await env.COOKIE_KV.list(listOpts);
-        for (const key of page.keys) {
-          if (key.name.includes(prefix)) {
-            const value = await env.COOKIE_KV.get(key.name);
-            if (value !== null) {
-              entries.push({
-                key: key.name,
-                value,
-                project: extractProject(key.name, projects),
-                email: extractEmail(key.name, projects),
-                metadata: key.metadata || null,
-              });
-            }
-          }
-        }
-        cursor = page.cursor;
-      } while (cursor);
-      entries.sort((a, b) => a.key.localeCompare(b.key));
+      const { results } = await env.DB.prepare("SELECT key, value FROM entries WHERE key LIKE '%_cookie_%' OR key LIKE 'discord_token_%' ORDER BY key").all();
+      const entries = (results || []).map(r => ({
+        key: r.key,
+        value: r.value,
+        project: extractProject(r.key, projects),
+        email: extractEmail(r.key, projects),
+      }));
       return json({ ok: true, entries });
     }
 
@@ -469,7 +457,7 @@ export default {
       const { projects } = body;
       if (!Array.isArray(projects)) return json({ ok: false, error: 'invalid data' });
       const toSave = projects.filter(p => p.label && p.label !== 'Unknown');
-      await env.COOKIE_KV.put('_config:projects', JSON.stringify(toSave));
+      await env.DB.prepare('INSERT OR REPLACE INTO entries (key, value, updated_at) VALUES (?, ?, ?)').bind('_config:projects', JSON.stringify(toSave), Math.floor(Date.now() / 1000)).run();
       invalidateProjects();
       return json({ ok: true });
     }
@@ -478,8 +466,8 @@ export default {
       const body = await request.json();
       const key = body.key;
       if (!key) return json({ ok: false, error: 'missing key' });
-      const value = await env.COOKIE_KV.get(key);
-      return json({ ok: true, key, value });
+      const row = await env.DB.prepare('SELECT value FROM entries WHERE key = ?').bind(key).first();
+      return json({ ok: true, key, value: row ? row.value : null });
     }
 
     if (url.pathname === '/api/set' && method === 'POST') {
@@ -488,7 +476,7 @@ export default {
       const value = body.value;
       if (!key) return json({ ok: false, error: 'missing key' });
       if (value === undefined || value === null) return json({ ok: false, error: 'missing value' });
-      await env.COOKIE_KV.put(key, String(value));
+      await env.DB.prepare('INSERT OR REPLACE INTO entries (key, value, updated_at) VALUES (?, ?, ?)').bind(key, String(value), Math.floor(Date.now() / 1000)).run();
       return json({ ok: true, key });
     }
 
@@ -496,9 +484,11 @@ export default {
       const body = await request.json();
       const key = body.key;
       if (!key) return json({ ok: false, error: 'missing key' });
-      await env.COOKIE_KV.delete(key);
+      await env.DB.prepare('DELETE FROM entries WHERE key = ?').bind(key).run();
       return json({ ok: true, key, deleted: true });
     }
+
+    
 
     if (url.pathname === '/' || url.pathname === '') {
       return new Response(HTML, { headers: { 'Content-Type': 'text/html;charset=utf-8' } });

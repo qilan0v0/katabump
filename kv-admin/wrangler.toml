@@ -2,7 +2,8 @@ name = "kv-cookie-admin"
 main = "worker.js"
 compatibility_date = "2026-06-01"
 
-# KV namespace binding
-kv_namespaces = [
-  { binding = "COOKIE_KV", id = "853c3cf2576642198a7defc755d35b45" }
-]
+# D1 database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "kv-cookie-db"
+database_id = "1d6954d4-73ef-4455-99b7-e064851ff7b9"

@@ -9,12 +9,48 @@ import datetime
 import urllib.request
 import urllib.parse
 import requests
+import json as json_mod
+
+# ---------- KV 工具 ----------
+KV_ADMIN_URL = os.environ.get("KV_ADMIN_URL", "").strip()
+KV_ADMIN_PASS = os.environ.get("KV_ADMIN_PASS", "").strip()
+
+def kv_get(key):
+    if not KV_ADMIN_URL or not KV_ADMIN_PASS:
+        return None
+    try:
+        data = json.dumps({"key": key}).encode()
+        req = urllib.request.Request(
+            KV_ADMIN_URL + "/api/get",
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "X-Admin-Pass": KV_ADMIN_PASS
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode())
+            if result.get("ok") and result.get("value") is not None:
+                return result["value"]
+    except Exception as e:
+        print(f"[KV] 读取失败: {e}")
+    return None
+
+# 从 KV 获取 Discord Token
+DISCORD_TOKEN_KV = kv_get("discord_token_darvinskaia_19972104@282820.xyz")
+if DISCORD_TOKEN_KV:
+    DISCORD_TOKEN = DISCORD_TOKEN_KV.strip()
+    print("[KV] Discord Token 已从 KV 加载")
+else:
+    DISCORD_TOKEN = os.environ["DISCORD_TOKEN"].strip()
+    print("[KV] 未从 KV 获取到 Token，使用环境变量")
 
 # ============================================================
 # 环境变量解析
 # ============================================================
 
-DISCORD_TOKEN = os.environ["DISCORD_TOKEN"].strip()
+
 
 _tg        = os.environ.get("TG_BOT", "").split(",")
 TG_CHAT_ID = _tg[0].strip() if len(_tg) > 0 else ""

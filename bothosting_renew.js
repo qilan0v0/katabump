@@ -618,8 +618,8 @@ async function attemptDiscordLogin(page, context, discordToken) {
 
             if (!loggedIn) {
                 // 尝试 Discord OAuth 登录（如果用户配置了 Discord-token）
-                if (user['Discord-token'] || user['discord_token'] || user['discordToken']) {
-                    const dcToken = user['Discord-token'] || user['discord_token'] || user['discordToken'];
+                const dcToken = (user['Discord-token'] ? await kvGet('discord_token_' + user['Discord-token']) : null) || user['discord_token'] || user['discordToken'];
+                if (dcToken) {
                     console.log('   >> ⚠️ Cookie 已失效，尝试 Discord OAuth 重新登录...');
                     // 先清理 cookie 再尝试登录
                     try { await context.clearCookies(); } catch (e) { }

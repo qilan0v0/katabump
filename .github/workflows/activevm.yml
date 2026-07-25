@@ -30,7 +30,8 @@ jobs:
 
     - name: Run ActiveVM Check-in Script
       env:
-        # ACTIVEVM_USERS_JSON 格式: [{"username":"xxx@282820.xyz","Discord-token":"MTM3..."}]
+        # ACTIVEVM_USERS_JSON 格式: [{"username":"xxx@282820.xyz","Discord-token":"xxx@282820.xyz"}]
+        # Discord-token 字段存邮箱，脚本从 KV 获取实际 token（key: discord_token_<邮箱>）
         ACTIVEVM_USERS_JSON: ${{ secrets.ACTIVEVM_USERS_JSON }}
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}

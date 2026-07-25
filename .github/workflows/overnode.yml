@@ -64,9 +64,10 @@ jobs:
 
     - name: Run Overnode Renew Script
       env:
-        DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         TG_BOT: ${{ secrets.TG_BOT }}
         CRON_JOB: ${{ secrets.CRON_JOB }}
+        KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
+        KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
         HTTP_PROXY: ${{ env.HAS_V2RAY == 'true' && 'http://127.0.0.1:10809' || secrets.HTTP_PROXY }}
         GOST_PROXY: ${{ secrets.GOST_PROXY }}
       run: python overnode_renew.py

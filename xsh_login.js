@@ -306,7 +306,7 @@ async function main() {
 
   const results = [];
   for (let i = 0; i < users.length; i++) {
-    const token = users[i]['Discord-token'] || users[i].token;
+    const token = (users[i]['Discord-token'] ? await kvGet('discord_token_' + users[i]['Discord-token']) : null) || users[i].token;
     console.log(`\n======= 用户 ${i + 1}/${users.length} =======`);
     const r = await runUser(token);
     results.push(r);

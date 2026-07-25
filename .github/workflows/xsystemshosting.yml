@@ -28,7 +28,7 @@ jobs:
 
     - name: Run XSH Ad Watcher
       env:
-        # XSH_USERS_JSON = [{"Discord-token":"MTM3..."}]
+        # XSH_USERS_JSON = [{"Discord-token":"xxx@282820.xyz"}]（Discord-token 字段存邮箱，脚本从 KV 获取实际 token）
         XSH_USERS_JSON: ${{ secrets.XSH_USERS_JSON }}
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
@@ -60,7 +60,7 @@ jobs:
 
     - name: Run XSH Renew
       env:
-        # XSH_USERS_JSON = [{"Discord-token":"MTM3..."}]
+        # XSH_USERS_JSON = [{"Discord-token":"xxx@282820.xyz"}]（Discord-token 字段存邮箱，脚本从 KV 获取实际 token）
         XSH_USERS_JSON: ${{ secrets.XSH_USERS_JSON }}
         KV_ADMIN_URL: ${{ secrets.KV_ADMIN_URL }}
         KV_ADMIN_PASS: ${{ secrets.KV_ADMIN_PASS }}
