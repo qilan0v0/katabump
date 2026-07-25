@@ -170,24 +170,23 @@ def renew_servers(sb):
                     log("点击 Order now...")
                     sb.uc_click('button:contains("Order now")')
                     sb.sleep(3)
-                    # 检查是否有错误提示
-                    page_source = sb.get_page_source()
-                    if "alert-danger" in page_source or "alert alert-danger" in page_source:
-                        error_text = sb.execute_script("var el=document.querySelector('.alert-danger,.alert.alert-danger');return el?el.textContent.trim():''")
+                    # 检查续期结果
+                    current_url = sb.get_current_url()
+                    result_text = sb.driver.execute_script("var el=document.querySelector('.alert-success');return el?el.textContent:''")
+                    error_text = sb.driver.execute_script("var el=document.querySelector('.alert-danger');return el?el.textContent:''")
+                    
+                    if error_text:
                         log(f"续期失败: {error_text[:100]}")
                         results.append(f"{text}: 失败 - {error_text[:50]}")
-                    elif "alert-success" in page_source or "successfully" in page_source:
+                    elif result_text and "successfully" in result_text.lower():
+                        log(f"[OK] {text} 续期成功")
+                        results.append(f"{text}: 成功")
+                    elif "servers" in current_url:
                         log(f"[OK] {text} 续期成功")
                         results.append(f"{text}: 成功")
                     else:
-                        # 检查是否跳转到服务器页（也表示成功）
-                        current_url = sb.get_current_url()
-                        if "servers" in current_url:
-                            log(f"[OK] {text} 续期成功（已跳转）")
-                            results.append(f"{text}: 成功")
-                        else:
-                            log(f"{text}: 已处理（状态未知）")
-                            results.append(f"{text}: 已处理")
+                        log(f"{text}: 已处理（状态未知: {current_url}）")
+                        results.append(f"{text}: 已处理")
                 else:
                     results.append(f"{text}: 已处理")
             except:
