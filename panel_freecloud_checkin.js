@@ -183,7 +183,8 @@ function _race(p, ms) {
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
 }
 
-// Cloudflare Turnstile (iframe 内复选框) 的 CDP 点击绕过
+// Cloudflare Turnstile (iframe 内复选框) 点击绕过
+// 优先从 iframe 内直接点击 checkbox，再尝试 CDP 模拟点击
 async function attemptTurnstileCdp(page) {
     const frames = page.frames();
     for (const frame of frames) {
@@ -192,24 +193,50 @@ async function attemptTurnstileCdp(page) {
             if (frame !== page.mainFrame()) continue;
         }
         try {
+            // 方式1: 从 iframe 内直接找到 checkbox 并点击
+            const clicked = await _race(frame.evaluate(() => {
+                const checkbox = document.querySelector('input[type="checkbox"]');
+                if (checkbox) {
+                    // 尝试多种点击方式
+                    try { checkbox.click(); } catch (e) { }
+                    checkbox.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    return true;
+                }
+                // 检查 shadow DOM
+                const all = document.querySelectorAll('*');
+                for (const el of all) {
+                    if (el.shadowRoot) {
+                        const cb = el.shadowRoot.querySelector('input[type="checkbox"]');
+                        if (cb) {
+                            try { cb.click(); } catch (e) { }
+                            cb.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }), 3000).catch(() => false);
+            if (clicked) {
+                console.log('>> 在 iframe 内直接点击了 checkbox');
+                await page.waitForTimeout(500 + Math.random() * 500);
+                return true;
+            }
+
+            // 方式2: 通过 __turnstile_data 坐标 + Playwright mouse.click
             const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
             if (data) {
-                console.log('>> 在 frame 中发现 Turnstile。比例:', data);
                 const iframeElement = await frame.frameElement();
                 if (!iframeElement) continue;
                 const box = await iframeElement.boundingBox();
                 if (!box) continue;
                 const clickX = box.x + (box.width * data.xRatio);
                 const clickY = box.y + (box.height * data.yRatio);
-                console.log('>> 计算点击坐标: (' + clickX.toFixed(2) + ', ' + clickY.toFixed(2) + ')');
-                const client = await page.context().newCDPSession(page);
-                await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: clickX, y: clickY });
-                await new Promise(r => setTimeout(r, 100 + Math.random() * 150));
-                await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                await new Promise(r => setTimeout(r, 80 + Math.random() * 120));
-                await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-                console.log('>> CDP 点击已发送。');
-                await client.detach();
+                console.log('>> Playwright mouse.click 坐标: (' + clickX.toFixed(0) + ', ' + clickY.toFixed(0) + ')');
+                await page.mouse.move(clickX, clickY);
+                await page.waitForTimeout(200 + Math.random() * 200);
+                await page.mouse.click(clickX, clickY);
+                console.log('>> Playwright 点击已发送');
+                await page.waitForTimeout(500 + Math.random() * 500);
                 return true;
             }
         } catch (e) { }
@@ -238,14 +265,14 @@ async function waitCfChallengeDone(page) {
 
 // 通过 Cloudflare 验证：循环点击 Turnstile，直到目标元素出现
 async function passCloudflare(page, readyLocator, label) {
-    const ready = async () => await _race(readyLocator().isVisible(), 5000).catch(() => false);
-    for (let i = 0; i < 20; i++) {
+    const ready = async () => await _race(readyLocator().isVisible(), 8000).catch(() => false);
+    for (let i = 0; i < 30; i++) {
         if (await ready()) {
             if (i > 0) console.log('   >> 已通过 Cloudflare (' + label + ')');
             return true;
         }
-        await _race(attemptTurnstileCdp(page), 10000).catch(() => false);
-        await page.waitForTimeout(2000);
+        await _race(attemptTurnstileCdp(page), 15000).catch(() => false);
+        await page.waitForTimeout(3000);
     }
     return await ready();
 }
