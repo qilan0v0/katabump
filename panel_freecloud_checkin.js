@@ -138,9 +138,22 @@ async function sendTelegramMessage(message, imagePath = null) {
 
 // ===== Cloudflare Turnstile 绕过 =====
 
-// 注入脚本：hook 子 frame 里的 attachShadow，定位 Cloudflare Turnstile 复选框
+// 注入脚本：hook 子 frame 里的 attachShadow + 反检测
 const INJECTED_SCRIPT = `
 (function() {
+    // 反自动化检测
+    try {
+        delete navigator.__proto__.webdriver;
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    } catch(e) {}
+    try {
+        Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+    } catch(e) {}
+    try {
+        Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN','zh','en'] });
+    } catch(e) {}
+
+    // 只在子 frame 中执行 Turnstile 相关 hook
     if (window.self === window.top) return;
     try {
         function getRandomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
