@@ -259,40 +259,33 @@ async function startSocks5HttpProxy(socksUrl) {
     const proxyUsername = url.username ? decodeURIComponent(url.username) : undefined;
     const proxyPassword = url.password ? decodeURIComponent(url.password) : undefined;
 
-    const server = http.createServer((req, res) => {
-        if (req.method !== 'CONNECT') {
-            res.writeHead(405);
-            res.end();
-            return;
-        }
-
+    const server = http.createServer();
+    // 用 connect 事件处理 HTTPS 隧道（CONNECT 方法）
+    server.on('connect', (req, clientSocket, head) => {
         const [targetHost, targetPortStr] = req.url.split(':');
         const targetPort = parseInt(targetPortStr) || 443;
 
-        (async () => {
-            try {
-                const info = await SocksClient.createConnection({
-                    proxy: {
-                        host: proxyHost,
-                        port: proxyPort,
-                        type: 5,
-                        userId: proxyUsername,
-                        password: proxyPassword
-                    },
-                    destination: { host: targetHost, port: targetPort },
-                    command: 'connect'
-                });
-                res.writeHead(200, { 'Connection': 'keep-alive' });
-                res.socket.pipe(info.socket);
-                info.socket.pipe(res.socket);
-                info.socket.on('error', () => { try { res.socket.destroy(); } catch (e) { } });
-                res.socket.on('error', () => { try { info.socket.destroy(); } catch (e) { } });
-            } catch (e) {
-                console.error('[SOCKS5] 连接失败: ' + targetHost + ':' + targetPort + ' - ' + e.message);
-                res.writeHead(502);
-                res.end();
-            }
-        })();
+        SocksClient.createConnection({
+            proxy: {
+                host: proxyHost,
+                port: proxyPort,
+                type: 5,
+                userId: proxyUsername,
+                password: proxyPassword
+            },
+            destination: { host: targetHost, port: targetPort },
+            command: 'connect'
+        }).then(info => {
+            clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            if (head && head.length > 0) info.socket.write(head);
+            info.socket.pipe(clientSocket);
+            clientSocket.pipe(info.socket);
+            info.socket.on('error', () => { try { clientSocket.destroy(); } catch (e) { } });
+            clientSocket.on('error', () => { try { info.socket.destroy(); } catch (e) { } });
+        }).catch(e => {
+            console.error('[SOCKS5] 连接失败: ' + targetHost + ':' + targetPort + ' - ' + e.message);
+            try { clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch (ex) { }
+        });
     });
 
     return new Promise((resolve) => {
