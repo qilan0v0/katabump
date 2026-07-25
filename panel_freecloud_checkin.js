@@ -183,9 +183,31 @@ function _race(p, ms) {
     return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), ms))]);
 }
 
-// Cloudflare Turnstile (iframe 内复选框) 点击绕过
-// 优先从 iframe 内直接点击 checkbox，再尝试 CDP 模拟点击
+// Cloudflare Turnstile 点击绕过
+// 使用 Playwright 原生 frameLocator 定位 Turnstile 复选框并点击
 async function attemptTurnstileCdp(page) {
+    // 方式1: 通过 Playwright frameLocator 定位 Turnstile iframe 内的 checkbox
+    try {
+        const turnstileFrames = page.frames().filter(f => {
+            const url = f.url() || '';
+            return /challenges\.cloudflare\.com|turnstile/i.test(url);
+        });
+        for (const frame of turnstileFrames) {
+            try {
+                const checkbox = frame.locator('input[type="checkbox"]').first();
+                const isVisible = await _race(checkbox.isVisible(), 2000).catch(() => false);
+                if (isVisible) {
+                    console.log('>> 找到 Turnstile checkbox，点击...');
+                    await checkbox.click({ timeout: 5000, force: true });
+                    console.log('>> Playwright 原生 click 已发送');
+                    await page.waitForTimeout(1000 + Math.random() * 1000);
+                    return true;
+                }
+            } catch (e) { }
+        }
+    } catch (e) { }
+
+    // 方式2: 通过注入脚本的 __turnstile_data 坐标 + Playwright mouse.click（双击版）
     const frames = page.frames();
     for (const frame of frames) {
         const fu = (frame.url() || '');
@@ -193,36 +215,6 @@ async function attemptTurnstileCdp(page) {
             if (frame !== page.mainFrame()) continue;
         }
         try {
-            // 方式1: 从 iframe 内直接找到 checkbox 并点击
-            const clicked = await _race(frame.evaluate(() => {
-                const checkbox = document.querySelector('input[type="checkbox"]');
-                if (checkbox) {
-                    // 尝试多种点击方式
-                    try { checkbox.click(); } catch (e) { }
-                    checkbox.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    return true;
-                }
-                // 检查 shadow DOM
-                const all = document.querySelectorAll('*');
-                for (const el of all) {
-                    if (el.shadowRoot) {
-                        const cb = el.shadowRoot.querySelector('input[type="checkbox"]');
-                        if (cb) {
-                            try { cb.click(); } catch (e) { }
-                            cb.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            }), 3000).catch(() => false);
-            if (clicked) {
-                console.log('>> 在 iframe 内直接点击了 checkbox');
-                await page.waitForTimeout(500 + Math.random() * 500);
-                return true;
-            }
-
-            // 方式2: 通过 __turnstile_data 坐标 + Playwright mouse.click
             const data = await _race(frame.evaluate(() => window.__turnstile_data), 3000).catch(() => null);
             if (data) {
                 const iframeElement = await frame.frameElement();
@@ -232,10 +224,16 @@ async function attemptTurnstileCdp(page) {
                 const clickX = box.x + (box.width * data.xRatio);
                 const clickY = box.y + (box.height * data.yRatio);
                 console.log('>> Playwright mouse.click 坐标: (' + clickX.toFixed(0) + ', ' + clickY.toFixed(0) + ')');
-                await page.mouse.move(clickX, clickY);
-                await page.waitForTimeout(200 + Math.random() * 200);
-                await page.mouse.click(clickX, clickY);
-                console.log('>> Playwright 点击已发送');
+                await page.mouse.move(clickX, clickY, { steps: 10 });
+                await page.waitForTimeout(100 + Math.random() * 200);
+                await page.mouse.down();
+                await page.waitForTimeout(50 + Math.random() * 100);
+                await page.mouse.up();
+                await page.waitForTimeout(100 + Math.random() * 200);
+                await page.mouse.down();
+                await page.waitForTimeout(50 + Math.random() * 100);
+                await page.mouse.up();
+                console.log('>> Playwright 双击已发送');
                 await page.waitForTimeout(500 + Math.random() * 500);
                 return true;
             }
