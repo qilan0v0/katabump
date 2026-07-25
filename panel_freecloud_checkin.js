@@ -246,11 +246,11 @@ async function attemptTurnstileCdp(page) {
 
 // 等待 Cloudflare 全屏验证页完成
 async function waitCfChallengeDone(page) {
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 40; i++) {
         const title = await page.title().catch(() => '');
         const body = await page.locator('body').innerText().catch(() => '');
-        const isCfChallenge = /security|challenge|verify|正在验证|安全检查/i.test(title)
-            || /正在验证|checking your browser|security check|请稍候/i.test(body);
+        const isCfChallenge = /security|challenge|verify|正在验证|安全检查|please wait/i.test(title)
+            || /正在验证|checking your browser|security check|请稍候|verifying you are human|this may take a few seconds/i.test(body);
         if (!isCfChallenge) {
             if (i > 0) console.log('   >> Cloudflare 验证完成 (第 ' + (i + 1) + ' 次检测)');
             return true;
@@ -263,18 +263,37 @@ async function waitCfChallengeDone(page) {
     return false;
 }
 
-// 通过 Cloudflare 验证：循环点击 Turnstile，直到目标元素出现
+// 通过 Cloudflare 验证：点击 Turnstile，等待验证完成，然后检查目标元素
+// 要点：点击后等待 10-15 秒让 Cloudflare 完成验证，不要频繁重试
 async function passCloudflare(page, readyLocator, label) {
-    const ready = async () => await _race(readyLocator().isVisible(), 8000).catch(() => false);
-    for (let i = 0; i < 30; i++) {
-        if (await ready()) {
+    for (let i = 0; i < 8; i++) {
+        // 先检查目标是否已出现
+        const isReady = await _race(readyLocator().isVisible(), 5000).catch(() => false);
+        if (isReady) {
             if (i > 0) console.log('   >> 已通过 Cloudflare (' + label + ')');
             return true;
         }
+
+        // 检查页面是否还在 CF 验证中
+        const body = await page.locator('body').innerText().catch(() => '');
+        const isVerifying = /verifying you are human|this may take a few seconds/i.test(body);
+
+        if (isVerifying) {
+            console.log('   >> CF 正在验证中，等待 10 秒...');
+            await page.waitForTimeout(10000);
+            continue;
+        }
+
+        // 点击 Turnstile 复选框
+        console.log('   >> 点击 Turnstile 复选框 (第 ' + (i + 1) + ' 次)...');
         await _race(attemptTurnstileCdp(page), 15000).catch(() => false);
-        await page.waitForTimeout(3000);
+
+        // 等待 CF 验证（关键：点击后等 10 秒让验证完成）
+        console.log('   >> 等待 CF 验证结果...');
+        await page.waitForTimeout(10000);
     }
-    return await ready();
+    // 最后再检查一次
+    return await _race(readyLocator().isVisible(), 8000).catch(() => false);
 }
 
 // ===== SOCKS5 → HTTP 本地转发代理 =====
@@ -448,7 +467,9 @@ async function checkin(user) {
         '--window-size=1280,720',
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage'
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process'
     ];
 
     // proxyInfo 有 port 字段 → 本地 HTTP 代理（SOCKS5 转发 或 v2ray）
