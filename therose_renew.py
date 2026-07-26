@@ -184,77 +184,59 @@ def renew_servers(sb, ck=None):
             sb.open(href)
             sb.sleep(3)
             try:
-                # 续期页面有 #order-submit / button:contains("Order now")（同一按钮，type=submit）
-                # 实测直接点击按钮才是正确的提交方式（POST 会返回 302 回到购物车页，未真正提交）
-                submit_sel = None
-                for sel in ['#order-submit', 'button:contains("Order now")', 'button[type="submit"]', 'form button']:
-                    try:
-                        if sb.find_element(sel, timeout=2):
-                            submit_sel = sel
-                            break
-                    except:
-                        continue
+                # 提取续期前的 Valid until 日期（用于后续判断是否续期成功）
+                before_valid = sb.execute_script(
+                    "var t=document.body.innerText;var i=t.indexOf('Valid until');"
+                    "return i>=0?t.slice(i,i+80):''"
+                )
+                log(f"续期前到期时间: {before_valid}")
 
-                if submit_sel:
-                    log(f"点击 {submit_sel}...")
-                    before_url = sb.get_current_url()
-                    try:
-                        sb.uc_click(submit_sel)
-                    except Exception as ce:
-                        log(f"uc_click 失败，尝试 JS 点击: {ce}")
-                        try:
-                            sb.execute_script("arguments[0].click();", sb.find_element(submit_sel, timeout=2))
-                        except:
-                            pass
-                    # 轮询等待页面跳转（最多 15 秒）：点击后应跳转回 servers 列表
-                    for i in range(15):
-                        sb.sleep(1)
-                        cur = sb.get_current_url()
-                        if cur != before_url and "cart_renew" not in cur and not cur.startswith("data:"):
-                            log(f"检测到页面跳转: {cur}")
-                            break
-                        try:
-                            if sb.find_element('.alert-success', timeout=0.3) or sb.find_element('.alert-danger', timeout=0.3):
-                                break
-                        except:
-                            pass
-                    sb.sleep(2)
+                # 实测发现：直接点击 #order-submit 按钮不触发导航（JS 防重复提交监听拦截），
+                # 原生 form.submit() 也不导航。最可靠的方式是用浏览器内 fetch POST 表单数据，
+                # 保持会话 cookie，绕过点击事件问题。
+                # fetch 用 redirect:follow，服务器会 302 跳转到 servers 列表。
+                posted = sb.execute_script(
+                    "var form=document.querySelector('#renew-form')||document.querySelector('form');"
+                    "if(!form)return 'no form';"
+                    "var fd=new FormData(form);"
+                    "var action=form.action;"
+                    "return fetch(action,{method:'POST',body:fd,redirect:'follow',credentials:'same-origin'})"
+                    ".then(function(r){return r.text().then(function(t){return JSON.stringify({status:r.status,redirected:r.redirected,finalUrl:r.url,bodyLen:t.length})})})",
+                )
+                if posted and isinstance(posted, str):
+                    log(f"POST 结果: {posted[:200]}")
                 else:
-                    # 未找到提交按钮，降级为直接提交 #renew-form 表单
-                    log("未找到提交按钮，尝试直接提交 #renew-form...")
-                    before_url = sb.get_current_url()
+                    log("POST 无返回，尝试点击按钮降级...")
                     try:
-                        sb.execute_script("var f=document.querySelector('#renew-form')||document.querySelector('form');if(f){f.submit();}")
+                        sb.uc_click('#order-submit')
+                        sb.sleep(5)
                     except:
                         pass
-                    for i in range(10):
-                        sb.sleep(1)
-                        cur = sb.get_current_url()
-                        if cur != before_url and "cart_renew" not in cur and not cur.startswith("data:"):
-                            break
-                    sb.sleep(2)
+
+                sb.sleep(3)
+                # 跳转到服务器列表检查结果
+                sb.open(BASE_URL + "/panel?routeName=servers")
+                sb.sleep(3)
 
                 # 检查续期结果
-                current_url = sb.get_current_url()
-                # data:, 是 form.submit() 跳到空白页，明确判定为失败
-                if current_url.startswith("data:"):
-                    log(f"续期失败: 提交后跳转空白页 ({current_url})")
-                    results.append(f"{text}: 失败")
-                    continue
-                try:
-                    result_el = sb.find_element('.alert-success', timeout=2)
-                    result_text = result_el.text if result_el else ''
-                except:
-                    result_text = ''
+                # 1) 先看 .alert-danger（如 30 分钟窗口错误）
                 try:
                     error_el = sb.find_element('.alert-danger', timeout=2)
                     error_text = error_el.text if error_el else ''
                 except:
                     error_text = ''
+                # 2) 看 .alert-success
+                try:
+                    result_el = sb.find_element('.alert-success', timeout=2)
+                    result_text = result_el.text if result_el else ''
+                except:
+                    result_text = ''
+                # 3) 提取续期后的 Valid until 日期
+                after_valid = sb.execute_script(
+                    "var t=document.body.innerText;var i=t.indexOf('Valid until');"
+                    "return i>=0?t.slice(i,i+80):''"
+                )
 
-                page_source = sb.get_page_source()
-
-                # 优先检查错误提示（点击 Order now 后跳回 servers 列表时，错误以 .alert-danger 形式出现）
                 if error_text:
                     el = error_text.lower()
                     if "30 minutes" in el or "within 30" in el or "before expiration" in el:
@@ -269,16 +251,22 @@ def renew_servers(sb, ck=None):
                 elif result_text and "successfully" in result_text.lower():
                     log(f"[OK] {text} 续期成功")
                     results.append(f"{text}: 成功")
-                elif "successfully purchased" in page_source.lower():
-                    log(f"[OK] {text} 续期成功（页面包含关键词）")
+                elif before_valid and after_valid and before_valid != after_valid:
+                    # Valid until 日期变化了 → 续期成功
+                    log(f"[OK] {text} 续期成功（到期时间已更新: {before_valid} → {after_valid}）")
                     results.append(f"{text}: 成功")
-                elif "servers" in current_url and "cart_renew" not in current_url:
-                    # 跳转回服务器列表且无任何错误/成功提示：通常表示续期成功
-                    log(f"[OK] {text} 续期成功（已跳转回服务器列表）")
-                    results.append(f"{text}: 成功")
+                elif before_valid and after_valid and before_valid == after_valid:
+                    # 日期没变 → 续期被服务器拒绝（未到续期窗口）
+                    log(f"续期未生效（到期时间未变: {after_valid}），可能未到续期窗口")
+                    results.append(f"{text}: 未到续期时间")
                 else:
-                    log(f"{text}: 已处理（URL: {current_url}）")
-                    results.append(f"{text}: 已处理")
+                    page_source = sb.get_page_source()
+                    if "successfully purchased" in page_source.lower():
+                        log(f"[OK] {text} 续期成功（页面包含关键词）")
+                        results.append(f"{text}: 成功")
+                    else:
+                        log(f"{text}: 已处理（无法确认结果）")
+                        results.append(f"{text}: 已处理")
             except Exception as e:
                 log(f"续期异常: {e}")
                 results.append(f"{text}: 失败")
