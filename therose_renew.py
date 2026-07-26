@@ -168,26 +168,9 @@ def renew_servers(sb):
                 btn = sb.find_element('#order-submit', timeout=8)
                 if btn:
                     log("点击 Order now...")
-                    # 使用 requests 直接 POST 表单数据
-                    import requests as req
-                    sel_cookies = sb.driver.get_cookies()
-                    s = req.Session()
-                    for c in sel_cookies:
-                        s.cookies.set(c['name'], c['value'], domain=c.get('domain', ''), path=c.get('path', '/'))
-                    sid = href.split('id=')[1].split('&')[0]
-                    p_token = sb.execute_script("var el=document.querySelector('input[name=\"purchase_token\"]');el?el.value:''")
-                    csrf_token = sb.execute_script("var el=document.querySelector('input[name=\"server_renew[_token]\"]');el?el.value:''")
-                    form_data = {
-                        'server_renew[id]': sid,
-                        'server_renew[voucher]': '',
-                        'purchase_token': p_token,
-                        'server_renew[_token]': csrf_token,
-                    }
-                    buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + sid
-                    r = s.post(buy_url, data=form_data, allow_redirects=True, timeout=15)
-                    # 导航到结果页面
-                    sb.open(r.url if r.url != buy_url else buy_url)
-                    sb.sleep(3)
+                    # 通过 JavaScript 提交表单
+                    sb.execute_script("document.getElementById('renew-form').submit()")
+                    sb.sleep(5)
                     # 检查续期结果
                     current_url = sb.get_current_url()
                     try:
