@@ -146,7 +146,7 @@ def login(sb, email, password):
     sb.save_screenshot("login_failed.png")
     return False, sb.get_current_url()
 
-def renew_servers(sb):
+def renew_servers(sb, ck=None):
     log("访问服务器列表...")
     sb.open(BASE_URL + "/panel?routeName=servers")
     sb.sleep(3)
@@ -169,22 +169,27 @@ def renew_servers(sb):
                 btn = sb.find_element('#order-submit', timeout=8)
                 if btn:
                     log("点击 Order now...")
-                    # 通过 driver.get_cookies() + requests.Session() POST
+                    # 使用缓存 cookie 直接 POST（避免 driver.get_cookies 崩溃）
                     sid = href.split('id=')[1].split('&')[0]
                     p_token = sb.execute_script("var el=document.querySelector('input[name=\"purchase_token\"]');el?el.value:''")
                     csrf_token = sb.execute_script("var el=document.querySelector('input[name=\"server_renew[_token]\"]');el?el.value:''")
-                    s = requests.Session()
-                    for c in sb.driver.get_cookies():
-                        s.cookies.set(c['name'], c['value'], domain=c.get('domain',''), path=c.get('path','/'))
-                    fdata = {'server_renew[id]': sid, 'server_renew[voucher]': '', 'purchase_token': p_token, 'server_renew[_token]': csrf_token}
-                    buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + sid
-                    r = s.post(buy_url, data=fdata, allow_redirects=False, timeout=15)
-                    loc = r.headers.get('location', '')
-                    if r.status_code == 302 and loc:
-                        sb.open("https://client.therose.cloud" + loc)
+                    cached_val = kv_get(ck) if ck else None
+                    if cached_val:
+                        s = requests.Session()
+                        for c in str_to_cookies(cached_val):
+                            s.cookies.set(c['name'], c['value'], domain=c.get('domain',''), path=c.get('path','/'))
+                        fdata = {'server_renew[id]': sid, 'server_renew[voucher]': '', 'purchase_token': p_token, 'server_renew[_token]': csrf_token}
+                        buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + sid
+                        r = s.post(buy_url, data=fdata, allow_redirects=False, timeout=15)
+                        loc = r.headers.get('location', '')
+                        if r.status_code == 302 and loc:
+                            sb.open("https://client.therose.cloud" + loc)
+                        else:
+                            log(f"POST 返回 {r.status_code}")
+                            sb.open(buy_url)
                     else:
-                        log(f"POST 返回 {r.status_code}")
-                        sb.open(buy_url)
+                        log("无缓存 cookie，尝试直接提交表单")
+                        sb.execute_script("document.getElementById('renew-form').submit()")
                     sb.sleep(3)
                     # 检查续期结果
                     current_url = sb.get_current_url()
@@ -257,7 +262,7 @@ def main():
                     text = sb.get_page_source()
                     if email in text:
                         log("缓存 cookie 有效，直接续期")
-                        results = renew_servers(sb)
+                        results = renew_servers(sb, cookie_key)
                         all_results.append(f"{email}: [OK] 续期: {', '.join(results)}")
                         continue
                     else:
@@ -278,7 +283,7 @@ def main():
                     therose = [c for c in cookies if c['name'] in ('PHPSESSID', 'REMEMBERME', 'cf_clearance')]
                     if therose:
                         kv_set(cookie_key, cookies_to_str(therose))
-                    results = renew_servers(sb)
+                    results = renew_servers(sb, cookie_key)
                     all_results.append(f"{email}: [OK] 登录成功 | 续期: {', '.join(results)}")
                 else:
                     all_results.append(f"{email}: [FAIL] 登录失败")
