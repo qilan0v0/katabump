@@ -183,38 +183,82 @@ def renew_servers(sb, ck=None):
                     p_token = sb.execute_script("var el=document.querySelector('input[name=\"purchase_token\"]');el?el.value:''")
                     csrf_token = sb.execute_script("var el=document.querySelector('input[name=\"server_renew[_token]\"]');el?el.value:''")
                     cached_val = kv_get(ck) if ck else None
+
+                    # 记录点击前 URL，用于判断是否跳转
+                    before_url = sb.get_current_url()
+                    posted = False
+
+                    # 优先用缓存 cookie POST 提交（更可靠，不受按钮点击事件影响）
                     if cached_val and p_token and csrf_token:
-                        s = requests.Session()
-                        for c in str_to_cookies(cached_val):
-                            s.cookies.set(c['name'], c['value'], domain=c.get('domain',''), path=c.get('path','/'))
-                        fdata = {'server_renew[id]': sid, 'server_renew[voucher]': '', 'purchase_token': p_token, 'server_renew[_token]': csrf_token}
-                        buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + sid
-                        r = s.post(buy_url, data=fdata, allow_redirects=False, timeout=15)
-                        loc = r.headers.get('location', '')
-                        if r.status_code == 302 and loc:
-                            sb.open("https://client.therose.cloud" + loc)
-                        else:
-                            log(f"POST 返回 {r.status_code}，回退为直接点击按钮")
-                            sb.uc_click(submit_sel)
-                    else:
-                        # token 不齐全或无缓存 cookie，直接点击按钮
+                        try:
+                            s = requests.Session()
+                            for c in str_to_cookies(cached_val):
+                                s.cookies.set(c['name'], c['value'], domain=c.get('domain',''), path=c.get('path','/'))
+                            fdata = {'server_renew[id]': sid, 'server_renew[voucher]': '', 'purchase_token': p_token, 'server_renew[_token]': csrf_token}
+                            buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + sid
+                            r = s.post(buy_url, data=fdata, allow_redirects=False, timeout=15)
+                            loc = r.headers.get('location', '')
+                            if r.status_code == 302 and loc:
+                                sb.open("https://client.therose.cloud" + loc)
+                                posted = True
+                                log(f"POST 成功，跳转至: {loc}")
+                            else:
+                                log(f"POST 返回 {r.status_code}（body {len(r.text)} bytes），回退页面点击")
+                        except Exception as pe:
+                            log(f"POST 异常: {pe}，回退页面点击")
+
+                    if not posted:
+                        # 直接点击按钮，并等待页面跳转（最多 12 秒）
                         try:
                             sb.uc_click(submit_sel)
                         except Exception as ce:
                             log(f"uc_click 失败，尝试 JS 点击: {ce}")
-                            sb.execute_script("arguments[0].click();", sb.find_element(submit_sel, timeout=2))
-                    sb.sleep(3)
+                            try:
+                                sb.execute_script("arguments[0].click();", sb.find_element(submit_sel, timeout=2))
+                            except:
+                                pass
+                        # 轮询等待页面跳转或成功/失败提示出现
+                        for i in range(12):
+                            sb.sleep(1)
+                            cur = sb.get_current_url()
+                            # URL 变了且不在续期购物车页 → 视为提交成功，已跳转
+                            if cur != before_url and "cart_renew" not in cur and not cur.startswith("data:"):
+                                log(f"检测到页面跳转: {cur}")
+                                break
+                            try:
+                                if sb.find_element('.alert-success', timeout=0.3):
+                                    break
+                            except:
+                                pass
+                            try:
+                                if sb.find_element('.alert-danger', timeout=0.3):
+                                    break
+                            except:
+                                pass
+                        sb.sleep(2)
                 else:
                     # 未找到任何按钮，降级为直接提交表单
                     log("未找到提交按钮，尝试直接提交表单...")
+                    before_url = sb.get_current_url()
                     try:
                         sb.execute_script("var f=document.querySelector('form');if(f){f.submit();}")
-                        sb.sleep(3)
                     except:
                         pass
+                    # 等待跳转
+                    for i in range(10):
+                        sb.sleep(1)
+                        cur = sb.get_current_url()
+                        if cur != before_url and "cart_renew" not in cur and not cur.startswith("data:"):
+                            break
+                    sb.sleep(2)
 
                 # 检查续期结果 (参考开源版 check_renewal_success)
                 current_url = sb.get_current_url()
+                # data:, 是 form.submit() 跳到空白页，明确判定为失败
+                if current_url.startswith("data:"):
+                    log(f"续期失败: 提交后跳转空白页 ({current_url})")
+                    results.append(f"{text}: 失败")
+                    continue
                 try:
                     result_el = sb.find_element('.alert-success', timeout=2)
                     result_text = result_el.text if result_el else ''
