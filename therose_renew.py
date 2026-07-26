@@ -172,12 +172,20 @@ def renew_servers(sb):
                     sb.sleep(3)
                     # 检查续期结果
                     current_url = sb.get_current_url()
-                    result_text = sb.driver.execute_script("var el=document.querySelector('.alert-success');return el?el.textContent:''")
-                    error_text = sb.driver.execute_script("var el=document.querySelector('.alert-danger');return el?el.textContent:''")
+                    try:
+                        result_el = sb.find_element('.alert-success', timeout=2)
+                        result_text = result_el.text if result_el else ''
+                    except:
+                        result_text = ''
+                    try:
+                        error_el = sb.find_element('.alert-danger', timeout=2)
+                        error_text = error_el.text if error_el else ''
+                    except:
+                        error_text = ''
                     
                     if error_text:
                         log(f"续期失败: {error_text[:100]}")
-                        results.append(f"{text}: 失败 - {error_text[:50]}")
+                        results.append(f"{text}: 失败")
                     elif result_text and "successfully" in result_text.lower():
                         log(f"[OK] {text} 续期成功")
                         results.append(f"{text}: 成功")
@@ -185,12 +193,13 @@ def renew_servers(sb):
                         log(f"[OK] {text} 续期成功")
                         results.append(f"{text}: 成功")
                     else:
-                        log(f"{text}: 已处理（状态未知: {current_url}）")
+                        log(f"{text}: 已处理（URL: {current_url}）")
                         results.append(f"{text}: 已处理")
                 else:
                     results.append(f"{text}: 已处理")
-            except:
-                results.append(f"{text}: 已处理")
+            except Exception as e:
+                log(f"续期异常: {e}")
+                results.append(f"{text}: 失败")
         except Exception as e:
             log(f"续期失败: {e}")
             results.append(f"{text}: 失败")
