@@ -3,6 +3,7 @@
 TheRose Cloud - 自动续期 (SeleniumBase uc 模式 + KV cookie 缓存)
 """
 import os, sys, json, time, subprocess, atexit, re
+import requests
 from seleniumbase import SB
 
 USERS_JSON = os.environ.get("THEROSE_USERS_JSON", "[]")
@@ -168,20 +169,21 @@ def renew_servers(sb):
                 btn = sb.find_element('#order-submit', timeout=8)
                 if btn:
                     log("点击 Order now...")
-                    # 通过 JS 获取 cookies 和 tokens，然后用 requests POST
+                    # 通过 driver.get_cookies() + requests.Session() POST
                     sid = href.split('id=')[1].split('&')[0]
-                    cookie_str = sb.execute_script("document.cookie")
                     p_token = sb.execute_script("var el=document.querySelector('input[name=\"purchase_token\"]');el?el.value:''")
                     csrf_token = sb.execute_script("var el=document.querySelector('input[name=\"server_renew[_token]\"]');el?el.value:''")
-                    import requests as req
-                    hdrs = {'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie_str}
+                    s = requests.Session()
+                    for c in sb.driver.get_cookies():
+                        s.cookies.set(c['name'], c['value'], domain=c.get('domain',''), path=c.get('path','/'))
                     fdata = {'server_renew[id]': sid, 'server_renew[voucher]': '', 'purchase_token': p_token, 'server_renew[_token]': csrf_token}
                     buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + sid
-                    r = req.post(buy_url, data=fdata, headers=hdrs, allow_redirects=False, timeout=15)
+                    r = s.post(buy_url, data=fdata, allow_redirects=False, timeout=15)
                     loc = r.headers.get('location', '')
                     if r.status_code == 302 and loc:
                         sb.open("https://client.therose.cloud" + loc)
                     else:
+                        log(f"POST 返回 {r.status_code}")
                         sb.open(buy_url)
                     sb.sleep(3)
                     # 检查续期结果
