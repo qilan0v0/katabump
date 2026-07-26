@@ -168,9 +168,7 @@ def renew_servers(sb):
                 btn = sb.find_element('#order-submit', timeout=8)
                 if btn:
                     log("点击 Order now...")
-                    # 直接导航到表单提交 URL
-                    buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + href.split("id=")[1].split("&")[0]
-                    sb.open(buy_url)
+                    sb.execute_script("document.getElementById('renew-form').submit()")
                     sb.sleep(5)
                     # 检查续期结果
                     current_url = sb.get_current_url()
