@@ -163,9 +163,9 @@ def renew_servers(sb):
             text = link.text.strip() or "Unknown"
             log(f"续期: {text}")
             sb.open(href)
-            sb.sleep(2)
+            sb.sleep(3)
             try:
-                btn = sb.find_element('#order-submit', timeout=5)
+                btn = sb.find_element('#order-submit', timeout=8)
                 if btn:
                     log("点击 Order now...")
                     sb.click('#order-submit')
