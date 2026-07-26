@@ -168,7 +168,7 @@ def renew_servers(sb):
                 btn = sb.find_element('#order-submit', timeout=8)
                 if btn:
                     log("点击 Order now...")
-                    sb.click('#order-submit')
+                    sb.execute_script("document.getElementById('renew-form').submit()")
                     sb.sleep(3)
                     # 检查续期结果
                     current_url = sb.get_current_url()
