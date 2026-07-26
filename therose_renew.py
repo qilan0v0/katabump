@@ -168,8 +168,8 @@ def renew_servers(sb):
                 btn = sb.find_element('#order-submit', timeout=8)
                 if btn:
                     log("点击 Order now...")
-                    # 通过 JavaScript 提交表单
-                    sb.execute_script("document.getElementById('renew-form').submit()")
+                    # 通过 fetch POST 提交表单
+                    sb.execute_script("fetch('/panel?routeName=cart_renew_buy&id=" + href.split('id=')[1].split('&')[0] + "',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(document.getElementById('renew-form')))}).then(function(r){window.location.href=r.url})")
                     sb.sleep(5)
                     # 检查续期结果
                     current_url = sb.get_current_url()
