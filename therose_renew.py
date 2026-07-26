@@ -166,15 +166,24 @@ def renew_servers(sb, ck=None):
             sb.open(href)
             sb.sleep(3)
             try:
-                btn = sb.find_element('#order-submit', timeout=8)
-                if btn:
-                    log("点击 Order now...")
+                # 查找提交按钮，多种选择器兜底 (页面结构已变更，#order-submit 不再存在)
+                submit_sel = None
+                for sel in ['button:contains("Order now")', 'button[type="submit"]', 'form button', '#order-submit']:
+                    try:
+                        if sb.find_element(sel, timeout=2):
+                            submit_sel = sel
+                            break
+                    except:
+                        continue
+
+                if submit_sel:
+                    log(f"点击 {submit_sel}...")
                     # 使用缓存 cookie 直接 POST（避免 driver.get_cookies 崩溃）
                     sid = href.split('id=')[1].split('&')[0]
                     p_token = sb.execute_script("var el=document.querySelector('input[name=\"purchase_token\"]');el?el.value:''")
                     csrf_token = sb.execute_script("var el=document.querySelector('input[name=\"server_renew[_token]\"]');el?el.value:''")
                     cached_val = kv_get(ck) if ck else None
-                    if cached_val:
+                    if cached_val and p_token and csrf_token:
                         s = requests.Session()
                         for c in str_to_cookies(cached_val):
                             s.cookies.set(c['name'], c['value'], domain=c.get('domain',''), path=c.get('path','/'))
@@ -185,38 +194,54 @@ def renew_servers(sb, ck=None):
                         if r.status_code == 302 and loc:
                             sb.open("https://client.therose.cloud" + loc)
                         else:
-                            log(f"POST 返回 {r.status_code}")
-                            sb.open(buy_url)
+                            log(f"POST 返回 {r.status_code}，回退为直接点击按钮")
+                            sb.uc_click(submit_sel)
                     else:
-                        log("无缓存 cookie，尝试直接提交表单")
-                        sb.execute_script("document.getElementById('renew-form').submit()")
+                        # token 不齐全或无缓存 cookie，直接点击按钮
+                        try:
+                            sb.uc_click(submit_sel)
+                        except Exception as ce:
+                            log(f"uc_click 失败，尝试 JS 点击: {ce}")
+                            sb.execute_script("arguments[0].click();", sb.find_element(submit_sel, timeout=2))
                     sb.sleep(3)
-                    # 检查续期结果
-                    current_url = sb.get_current_url()
-                    try:
-                        result_el = sb.find_element('.alert-success', timeout=2)
-                        result_text = result_el.text if result_el else ''
-                    except:
-                        result_text = ''
-                    try:
-                        error_el = sb.find_element('.alert-danger', timeout=2)
-                        error_text = error_el.text if error_el else ''
-                    except:
-                        error_text = ''
-                    
-                    if error_text:
-                        log(f"续期失败: {error_text[:100]}")
-                        results.append(f"{text}: 失败")
-                    elif result_text and "successfully" in result_text.lower():
-                        log(f"[OK] {text} 续期成功")
-                        results.append(f"{text}: 成功")
-                    elif "servers" in current_url:
-                        log(f"[OK] {text} 续期成功")
-                        results.append(f"{text}: 成功")
-                    else:
-                        log(f"{text}: 已处理（URL: {current_url}）")
-                        results.append(f"{text}: 已处理")
                 else:
+                    # 未找到任何按钮，降级为直接提交表单
+                    log("未找到提交按钮，尝试直接提交表单...")
+                    try:
+                        sb.execute_script("var f=document.querySelector('form');if(f){f.submit();}")
+                        sb.sleep(3)
+                    except:
+                        pass
+
+                # 检查续期结果 (参考开源版 check_renewal_success)
+                current_url = sb.get_current_url()
+                try:
+                    result_el = sb.find_element('.alert-success', timeout=2)
+                    result_text = result_el.text if result_el else ''
+                except:
+                    result_text = ''
+                try:
+                    error_el = sb.find_element('.alert-danger', timeout=2)
+                    error_text = error_el.text if error_el else ''
+                except:
+                    error_text = ''
+
+                page_source = sb.get_page_source()
+
+                if error_text:
+                    log(f"续期失败: {error_text[:100]}")
+                    results.append(f"{text}: 失败")
+                elif result_text and "successfully" in result_text.lower():
+                    log(f"[OK] {text} 续期成功")
+                    results.append(f"{text}: 成功")
+                elif "successfully purchased" in page_source.lower():
+                    log(f"[OK] {text} 续期成功（页面包含关键词）")
+                    results.append(f"{text}: 成功")
+                elif "servers" in current_url:
+                    log(f"[OK] {text} 续期成功（已跳转回服务器列表）")
+                    results.append(f"{text}: 成功")
+                else:
+                    log(f"{text}: 已处理（URL: {current_url}）")
                     results.append(f"{text}: 已处理")
             except Exception as e:
                 log(f"续期异常: {e}")
