@@ -155,7 +155,7 @@ def renew_servers(sb, ck=None):
     log(f"发现 {len(raw_links)} 个续期链接（去重前）")
 
     if len(raw_links) == 0:
-        return ["无需续期"]
+        return [{"server": "-", "sid": "-", "status": "无需续期", "before": "", "after": "", "error": ""}]
 
     # 按 href 去重：同一台服务器的续期链接可能出现多次
     # （可见的 "Extend" 按钮 + 隐藏的图标按钮，href 相同）
@@ -172,7 +172,7 @@ def renew_servers(sb, ck=None):
 
     log(f"去重后 {len(seen)} 台服务器")
     if len(seen) == 0:
-        return ["无需续期"]
+        return [{"server": "-", "sid": "-", "status": "无需续期", "before": "", "after": "", "error": ""}]
 
     results = []
     for href, link in seen.items():
@@ -257,40 +257,79 @@ def renew_servers(sb, ck=None):
                 "i>=0?t.slice(i,i+80):''"
             )
 
+            # 统一构建结果字典
+            r = {
+                "server": text,
+                "sid": sid,
+                "status": "已处理",
+                "before": (before_valid or "").replace("\n", " ").strip()[:60],
+                "after": (after_valid or "").replace("\n", " ").strip()[:60],
+                "error": (error_text or "").replace("\n", " ").strip()[:120],
+            }
+
             if error_text:
                 el = error_text.lower()
                 if "30 minutes" in el or "within 30" in el or "before expiration" in el:
                     log(f"未到续期时间: {error_text[:120]}")
-                    results.append(f"{text}: 未到续期时间")
+                    r["status"] = "未到续期时间"
                 elif "successfully" in el:
                     log(f"[OK] {text} 续期成功")
-                    results.append(f"{text}: 成功")
+                    r["status"] = "成功"
                 else:
                     log(f"续期失败: {error_text[:120]}")
-                    results.append(f"{text}: 失败")
+                    r["status"] = "失败"
             elif result_text and "successfully" in result_text.lower():
                 log(f"[OK] {text} 续期成功")
-                results.append(f"{text}: 成功")
+                r["status"] = "成功"
             elif before_valid and after_valid and before_valid != after_valid:
-                # Valid until 日期变化了 → 续期成功
                 log(f"[OK] {text} 续期成功（到期时间已更新: {before_valid} → {after_valid}）")
-                results.append(f"{text}: 成功")
+                r["status"] = "成功"
             elif before_valid and after_valid and before_valid == after_valid:
-                # 日期没变 → 续期被服务器拒绝（未到续期窗口）
                 log(f"续期未生效（到期时间未变: {after_valid}），可能未到续期窗口")
-                results.append(f"{text}: 未到续期时间")
+                r["status"] = "未到续期时间"
             else:
                 page_source = sb.get_page_source()
                 if "successfully purchased" in page_source.lower():
                     log(f"[OK] {text} 续期成功（页面包含关键词）")
-                    results.append(f"{text}: 成功")
+                    r["status"] = "成功"
                 else:
                     log(f"{text}: 已处理（无法确认结果）")
-                    results.append(f"{text}: 已处理")
+            results.append(r)
         except Exception as e:
             log(f"续期失败: {e}")
-            results.append(f"{text}: 失败")
+            results.append({"server": text, "sid": sid, "status": "失败", "before": "", "after": "", "error": str(e)[:120]})
     return results
+
+def format_results(email, results, cached=False):
+    """将 renew_servers 返回的结构化结果格式化为 TG 消息行"""
+    lines = []
+    login_tag = "缓存cookie" if cached else "登录成功"
+    lines.append(f"📧 {email} ({login_tag})")
+    for r in results:
+        status = r.get("status", "")
+        srv = r.get("server", "?")
+        if status == "成功":
+            before = r.get("before", "")
+            after = r.get("after", "")
+            lines.append(f"  ✅ {srv}")
+            if before or after:
+                lines.append(f"     📅 {before} → {after}")
+        elif status == "未到续期时间":
+            before = r.get("before", "")
+            lines.append(f"  ⏳ {srv}: 未到续期时间")
+            if before:
+                lines.append(f"     📅 当前到期: {before}")
+            lines.append(f"     💡 续期需在到期前30分钟内操作")
+        elif status == "无需续期":
+            lines.append(f"  ℹ️ 无需续期")
+        elif status == "失败":
+            err = r.get("error", "")
+            lines.append(f"  ❌ {srv}: 失败")
+            if err:
+                lines.append(f"     💬 {err}")
+        else:
+            lines.append(f"  ⚠️ {srv}: {status}")
+    return lines
 
 def main():
     log("===== TheRose Cloud Auto Renew =====")
@@ -329,7 +368,7 @@ def main():
                     if email in text:
                         log("缓存 cookie 有效，直接续期")
                         results = renew_servers(sb, cookie_key)
-                        all_results.append(f"{email}: [OK] 续期: {', '.join(results)}")
+                        all_results.extend(format_results(email, results, cached=True))
                         continue
                     else:
                         log("缓存 cookie 已过期，重新登录")
@@ -350,7 +389,7 @@ def main():
                     if therose:
                         kv_set(cookie_key, cookies_to_str(therose))
                     results = renew_servers(sb, cookie_key)
-                    all_results.append(f"{email}: [OK] 登录成功 | 续期: {', '.join(results)}")
+                    all_results.extend(format_results(email, results, cached=False))
                 else:
                     all_results.append(f"{email}: [FAIL] 登录失败")
                     all_results.append(f"提示: 请先在本地浏览器手动登录 {BASE_URL}/login")
