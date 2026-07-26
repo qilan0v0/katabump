@@ -174,19 +174,19 @@ def renew_servers(sb):
                     s = req.Session()
                     for c in sel_cookies:
                         s.cookies.set(c['name'], c['value'], domain=c.get('domain', ''), path=c.get('path', '/'))
-                    token = sb.execute_script("return document.querySelector('input[name=\"purchase_token\"]')?.value||''")
+                    sid = href.split('id=')[1].split('&')[0]
+                    p_token = sb.execute_script("var el=document.querySelector('input[name=\"purchase_token\"]');el?el.value:''")
+                    csrf_token = sb.execute_script("var el=document.querySelector('input[name=\"server_renew[_token]\"]');el?el.value:''")
                     form_data = {
-                        'server_renew[id]': href.split('id=')[1].split('&')[0],
+                        'server_renew[id]': sid,
                         'server_renew[voucher]': '',
-                        'purchase_token': token
+                        'purchase_token': p_token,
+                        'server_renew[_token]': csrf_token,
                     }
-                    buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + href.split('id=')[1].split('&')[0]
-                    r = s.post(buy_url, data=form_data, allow_redirects=True)
+                    buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + sid
+                    r = s.post(buy_url, data=form_data, allow_redirects=True, timeout=15)
                     # 导航到结果页面
-                    if r.url != buy_url:
-                        sb.open(r.url)
-                    else:
-                        sb.open(buy_url)
+                    sb.open(r.url if r.url != buy_url else buy_url)
                     sb.sleep(3)
                     # 检查续期结果
                     current_url = sb.get_current_url()
