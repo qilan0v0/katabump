@@ -168,7 +168,7 @@ def renew_servers(sb):
                 btn = sb.find_element('button:contains("Order now")', timeout=5)
                 if btn:
                     log("点击 Order now...")
-                    sb.uc_click('button:contains("Order now")')
+                    btn.click()
                     sb.sleep(3)
                     # 检查续期结果
                     current_url = sb.get_current_url()
