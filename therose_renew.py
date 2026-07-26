@@ -187,7 +187,7 @@ def renew_servers(sb, ck=None):
                 # 提取续期前的 Valid until 日期（用于后续判断是否续期成功）
                 before_valid = sb.execute_script(
                     "var t=document.body.innerText;var i=t.indexOf('Valid until');"
-                    "return i>=0?t.slice(i,i+80):''"
+                    "i>=0?t.slice(i,i+80):''"
                 )
                 log(f"续期前到期时间: {before_valid}")
 
@@ -197,11 +197,11 @@ def renew_servers(sb, ck=None):
                 # fetch 用 redirect:follow，服务器会 302 跳转到 servers 列表。
                 posted = sb.execute_script(
                     "var form=document.querySelector('#renew-form')||document.querySelector('form');"
-                    "if(!form)return 'no form';"
-                    "var fd=new FormData(form);"
+                    "if(!form)'no form';"
+                    "else{var fd=new FormData(form);"
                     "var action=form.action;"
-                    "return fetch(action,{method:'POST',body:fd,redirect:'follow',credentials:'same-origin'})"
-                    ".then(function(r){return r.text().then(function(t){return JSON.stringify({status:r.status,redirected:r.redirected,finalUrl:r.url,bodyLen:t.length})})})",
+                    "fetch(action,{method:'POST',body:fd,redirect:'follow',credentials:'same-origin'})"
+                    ".then(function(r){return r.text().then(function(t){return JSON.stringify({status:r.status,redirected:r.redirected,finalUrl:r.url,bodyLen:t.length})})})}",
                 )
                 if posted and isinstance(posted, str):
                     log(f"POST 结果: {posted[:200]}")
@@ -234,7 +234,7 @@ def renew_servers(sb, ck=None):
                 # 3) 提取续期后的 Valid until 日期
                 after_valid = sb.execute_script(
                     "var t=document.body.innerText;var i=t.indexOf('Valid until');"
-                    "return i>=0?t.slice(i,i+80):''"
+                    "i>=0?t.slice(i,i+80):''"
                 )
 
                 if error_text:
