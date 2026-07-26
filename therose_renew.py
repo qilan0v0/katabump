@@ -181,27 +181,33 @@ def renew_servers(sb, ck=None):
             sid = href.split('id=')[1].split('&')[0]
             text = (link.text.strip() if link.text else "") or "sid:" + sid
             log(f"续期: {text} (id={sid})")
+
+            # 先读续期前的到期时间（在 servers 页面，不在 cart_renew 页面）
+            before_valid = sb.execute_script(
+                "var t=document.body.innerText;var i=t.indexOf('Valid until');"
+                "i>=0?t.slice(i,i+80):''"
+            )
+            log(f"续期前到期时间: {before_valid}")
+
+            # 打开续期购物车页面
             sb.open(href)
             sb.sleep(3)
             try:
-                # 提取续期前的 Valid until 日期（用于后续判断是否续期成功）
-                before_valid = sb.execute_script(
-                    "var t=document.body.innerText;var i=t.indexOf('Valid until');"
-                    "i>=0?t.slice(i,i+80):''"
-                )
-                log(f"续期前到期时间: {before_valid}")
-
-                # 实测发现：直接点击 #order-submit 按钮不触发导航（JS 防重复提交监听拦截），
-                # 原生 form.submit() 也不导航。最可靠的方式是用浏览器内 fetch POST 表单数据，
-                # 保持会话 cookie，绕过点击事件问题。
-                # fetch 用 redirect:follow，服务器会 302 跳转到 servers 列表。
-                posted = sb.execute_script(
-                    "var form=document.querySelector('#renew-form')||document.querySelector('form');"
-                    "if(!form)'no form';"
-                    "else{var fd=new FormData(form);"
-                    "var action=form.action;"
-                    "fetch(action,{method:'POST',body:fd,redirect:'follow',credentials:'same-origin'})"
-                    ".then(function(r){return r.text().then(function(t){return JSON.stringify({status:r.status,redirected:r.redirected,finalUrl:r.url,bodyLen:t.length})})})}",
+                # 使用 execute_async_script 等待 fetch Promise 完成
+                sb.driver.set_script_timeout(15)
+                posted = sb.driver.execute_async_script(
+                    "var callback = arguments[arguments.length - 1];"
+                    "var form = document.querySelector('#renew-form') || document.querySelector('form');"
+                    "if (!form) { callback('no form'); return; }"
+                    "var fd = new FormData(form);"
+                    "var action = form.action;"
+                    "fetch(action, {method: 'POST', body: fd, redirect: 'follow', credentials: 'same-origin'})"
+                    ".then(function(r) {"
+                    "  return r.text().then(function(t) {"
+                    "    callback(JSON.stringify({status: r.status, redirected: r.redirected, finalUrl: r.url, bodyLen: t.length}))"
+                    "  });"
+                    "})"
+                    ".catch(function(e) { callback('error:' + e.message); });"
                 )
                 if posted and isinstance(posted, str):
                     log(f"POST 结果: {posted[:200]}")
