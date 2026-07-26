@@ -3,6 +3,7 @@
 TheRose Cloud - 自动续期 (SeleniumBase uc 模式 + KV cookie 缓存)
 """
 import os, sys, json, time, subprocess, atexit, re
+from datetime import datetime, timedelta
 import requests
 from seleniumbase import SB
 
@@ -300,6 +301,42 @@ def renew_servers(sb, ck=None):
             results.append({"server": text, "sid": sid, "status": "失败", "before": "", "after": "", "error": str(e)[:120]})
     return results
 
+def parse_expire_datetime(text):
+    """从 'Valid until 2026-07-26 20:19 ...' 中提取 datetime 对象"""
+    if not text:
+        return None
+    m = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})', text)
+    if not m:
+        m = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+        if not m:
+            return None
+        try:
+            return datetime.strptime(m.group(1), '%Y-%m-%d')
+        except:
+            return None
+    try:
+        return datetime.strptime(m.group(1) + ' ' + m.group(2), '%Y-%m-%d %H:%M')
+    except:
+        return None
+
+def format_remaining(expire_dt):
+    """计算距到期时间的剩余时间，返回 'Xd Xh Xm' 格式字符串"""
+    if not expire_dt:
+        return ""
+    now = datetime.now()
+    diff = expire_dt - now
+    if diff.total_seconds() <= 0:
+        return "已过期"
+    days = int(diff.total_seconds() // 86400)
+    hours = int((diff.total_seconds() % 86400) // 3600)
+    mins = int((diff.total_seconds() % 3600) // 60)
+    if days > 0:
+        return f"{days}d {hours}h {mins}m"
+    elif hours > 0:
+        return f"{hours}h {mins}m"
+    else:
+        return f"{mins}m"
+
 def format_results(email, results, cached=False):
     """将 renew_servers 返回的结构化结果格式化为 TG 消息行"""
     lines = []
@@ -308,17 +345,32 @@ def format_results(email, results, cached=False):
     for r in results:
         status = r.get("status", "")
         srv = r.get("server", "?")
+        before = r.get("before", "")
+        after = r.get("after", "")
+        # 解析到期时间并计算剩余
+        expire_dt = parse_expire_datetime(before)
+        remaining = format_remaining(expire_dt) if expire_dt else ""
+        # 下次可续期时间 = 到期前30分钟
+        renew_dt = expire_dt - timedelta(minutes=30) if expire_dt else None
+        renew_remaining = format_remaining(renew_dt) if renew_dt else ""
+        renew_str = renew_dt.strftime('%H:%M') if renew_dt else ""
+
         if status == "成功":
-            before = r.get("before", "")
-            after = r.get("after", "")
+            after_dt = parse_expire_datetime(after)
+            after_remaining = format_remaining(after_dt) if after_dt else ""
             lines.append(f"  ✅ {srv}")
             if before or after:
                 lines.append(f"     📅 {before} → {after}")
+            if after_remaining:
+                lines.append(f"     ⏰ 续期后剩余: {after_remaining}")
         elif status == "未到续期时间":
-            before = r.get("before", "")
             lines.append(f"  ⏳ {srv}: 未到续期时间")
             if before:
                 lines.append(f"     📅 当前到期: {before}")
+            if remaining:
+                lines.append(f"     ⏰ 距到期: {remaining}")
+            if renew_str:
+                lines.append(f"     🔔 可续期时间: {renew_str} (剩余 {renew_remaining})")
             lines.append(f"     💡 续期需在到期前30分钟内操作")
         elif status == "无需续期":
             lines.append(f"  ℹ️ 无需续期")
@@ -329,6 +381,10 @@ def format_results(email, results, cached=False):
                 lines.append(f"     💬 {err}")
         else:
             lines.append(f"  ⚠️ {srv}: {status}")
+            if before:
+                lines.append(f"     📅 到期: {before}")
+            if remaining:
+                lines.append(f"     ⏰ 剩余: {remaining}")
     return lines
 
 def main():
