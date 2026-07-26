@@ -168,14 +168,22 @@ def renew_servers(sb):
                 btn = sb.find_element('#order-submit', timeout=8)
                 if btn:
                     log("点击 Order now...")
-                    try:
-                        sb.uc_click('#order-submit')
-                    except:
-                        try:
-                            sb.click('#order-submit')
-                        except:
-                            btn.click()
-                    sb.sleep(5)
+                    # 通过 JS 获取 cookies 和 tokens，然后用 requests POST
+                    sid = href.split('id=')[1].split('&')[0]
+                    cookie_str = sb.execute_script("document.cookie")
+                    p_token = sb.execute_script("var el=document.querySelector('input[name=\"purchase_token\"]');el?el.value:''")
+                    csrf_token = sb.execute_script("var el=document.querySelector('input[name=\"server_renew[_token]\"]');el?el.value:''")
+                    import requests as req
+                    hdrs = {'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie_str}
+                    fdata = {'server_renew[id]': sid, 'server_renew[voucher]': '', 'purchase_token': p_token, 'server_renew[_token]': csrf_token}
+                    buy_url = "https://client.therose.cloud/panel?routeName=cart_renew_buy&id=" + sid
+                    r = req.post(buy_url, data=fdata, headers=hdrs, allow_redirects=False, timeout=15)
+                    loc = r.headers.get('location', '')
+                    if r.status_code == 302 and loc:
+                        sb.open("https://client.therose.cloud" + loc)
+                    else:
+                        sb.open(buy_url)
+                    sb.sleep(3)
                     # 检查续期结果
                     current_url = sb.get_current_url()
                     try:
