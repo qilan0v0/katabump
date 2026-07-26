@@ -189,93 +189,104 @@ def renew_servers(sb, ck=None):
             )
             log(f"续期前到期时间: {before_valid}")
 
-            # 打开续期购物车页面
+            # 打开续期购物车页面，提取表单字段
             sb.open(href)
             sb.sleep(3)
+
+            # 用 execute_script 提取表单的 action 和所有隐藏字段（同步，不依赖 driver session 持续）
+            form_data_js = sb.execute_script(
+                "var form=document.querySelector('#renew-form')||document.querySelector('form');"
+                "if(!form)JSON.stringify({error:'no form'});"
+                "else{var fd={action:form.action};"
+                "var inputs=form.querySelectorAll('input');"
+                "for(var i=0;i<inputs.length;i++){if(inputs[i].name)fd[inputs[i].name]=inputs[i].value;}"
+                "JSON.stringify(fd)}"
+            )
+            log(f"表单数据: {form_data_js[:200] if form_data_js else 'None'}")
+
+            posted = False
+            post_result = ""
+            if form_data_js and form_data_js.startswith('{'):
+                try:
+                    fd = json.loads(form_data_js)
+                    action_url = fd.pop('action', '')
+                    fd.pop('error', None)
+                    # 用缓存 cookie 发送 POST（Python requests，不依赖浏览器 session）
+                    cached_val = kv_get(ck) if ck else None
+                    if cached_val and action_url:
+                        s = requests.Session()
+                        for c in str_to_cookies(cached_val):
+                            s.cookies.set(c['name'], c['value'], domain=c.get('domain',''), path=c.get('path','/'))
+                        r = s.post(action_url, data=fd, allow_redirects=True, timeout=15)
+                        post_result = f"status={r.status_code} url={r.url} len={len(r.text)}"
+                        log(f"POST 结果: {post_result[:200]}")
+                        posted = True
+                except Exception as pe:
+                    log(f"POST 异常: {pe}")
+
+            if not posted:
+                # 降级：尝试点击按钮
+                log("POST 未执行，尝试点击按钮降级...")
+                try:
+                    sb.uc_click('#order-submit')
+                    sb.sleep(5)
+                except:
+                    pass
+
+            sb.sleep(3)
+            # 跳转到服务器列表检查结果
+            sb.open(BASE_URL + "/panel?routeName=servers")
+            sb.sleep(3)
+
+            # 检查续期结果
+            # 1) 先看 .alert-danger（如 30 分钟窗口错误）
             try:
-                # 使用 execute_async_script 等待 fetch Promise 完成
-                sb.driver.set_script_timeout(15)
-                posted = sb.driver.execute_async_script(
-                    "var callback = arguments[arguments.length - 1];"
-                    "var form = document.querySelector('#renew-form') || document.querySelector('form');"
-                    "if (!form) { callback('no form'); return; }"
-                    "var fd = new FormData(form);"
-                    "var action = form.action;"
-                    "fetch(action, {method: 'POST', body: fd, redirect: 'follow', credentials: 'same-origin'})"
-                    ".then(function(r) {"
-                    "  return r.text().then(function(t) {"
-                    "    callback(JSON.stringify({status: r.status, redirected: r.redirected, finalUrl: r.url, bodyLen: t.length}))"
-                    "  });"
-                    "})"
-                    ".catch(function(e) { callback('error:' + e.message); });"
-                )
-                if posted and isinstance(posted, str):
-                    log(f"POST 结果: {posted[:200]}")
-                else:
-                    log("POST 无返回，尝试点击按钮降级...")
-                    try:
-                        sb.uc_click('#order-submit')
-                        sb.sleep(5)
-                    except:
-                        pass
+                error_el = sb.find_element('.alert-danger', timeout=2)
+                error_text = error_el.text if error_el else ''
+            except:
+                error_text = ''
+            # 2) 看 .alert-success
+            try:
+                result_el = sb.find_element('.alert-success', timeout=2)
+                result_text = result_el.text if result_el else ''
+            except:
+                result_text = ''
+            # 3) 提取续期后的 Valid until 日期
+            after_valid = sb.execute_script(
+                "var t=document.body.innerText;var i=t.indexOf('Valid until');"
+                "i>=0?t.slice(i,i+80):''"
+            )
 
-                sb.sleep(3)
-                # 跳转到服务器列表检查结果
-                sb.open(BASE_URL + "/panel?routeName=servers")
-                sb.sleep(3)
-
-                # 检查续期结果
-                # 1) 先看 .alert-danger（如 30 分钟窗口错误）
-                try:
-                    error_el = sb.find_element('.alert-danger', timeout=2)
-                    error_text = error_el.text if error_el else ''
-                except:
-                    error_text = ''
-                # 2) 看 .alert-success
-                try:
-                    result_el = sb.find_element('.alert-success', timeout=2)
-                    result_text = result_el.text if result_el else ''
-                except:
-                    result_text = ''
-                # 3) 提取续期后的 Valid until 日期
-                after_valid = sb.execute_script(
-                    "var t=document.body.innerText;var i=t.indexOf('Valid until');"
-                    "i>=0?t.slice(i,i+80):''"
-                )
-
-                if error_text:
-                    el = error_text.lower()
-                    if "30 minutes" in el or "within 30" in el or "before expiration" in el:
-                        log(f"未到续期时间: {error_text[:120]}")
-                        results.append(f"{text}: 未到续期时间")
-                    elif "successfully" in el:
-                        log(f"[OK] {text} 续期成功")
-                        results.append(f"{text}: 成功")
-                    else:
-                        log(f"续期失败: {error_text[:120]}")
-                        results.append(f"{text}: 失败")
-                elif result_text and "successfully" in result_text.lower():
+            if error_text:
+                el = error_text.lower()
+                if "30 minutes" in el or "within 30" in el or "before expiration" in el:
+                    log(f"未到续期时间: {error_text[:120]}")
+                    results.append(f"{text}: 未到续期时间")
+                elif "successfully" in el:
                     log(f"[OK] {text} 续期成功")
                     results.append(f"{text}: 成功")
-                elif before_valid and after_valid and before_valid != after_valid:
-                    # Valid until 日期变化了 → 续期成功
-                    log(f"[OK] {text} 续期成功（到期时间已更新: {before_valid} → {after_valid}）")
-                    results.append(f"{text}: 成功")
-                elif before_valid and after_valid and before_valid == after_valid:
-                    # 日期没变 → 续期被服务器拒绝（未到续期窗口）
-                    log(f"续期未生效（到期时间未变: {after_valid}），可能未到续期窗口")
-                    results.append(f"{text}: 未到续期时间")
                 else:
-                    page_source = sb.get_page_source()
-                    if "successfully purchased" in page_source.lower():
-                        log(f"[OK] {text} 续期成功（页面包含关键词）")
-                        results.append(f"{text}: 成功")
-                    else:
-                        log(f"{text}: 已处理（无法确认结果）")
-                        results.append(f"{text}: 已处理")
-            except Exception as e:
-                log(f"续期异常: {e}")
-                results.append(f"{text}: 失败")
+                    log(f"续期失败: {error_text[:120]}")
+                    results.append(f"{text}: 失败")
+            elif result_text and "successfully" in result_text.lower():
+                log(f"[OK] {text} 续期成功")
+                results.append(f"{text}: 成功")
+            elif before_valid and after_valid and before_valid != after_valid:
+                # Valid until 日期变化了 → 续期成功
+                log(f"[OK] {text} 续期成功（到期时间已更新: {before_valid} → {after_valid}）")
+                results.append(f"{text}: 成功")
+            elif before_valid and after_valid and before_valid == after_valid:
+                # 日期没变 → 续期被服务器拒绝（未到续期窗口）
+                log(f"续期未生效（到期时间未变: {after_valid}），可能未到续期窗口")
+                results.append(f"{text}: 未到续期时间")
+            else:
+                page_source = sb.get_page_source()
+                if "successfully purchased" in page_source.lower():
+                    log(f"[OK] {text} 续期成功（页面包含关键词）")
+                    results.append(f"{text}: 成功")
+                else:
+                    log(f"{text}: 已处理（无法确认结果）")
+                    results.append(f"{text}: 已处理")
         except Exception as e:
             log(f"续期失败: {e}")
             results.append(f"{text}: 失败")
