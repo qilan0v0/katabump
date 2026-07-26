@@ -1,6 +1,185 @@
-// Gaming4Free (control.gaming4free.net) 服务器续时脚本 —— 每 5 分钟点 +90 min
-// 流程: 加载 KV cookie → 打开 serverUrl → 关广告弹窗 → 点 +90 min → 发通知
+// Gaming4Free (control.gaming4free.net) 服务器续时脚本 —— 循环点 +90 min 直到满格
+// 流程: 加载 KV cookie → 打开 serverUrl → 循环(读进度→满格则停→点+90min→等冷却→刷新) → 满格发通知
 // Cookie 获取: 与 gaming4free_checkin.js 共用
+
+// 单次续时尝试（点一次 +90 min 并确认生效）
+// 返回: { ok, newRemaining, capInfo }
+async function extendOnce(page, extendBtn, shot, oldSeconds) {
+    // 找 +90 min 按钮（已由调用方判断可见性）
+    const btnText = await extendBtn.innerText().catch(() => '');
+    console.log(`   >> 按钮文字: "${btnText}"`);
+
+    if (/cd|wait/i.test(btnText) && !/90|min/i.test(btnText)) {
+        console.log(`   >> 冷却中: ${btnText}`);
+        return { ok: false, cooldown: true, btnText };
+    }
+
+    // 点击续时
+    console.log('   >> 点击 +90 min...');
+    for (let r = 0; r < 3; r++) {
+        await page.evaluate(() => {
+            const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
+            for (const id of overlayIds) {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            }
+            document.querySelectorAll('div').forEach(el => {
+                const cs = window.getComputedStyle(el);
+                if ((cs.position === 'fixed' || cs.position === 'absolute') &&
+                    el.offsetWidth >= window.innerWidth * 0.8 &&
+                    el.offsetHeight >= window.innerHeight * 0.8 &&
+                    cs.zIndex > 100 && !el.id && !el.querySelector('iframe')) {
+                    el.remove();
+                }
+            });
+            document.body.style.overflow = 'auto';
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+
+        try {
+            await extendBtn.click({ timeout: 5000, force: false });
+            console.log('   >> 普通点击成功');
+            break;
+        } catch (e) {
+            console.log('   >> 点击被遮挡(第' + (r+1) + '次)，尝试 force click...');
+            if (r === 2) {
+                await page.evaluate(() => {
+                    document.querySelectorAll('div').forEach(el => {
+                        const cs = window.getComputedStyle(el);
+                        if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.zIndex > 50) {
+                            if (!el.id && !el.querySelector('iframe, button, input')) el.remove();
+                        }
+                    });
+                }).catch(() => {});
+                try { await extendBtn.click({ force: true, timeout: 5000 }); } catch (e2) {}
+            }
+        }
+    }
+    await page.waitForTimeout(2000);
+
+    // 清除遮罩
+    await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
+
+    // === Turnstile 验证 + 续时生效 合并循环 ===
+    console.log('   >> 等待 Turnstile 验证 + 续时生效...');
+
+    let extendOk = false;
+    let cooldownText = '';
+
+    for (let t = 0; t < 40; t++) {
+        await page.evaluate(() => {
+            const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
+            for (const id of overlayIds) {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            }
+        }).catch(() => {});
+
+        // 1. 检查按钮是否已冷却
+        const curBtnText = await extendBtn.innerText().catch(() => '');
+        if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
+            cooldownText = curBtnText;
+            console.log('   >> ✅ Turnstile 验证通过，按钮已冷却，续时成功');
+            extendOk = true;
+            break;
+        }
+
+        // 2. 剩余时间增加
+        const curTimeText = await page.locator('.time span, [class*="time"] span').first().innerText().catch(() => '');
+        const curSeconds = parseTime(curTimeText);
+        if (curSeconds > oldSeconds + 30) {
+            console.log('   >> ✅ 剩余时间已增加，续时成功 (' + formatTime(oldSeconds) + ' → ' + curTimeText + ')');
+            extendOk = true;
+            break;
+        }
+
+        // 3. CDP 点 Turnstile
+        const cdpOk = await attemptTurnstileCdp(page);
+        if (cdpOk) {
+            console.log('   >> ✅ CDP 已点击 Turnstile 复选框，等 Cloudflare 验证...');
+            await page.waitForTimeout(4000);
+        } else {
+            await page.waitForTimeout(2000);
+        }
+    }
+
+    if (extendOk) {
+        console.log('   >> ✅ 续时已生效');
+    } else {
+        console.log('   >> ⚠️ 续时在超时内未确认生效');
+    }
+
+    let newRemaining = '';
+    for (let w = 0; w < 5; w++) {
+        const timeEl = page.locator('.time span, [class*="time"] span').first();
+        newRemaining = await timeEl.innerText().catch(() => '');
+        if (newRemaining && /\d{2}:\d{2}:\d{2}/.test(newRemaining)) break;
+        await page.waitForTimeout(1000);
+    }
+    console.log('   >> 续时后剩余: ' + (newRemaining || '未知'));
+
+    return { ok: extendOk, newRemaining, cooldownText };
+}
+
+// 解析剩余时间 → 秒数
+function parseTime(str) {
+    if (!str) return 0;
+    const m = str.match(/(\d{2}):(\d{2}):(\d{2})/);
+    if (m) return parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
+    // 也兼容 MM:SS 形式（冷却倒计时）
+    const m2 = str.match(/(\d{1,2}):(\d{2})/);
+    if (m2) return parseInt(m2[1]) * 60 + parseInt(m2[2]);
+    return 0;
+}
+
+// 秒数 → HH:MM:SS
+function formatTime(sec) {
+    if (!sec || sec < 0) return '00:00:00';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+}
+
+// 解析按钮冷却文字 → 秒数（用于等待）
+function parseCooldown(btnText) {
+    if (!btnText) return 0;
+    // HH:MM:SS
+    let m = btnText.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+    if (m) return parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
+    // MM:SS
+    m = btnText.match(/(\d{1,2}):(\d{2})/);
+    if (m) return parseInt(m[1]) * 60 + parseInt(m[2]);
+    // 纯数字秒
+    m = btnText.match(/(\d+)\s*s/i);
+    if (m) return parseInt(m[1]);
+    return 0;
+}
+
+// 读取当前进度与剩余时间
+async function readStatus(page) {
+    let remainingTime = '';
+    for (let w = 0; w < 10; w++) {
+        const timeEl = page.locator('.time span, [class*="time"] span').first();
+        const text = await timeEl.innerText().catch(() => '');
+        if (text && /\d{2}:\d{2}:\d{2}/.test(text)) {
+            remainingTime = text;
+            break;
+        }
+        await page.waitForTimeout(1000);
+    }
+    const capInfo = await page.evaluate(() => {
+        const segs = document.querySelectorAll('.seg-track i');
+        const onSegs = document.querySelectorAll('.seg-track i.on');
+        const capEl = document.querySelector('.rt-badge-cap');
+        return {
+            total: segs.length,
+            on: onSegs.length,
+            cap: capEl ? capEl.textContent.trim() : ''
+        };
+    }).catch(() => ({ total: 0, on: 0, cap: '' }));
+    return { remainingTime, capInfo };
+}
 
 // === CDP Turnstile Bypass: 劫持 attachShadow 捕获 checkbox 坐标 ===
 const INJECTED_SCRIPT = `
@@ -218,188 +397,111 @@ function withTimeout(promise, ms, label) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
-// 处理单个服务器的续时
+// 处理单个服务器的续时 —— 循环点 +90 min 直到满格
 async function extendServer(page, serverUrl, photoDir) {
     const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || 'srv';
     const shot = path.join(photoDir, `g4f_extend_${sid}.png`);
     console.log(`\n--- 服务器 ${sid} ---`);
     console.log(`打开: ${serverUrl}`);
 
-    await gotoWithRetry(page, serverUrl);
-    await page.waitForTimeout(4000);
+    const MAX_ROUNDS = parseInt(process.env.MAX_ROUNDS || '30', 10);
+    let rounds = 0;
+    let lastCapInfo = { total: 0, on: 0, cap: '' };
+    let lastRemaining = '';
+    let successRounds = 0; // 成功续时次数
+    let finalStatus = 'partial';
 
-    // 关广告弹窗
-    await dismissAdblockPopup(page);
+    while (rounds < MAX_ROUNDS) {
+        rounds++;
+        console.log(`\n=== 第 ${rounds}/${MAX_ROUNDS} 轮 ===`);
 
-    // 读取当前剩余时间
-    let remainingTime = '';
-    for (let w = 0; w < 10; w++) {
-        const timeEl = page.locator('.time span, [class*="time"] span').first();
-        const text = await timeEl.innerText().catch(() => '');
-        if (text && /\d{2}:\d{2}:\d{2}/.test(text)) {
-            remainingTime = text;
+        await gotoWithRetry(page, serverUrl);
+        await page.waitForTimeout(4000);
+        await dismissAdblockPopup(page);
+
+        const { remainingTime, capInfo } = await readStatus(page);
+        lastCapInfo = capInfo;
+        lastRemaining = remainingTime;
+        console.log('   >> 剩余时间: ' + (remainingTime || '未知'));
+        console.log('   >> 进度: ' + capInfo.on + '/' + capInfo.total + ' 格 | ' + capInfo.cap);
+
+        // 满格判断
+        if (capInfo.total > 0 && capInfo.on >= capInfo.total) {
+            console.log('   >> ✅ 续时已满 (' + capInfo.cap + ')，停止循环');
+            finalStatus = 'full';
+            try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
             break;
         }
-        await page.waitForTimeout(1000);
-    }
-    console.log('   >> 剩余时间: ' + (remainingTime || '未知'));
 
-    // 读取进度条和 cap 上限，判断是否已满
-    const capInfo = await page.evaluate(() => {
-        const segs = document.querySelectorAll('.seg-track i');
-        const onSegs = document.querySelectorAll('.seg-track i.on');
-        const capEl = document.querySelector('.rt-badge-cap');
-        return {
-            total: segs.length,
-            on: onSegs.length,
-            cap: capEl ? capEl.textContent.trim() : ''
-        };
-    }).catch(() => ({ total: 0, on: 0, cap: '' }));
-    console.log('   >> 进度: ' + capInfo.on + '/' + capInfo.total + ' 格 | ' + capInfo.cap);
+        const oldSeconds = parseTime(remainingTime);
 
-    // 满格判断
-    if (capInfo.total > 0 && capInfo.on >= capInfo.total) {
-        console.log('   >> ✅ 续时已满 (' + capInfo.cap + ')，无需继续续时');
+        // 找 +90 min 按钮
+        const extendBtn = page.locator('button.rt-btn-free:not(.disabled)').first();
+        const btnVisible = await extendBtn.isVisible({ timeout: 5000 }).catch(() => false);
+
+        if (!btnVisible) {
+            console.log('   >> +90 min 按钮不可见，等待后重试...');
+            try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
+            await page.waitForTimeout(30000); // 30s 后重试
+            continue;
+        }
+
+        // 尝试续时一次
+        const once = await extendOnce(page, extendBtn, shot, oldSeconds);
+        if (once.ok) successRounds++;
+
+        // 续时后重新读取进度
+        await page.waitForTimeout(1500);
+        const after = await readStatus(page);
+        lastCapInfo = after.capInfo;
+        lastRemaining = after.remainingTime || once.newRemaining || remainingTime;
+        console.log('   >> 本轮后进度: ' + after.capInfo.on + '/' + after.capInfo.total + ' 格 | 剩余 ' + (lastRemaining || '未知'));
+
         try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-        return { status: 'full', remaining: remainingTime, capInfo: capInfo, shot };
-    }
 
-    // 找 +90 min 按钮
-    const extendBtn = page.locator('button.rt-btn-free:not(.disabled)').first();
-    const btnVisible = await extendBtn.isVisible({ timeout: 5000 }).catch(() => false);
-
-    if (!btnVisible) {
-        console.log('   >> +90 min 按钮不可见（可能是冷却中或无按钮）');
-        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-        return { status: 'cooldown', remaining: remainingTime, capInfo, shot };
-    }
-
-    const btnText = await extendBtn.innerText().catch(() => '');
-    console.log(`   >> 按钮文字: "${btnText}"`);
-
-    if (/cd|wait/i.test(btnText) && !/90|min/i.test(btnText)) {
-        console.log(`   >> 冷却中: ${btnText}`);
-        try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-        return { status: 'cooldown', remaining: remainingTime, capInfo, shot };
-    }
-
-    // 点击续时
-    console.log('   >> 点击 +90 min...');
-    for (let r = 0; r < 3; r++) {
-        await page.evaluate(() => {
-            const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
-            for (const id of overlayIds) {
-                const el = document.getElementById(id);
-                if (el) el.remove();
-            }
-            document.querySelectorAll('div').forEach(el => {
-                const cs = window.getComputedStyle(el);
-                if ((cs.position === 'fixed' || cs.position === 'absolute') &&
-                    el.offsetWidth >= window.innerWidth * 0.8 &&
-                    el.offsetHeight >= window.innerHeight * 0.8 &&
-                    cs.zIndex > 100 && !el.id && !el.querySelector('iframe')) {
-                    el.remove();
-                }
-            });
-            document.body.style.overflow = 'auto';
-        }).catch(() => {});
-        await page.waitForTimeout(500);
-
-        try {
-            await extendBtn.click({ timeout: 5000, force: false });
-            console.log('   >> 普通点击成功');
-            break;
-        } catch (e) {
-            console.log('   >> 点击被遮挡(第' + (r+1) + '次)，尝试 force click...');
-            if (r === 2) {
-                await page.evaluate(() => {
-                    document.querySelectorAll('div').forEach(el => {
-                        const cs = window.getComputedStyle(el);
-                        if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.zIndex > 50) {
-                            if (!el.id && !el.querySelector('iframe, button, input')) el.remove();
-                        }
-                    });
-                }).catch(() => {});
-                try { await extendBtn.click({ force: true, timeout: 5000 }); } catch (e2) {}
-            }
-        }
-    }
-    await page.waitForTimeout(2000);
-
-    // 清除遮罩
-    await page.evaluate(() => { const o = document.getElementById('__g4f_adblock_overlay'); if (o) o.remove(); }).catch(() => {});
-
-    // === Turnstile 验证 + 续时生效 合并循环 ===
-    // 点击 +90 min 后 CF 弹窗出现，需 CDP 点击复选框完成验证，然后等按钮进入冷却（续时生效）
-    console.log('   >> 等待 Turnstile 验证 + 续时生效...');
-
-    // 解析剩余时间 → 秒数（用于后续判断时间是否增加）
-    function parseTime(str) {
-        if (!str) return 0;
-        const m = str.match(/(\d{2}):(\d{2}):(\d{2})/);
-        if (!m) return 0;
-        return parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
-    }
-    const oldSeconds = parseTime(remainingTime);
-
-    let extendOk = false;
-
-    for (let t = 0; t < 40; t++) {
-        // 清除遮罩
-        await page.evaluate(() => {
-            const overlayIds = ['__g4f_adblock_overlay', 'adblock-overlay', 'overlay', 'modal-overlay'];
-            for (const id of overlayIds) {
-                const el = document.getElementById(id);
-                if (el) el.remove();
-            }
-        }).catch(() => {});
-
-        // 1. 检查按钮是否已冷却（= Turnstile 通过 + 续时生效）
-        const curBtnText = await extendBtn.innerText().catch(() => '');
-        if (/cd|wait|loading/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
-            console.log('   >> ✅ Turnstile 验证通过，按钮已冷却，续时成功');
-            extendOk = true;
+        // 满格则停
+        if (after.capInfo.total > 0 && after.capInfo.on >= after.capInfo.total) {
+            console.log('   >> ✅ 已满格，停止循环');
+            finalStatus = 'full';
             break;
         }
 
-        // 2. 检查剩余时间是否增加（Turnstile 可能已通过但按钮文字未更新）
-        const curTimeText = await page.locator('.time span, [class*="time"] span').first().innerText().catch(() => '');
-        const curSeconds = parseTime(curTimeText);
-        if (curSeconds > oldSeconds + 30) {
-            console.log('   >> ✅ 剩余时间已增加，续时成功 (' + remainingTime + ' → ' + curTimeText + ')');
-            extendOk = true;
-            break;
-        }
-
-        // 3. CDP 点击 Turnstile 复选框
-        const cdpOk = await attemptTurnstileCdp(page);
-        if (cdpOk) {
-            console.log('   >> ✅ CDP 已点击 Turnstile 复选框，等 Cloudflare 验证...');
-            // 点击后等久一点让 CF 处理，但不要 continue（让后续轮次继续检测状态或重试）
-            await page.waitForTimeout(4000);
+        // 等待冷却进入下一轮
+        let waitSec = 0;
+        if (once.cooldown && once.cooldownText) {
+            waitSec = parseCooldown(once.cooldownText);
         } else {
-            await page.waitForTimeout(2000);
+            // 重新读按钮文字判断冷却
+            const curBtnText = await extendBtn.innerText().catch(() => '');
+            waitSec = parseCooldown(curBtnText);
+            if (!waitSec && /cd|wait/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
+                waitSec = 0; // 有冷却但解析不出，下面兜底
+            }
+        }
+        // 兜底：解析不出冷却时间，且没成功 → 等 60s；成功续时一般也有冷却 → 读按钮
+        if (!waitSec) {
+            const curBtnText = await extendBtn.innerText().catch(() => '');
+            if (once.ok || (/cd|wait/i.test(curBtnText) && !/90|min/i.test(curBtnText))) {
+                waitSec = 90; // 保守等 90s 再看（+90min 冷却通常较短）
+                console.log('   >> 无法解析冷却时间，兜底等待 ' + waitSec + 's');
+            } else {
+                waitSec = 30;
+            }
+        }
+        if (waitSec > 0) {
+            // 加 5s 缓冲，且上限 600s，避免过长
+            waitSec = Math.min(waitSec + 5, 600);
+            console.log('   >> 等待冷却 ' + waitSec + 's 后进入下一轮...');
+            await page.waitForTimeout(waitSec * 1000);
         }
     }
 
-    if (extendOk) {
-        console.log('   >> ✅ 续时已生效');
-    } else {
-        console.log('   >> ⚠️ 续时在超时内未确认生效');
+    if (finalStatus !== 'full' && rounds >= MAX_ROUNDS) {
+        console.log('   >> ⚠️ 达到最大轮次 ' + MAX_ROUNDS + '，未满格');
+        finalStatus = successRounds > 0 ? 'partial' : 'failed';
     }
 
-    try { await page.screenshot({ path: shot, fullPage: true }); } catch (e) {}
-
-    let newRemaining = '';
-    for (let w = 0; w < 5; w++) {
-        const timeEl = page.locator('.time span, [class*="time"] span').first();
-        newRemaining = await timeEl.innerText().catch(() => '');
-        if (newRemaining && /\d{2}:\d{2}:\d{2}/.test(newRemaining)) break;
-        await page.waitForTimeout(1000);
-    }
-    console.log('   >> 续时后剩余: ' + (newRemaining || '未知'));
-
-    return { status: 'extended', remaining: newRemaining || remainingTime, oldRemaining: remainingTime, capInfo, shot };
+    return { status: finalStatus, remaining: lastRemaining, capInfo: lastCapInfo, shot, rounds, successRounds };
 }
 
 // === 通过 CDP 点击 Turnstile 复选框（穿透 Shadow DOM / 跨域 iframe） ===
@@ -488,22 +590,23 @@ async function attemptTurnstileCdp(page) {
         }
 
         try {
-            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 90000, '续时 ' + safeUser);
+            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 300000, '续时 ' + safeUser);
             results.push({ serverUrl, user: safeUser, ...r });
 
-            // 立即 TG 推送（每个服务器完成即发）
+            // 立即 TG 推送（每个服务器循环完成后发汇总）
             const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || '';
             const prog = r.capInfo ? `${r.capInfo.on}/${r.capInfo.total}` : '';
             const capStr = r.capInfo && r.capInfo.cap ? r.capInfo.cap : '48h cap';
+            const roundsInfo = r.rounds ? `\n轮次: ${r.rounds} (成功 ${r.successRounds})` : '';
 
-            if (r.status === 'extended') {
-                const msg = '✅ *续时成功*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?') + '\n时间: ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+            if (r.status === 'full') {
+                const msg = '✅ *续时已满格*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?') + roundsInfo + '\n时间: ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
                 await sendTelegramMessage(msg, r.shot);
-            } else if (r.status === 'full') {
-                const msg = '✅ *续时已达上限*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?');
+            } else if (r.status === 'partial') {
+                const msg = '⚠️ *续时部分完成*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?') + roundsInfo + '\n时间: ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
                 await sendTelegramMessage(msg, r.shot);
-            } else if (r.status === 'cooldown') {
-                const msg = '⏳ *续时冷却中*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?');
+            } else if (r.status === 'failed') {
+                const msg = '❌ *续时失败*\n用户: ' + escapeMd(r.user) + '\n服务器: `' + sid + '`\n进度: ' + prog + ' 格 | ' + escapeMd(capStr) + '\n剩余: ' + escapeMd(r.remaining || '?') + roundsInfo;
                 await sendTelegramMessage(msg, r.shot);
             }
 

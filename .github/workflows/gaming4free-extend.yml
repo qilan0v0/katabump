@@ -10,6 +10,7 @@ env:
 jobs:
   extend:
     runs-on: ubuntu-latest
+    timeout-minutes: 120 # 循环续时可能耗时较长
     env:
       HAS_V2RAY: ${{ secrets.V2RAY_VMESS != '' }}
 
@@ -70,6 +71,8 @@ jobs:
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+        # 循环续时最大轮次（每轮点一次 +90min，直到满格）
+        MAX_ROUNDS: ${{ secrets.MAX_ROUNDS || '30' }}
       run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node gaming4free_extend.js
 
     - name: Upload Screenshots
