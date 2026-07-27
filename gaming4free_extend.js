@@ -397,6 +397,29 @@ function withTimeout(promise, ms, label) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
+// 等待冷却结束：原地轮询按钮文字直到按钮恢复可点（不再显示冷却倒计时）
+// 返回 true 表示按钮已恢复可点，false 表示超时
+async function waitForCooldownEnd(page, extendBtn, maxWaitMs = 300000) {
+    const start = Date.now();
+    let lastText = '';
+    while (Date.now() - start < maxWaitMs) {
+        const btnText = await extendBtn.innerText().catch(() => '');
+        // 按钮恢复可点：不再含 cd/wait/loading 倒计时，或重新出现 90/min
+        if (btnText && !/cd|wait|loading/i.test(btnText)) {
+            console.log('   >> 按钮已恢复可点: "' + btnText + '"');
+            return true;
+        }
+        // 每 10s 报告一次当前冷却状态
+        if (btnText !== lastText) {
+            lastText = btnText;
+            console.log('   >> 冷却中: "' + btnText + '"');
+        }
+        await page.waitForTimeout(5000);
+    }
+    console.log('   >> 等待冷却超时(' + (maxWaitMs/1000) + 's)，强制进入下一轮');
+    return false;
+}
+
 // 处理单个服务器的续时 —— 循环点 +90 min 直到满格
 async function extendServer(page, serverUrl, photoDir) {
     const sid = (serverUrl.match(/\/server\/([^/?#]+)/) || [])[1] || 'srv';
@@ -466,33 +489,26 @@ async function extendServer(page, serverUrl, photoDir) {
             break;
         }
 
-        // 等待冷却进入下一轮
-        let waitSec = 0;
-        if (once.cooldown && once.cooldownText) {
-            waitSec = parseCooldown(once.cooldownText);
-        } else {
-            // 重新读按钮文字判断冷却
-            const curBtnText = await extendBtn.innerText().catch(() => '');
-            waitSec = parseCooldown(curBtnText);
-            if (!waitSec && /cd|wait/i.test(curBtnText) && !/90|min/i.test(curBtnText)) {
-                waitSec = 0; // 有冷却但解析不出，下面兜底
-            }
-        }
-        // 兜底：解析不出冷却时间，且没成功 → 等 60s；成功续时一般也有冷却 → 读按钮
-        if (!waitSec) {
-            const curBtnText = await extendBtn.innerText().catch(() => '');
-            if (once.ok || (/cd|wait/i.test(curBtnText) && !/90|min/i.test(curBtnText))) {
-                waitSec = 90; // 保守等 90s 再看（+90min 冷却通常较短）
-                console.log('   >> 无法解析冷却时间，兜底等待 ' + waitSec + 's');
+        // 等待冷却结束进入下一轮（原地轮询按钮，不刷新页面）
+        if (once.ok) {
+            // 续时成功后按钮会进入冷却，原地轮询直到恢复可点
+            console.log('   >> 原地等待冷却结束...');
+            await waitForCooldownEnd(page, extendBtn, 300000); // 最多等 5min
+        } else if (once.cooldown && once.cooldownText) {
+            // 按钮一开始就冷却中，解析倒计时等待
+            const cdSec = parseCooldown(once.cooldownText);
+            if (cdSec > 0) {
+                const waitSec = Math.min(cdSec + 5, 600);
+                console.log('   >> 等待冷却 ' + waitSec + 's (' + once.cooldownText + ')...');
+                await page.waitForTimeout(waitSec * 1000);
             } else {
-                waitSec = 30;
+                console.log('   >> 冷却时间解析失败，原地轮询按钮...');
+                await waitForCooldownEnd(page, extendBtn, 300000);
             }
-        }
-        if (waitSec > 0) {
-            // 加 5s 缓冲，且上限 600s，避免过长
-            waitSec = Math.min(waitSec + 5, 600);
-            console.log('   >> 等待冷却 ' + waitSec + 's 后进入下一轮...');
-            await page.waitForTimeout(waitSec * 1000);
+        } else {
+            // 续时未确认生效，等 30s 重试
+            console.log('   >> 等待 30s 后重试...');
+            await page.waitForTimeout(30000);
         }
     }
 
@@ -590,7 +606,7 @@ async function attemptTurnstileCdp(page) {
         }
 
         try {
-            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 50 * 60 * 1000, '续时 ' + safeUser);
+            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 55 * 60 * 1000, '续时 ' + safeUser);
             results.push({ serverUrl, user: safeUser, ...r });
 
             // 立即 TG 推送（每个服务器循环完成后发汇总）
