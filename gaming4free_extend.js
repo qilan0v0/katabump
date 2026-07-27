@@ -590,7 +590,7 @@ async function attemptTurnstileCdp(page) {
         }
 
         try {
-            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 300000, '续时 ' + safeUser);
+            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 50 * 60 * 1000, '续时 ' + safeUser);
             results.push({ serverUrl, user: safeUser, ...r });
 
             // 立即 TG 推送（每个服务器循环完成后发汇总）
