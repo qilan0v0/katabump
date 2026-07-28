@@ -190,6 +190,24 @@ def renew_servers(sb, ck=None):
             )
             log(f"续期前到期时间: {before_valid}")
 
+            # 检查服务器状态（Active / Suspended / Expired）
+            server_status = sb.execute_script(
+                "var t=document.body.innerText;"
+                "var m=t.match(/(Active|Suspended|Expired)/);"
+                "return m?m[1]:''"
+            )
+            log(f"服务器状态: {server_status}")
+
+            # 如果服务器已过期/暂停，跳过续期
+            if server_status and server_status != "Active":
+                log(f"服务器状态为 {server_status}，跳过续期")
+                results.append({
+                    "server": text, "sid": sid, "status": "跳过",
+                    "before": (before_valid or "").replace("\n", " ").strip()[:60],
+                    "after": "", "error": f"服务器已{server_status}"
+                })
+                continue
+
             # 打开续期购物车页面，提取表单字段
             sb.open(href)
             sb.sleep(3)
@@ -377,6 +395,13 @@ def format_results(email, results, cached=False):
         elif status == "失败":
             err = r.get("error", "")
             lines.append(f"  ❌ {srv}: 失败")
+            if err:
+                lines.append(f"     💬 {err}")
+        elif status == "跳过":
+            err = r.get("error", "")
+            lines.append(f"  ⛔ {srv}: 跳过")
+            if before:
+                lines.append(f"     📅 到期: {before}")
             if err:
                 lines.append(f"     💬 {err}")
         else:
