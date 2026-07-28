@@ -194,7 +194,7 @@ def renew_servers(sb, ck=None):
             server_status = sb.execute_script(
                 "var t=document.body.innerText;"
                 "var m=t.match(/(Active|Suspended|Expired)/);"
-                "return m?m[1]:''"
+                "m?m[1]:''"
             )
             log(f"服务器状态: {server_status}")
 
