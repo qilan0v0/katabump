@@ -434,7 +434,7 @@ async function extendServer(page, serverUrl, photoDir) {
     console.log(`\n--- 服务器 ${sid} ---`);
     console.log(`打开: ${serverUrl}`);
 
-    const MAX_ROUNDS = parseInt(process.env.MAX_ROUNDS || '30', 10);
+    const MAX_ROUNDS = parseInt(process.env.MAX_ROUNDS || '10', 10);
     let rounds = 0;
     let lastCapInfo = { total: 0, on: 0, cap: '' };
     let lastRemaining = '';
@@ -613,7 +613,7 @@ async function attemptTurnstileCdp(page) {
         }
 
         try {
-            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 55 * 60 * 1000, '续时 ' + safeUser);
+            const r = await withTimeout(extendServer(page, serverUrl, photoDir), 35 * 60 * 1000, '续时 ' + safeUser);
             results.push({ serverUrl, user: safeUser, ...r });
 
             // 立即 TG 推送（每个服务器循环完成后发汇总）

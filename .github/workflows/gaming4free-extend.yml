@@ -16,7 +16,7 @@ env:
 jobs:
   extend:
     runs-on: ubuntu-latest
-    timeout-minutes: 120 # 循环续时可能耗时较长
+    timeout-minutes: 60 # 10轮约15-30min，60min安全
     env:
       HAS_V2RAY: ${{ secrets.V2RAY_VMESS != '' }}
 
@@ -78,7 +78,7 @@ jobs:
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
         # 循环续时最大轮次（每轮点一次 +90min，直到满格）
-        MAX_ROUNDS: ${{ secrets.MAX_ROUNDS || '30' }}
+        MAX_ROUNDS: ${{ secrets.MAX_ROUNDS || '10' }}
         # 指定运行第几个用户（从1开始，留空=全部）
         G4F_USER_INDEX: ${{ github.event.inputs.user_index }}
       run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node gaming4free_extend.js
