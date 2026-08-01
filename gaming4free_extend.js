@@ -366,7 +366,9 @@ async function gotoWithRetry(page, url, retries = 3) {
         } catch (e) {
             console.warn(`[导航] 打开 ${url} 失败 (第 ${i}/${retries} 次): ${e.message}`);
             if (i === retries) throw e;
-            await page.waitForTimeout(3000);
+            // ERR_ABORTED 通常是服务端重定向，等久一点再重试
+            const wait = /ERR_ABORTED/i.test(e.message) ? 5000 : 3000;
+            await page.waitForTimeout(wait);
         }
     }
 }
@@ -445,7 +447,13 @@ async function extendServer(page, serverUrl, photoDir) {
         rounds++;
         console.log(`\n=== 第 ${rounds}/${MAX_ROUNDS} 轮 ===`);
 
-        await gotoWithRetry(page, serverUrl);
+        try {
+            await gotoWithRetry(page, serverUrl);
+        } catch (navErr) {
+            console.log('   >> 导航失败，等 30s 后重试: ' + navErr.message);
+            await page.waitForTimeout(30000);
+            continue;
+        }
         await page.waitForTimeout(4000);
         await dismissAdblockPopup(page);
 
@@ -603,6 +611,8 @@ async function attemptTurnstileCdp(page) {
         const cookieStr = await kvGet(cookieKey);
         if (cookieStr) {
             try {
+                // 先导航到 about:blank 清空当前页面，避免前一个用户的 session 残留干扰
+                await page.goto('about:blank').catch(() => {});
                 const cks = normalizeCookies(JSON.parse(cookieStr));
                 await context.clearCookies().catch(() => {});
                 await context.addCookies(cks);
